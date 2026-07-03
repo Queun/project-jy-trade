@@ -1,4 +1,4 @@
-import { WdtClient, type WdtGoodsResponse, type WdtStockResponse } from "../../../backend/src/integrations/wdtClient.js";
+import { normalizeWdtProfile, WdtClient, type WdtGoodsResponse, type WdtStockResponse } from "../../../backend/src/integrations/wdtClient.js";
 import type { StockLookupClient } from "./store.js";
 import type { WdtGoodsWindowClient } from "./wdtGoodsSync.js";
 
@@ -7,7 +7,7 @@ export interface WdtReadClients {
   stockClient: StockLookupClient;
 }
 
-export function createWdtReadClientsFromEnv(profile = process.env.WDT_ENV ?? "test"): WdtReadClients | undefined {
+export function createWdtReadClientsFromEnv(profile = normalizeWdtProfile(process.env.WDT_ENV)): WdtReadClients | undefined {
   try {
     const client = WdtClient.fromEnvProfile(profile);
     return {

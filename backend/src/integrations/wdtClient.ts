@@ -134,11 +134,12 @@ export class WdtClient {
   }
 
   static fromEnv(): WdtClient {
-    return WdtClient.fromEnvProfile(process.env.WDT_ENV ?? "test");
+    return WdtClient.fromEnvProfile(process.env.WDT_ENV);
   }
 
-  static fromEnvProfile(profile: string): WdtClient {
-    const prefix = profile === "prod" || profile === "production" ? "WDT_PROD" : "WDT";
+  static fromEnvProfile(profile?: string): WdtClient {
+    const normalizedProfile = normalizeWdtProfile(profile);
+    const prefix = normalizedProfile === "prod" || normalizedProfile === "production" ? "WDT_PROD" : "WDT";
     const sid = process.env[`${prefix}_SID`];
     const appkey = process.env[`${prefix}_APPKEY`];
     const appsecret = process.env[`${prefix}_APPSECRET`];
@@ -256,6 +257,11 @@ export class WdtClient {
       { pageSize: 100 },
     ) as Promise<WdtStockResponse>;
   }
+}
+
+export function normalizeWdtProfile(profile?: string): string {
+  const normalized = profile?.trim();
+  return normalized ? normalized : "test";
 }
 
 function recentModifiedRange(): { start_time: string; end_time: string } {
