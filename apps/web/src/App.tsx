@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { CheckCheck, Download, FileSpreadsheet, LogOut, RefreshCcw, Send } from "lucide-react";
-import type { AuthUserDto, BatchSummary, ExportDto, ReviewDecision, ReviewLineDto } from "@jy-trade/shared";
+import type { AuthUserDto, BatchSummary, ExportDto, ReviewDecision, ReviewLineDto, WdtGoodsSyncRunDto } from "@jy-trade/shared";
 
 import { ProductMappingPanel } from "./components/ProductMappingPanel.js";
 import { ReviewTable, type ReviewDraft } from "./components/ReviewTable.js";
@@ -50,10 +50,30 @@ export function App() {
   const [activeFilter, setActiveFilter] = useState<FilterKey>("all");
   const [draftById, setDraftById] = useState<Record<string, ReviewDraft>>({});
   const [errorsById, setErrorsById] = useState<Record<string, string>>({});
+  const [goodsSyncRun, setGoodsSyncRun] = useState<WdtGoodsSyncRunDto | null>(null);
+  const [goodsSyncError, setGoodsSyncError] = useState("正在读取商品同步状态");
 
   async function refreshBatches() {
     const response = await fetch("/api/v1/batches");
     setBatches(await response.json());
+  }
+
+  async function refreshGoodsSyncStatus() {
+    const response = await fetch("/api/v1/wdt/goods-sync-runs/latest");
+    if (response.status === 404) {
+      setGoodsSyncRun(null);
+      setGoodsSyncError("还没有成功或失败的商品同步记录");
+      return null;
+    }
+    if (!response.ok) {
+      setGoodsSyncRun(null);
+      setGoodsSyncError("商品同步状态读取失败");
+      return null;
+    }
+    const run = (await response.json()) as WdtGoodsSyncRunDto;
+    setGoodsSyncRun(run);
+    setGoodsSyncError("");
+    return run;
   }
 
   async function checkMe() {
@@ -61,7 +81,10 @@ export function App() {
     const body = await response.json();
     setUser(body.user ?? null);
     setAuthLoading(false);
-    if (body.user) await refreshBatches();
+    if (body.user) {
+      await refreshBatches();
+      await refreshGoodsSyncStatus();
+    }
   }
 
   async function login() {
@@ -78,6 +101,7 @@ export function App() {
     const body = await response.json();
     setUser(body.user);
     await refreshBatches();
+    await refreshGoodsSyncStatus();
   }
 
   async function logout() {
@@ -86,6 +110,8 @@ export function App() {
     setActiveBatch(null);
     setReviewLines([]);
     setExports([]);
+    setGoodsSyncRun(null);
+    setGoodsSyncError("正在读取商品同步状态");
   }
 
   async function loadBatch(batch: BatchSummary) {
@@ -134,6 +160,11 @@ export function App() {
   }
 
   async function runRealBatch() {
+    const latestSync = goodsSyncRun?.status ? goodsSyncRun : await refreshGoodsSyncStatus();
+    if (!latestSync || latestSync.status !== "success") {
+      setMessage(realReviewBlockedMessage(latestSync, goodsSyncError));
+      return;
+    }
     setMessage("正在创建真实初审批次...");
     const createdResponse = await fetch("/api/v1/batches", {
       method: "POST",
@@ -371,6 +402,11 @@ export function App() {
               </Button>
               <span className="text-sm text-muted-foreground">{message}</span>
             </div>
+            <GoodsSyncStatusPanel
+              error={goodsSyncError}
+              run={goodsSyncRun}
+              onRefresh={() => void refreshGoodsSyncStatus()}
+            />
           </div>
 
           <div className="grid grid-cols-2 gap-3 xl:grid-cols-5">
@@ -500,6 +536,37 @@ function Stat({ label, value }: { label: string; value: number }) {
   );
 }
 
+function GoodsSyncStatusPanel({
+  error,
+  run,
+  onRefresh,
+}: {
+  error: string;
+  run: WdtGoodsSyncRunDto | null;
+  onRefresh: () => void;
+}) {
+  const status = run?.status ?? "none";
+  const isReady = status === "success";
+  return (
+    <section className="mt-4 rounded-md border border-border bg-background p-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="text-sm font-semibold">商品档案同步</h3>
+            <Badge tone={isReady ? "good" : status === "failed" ? "bad" : "warn"}>{syncStatusText(status)}</Badge>
+          </div>
+          <p className="mt-1 text-sm text-muted-foreground">{syncSummary(run, error)}</p>
+          {run?.errorMessage ? <p className="mt-1 text-xs text-rose-700">{run.errorMessage}</p> : null}
+        </div>
+        <Button className="h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80" onClick={onRefresh}>
+          <RefreshCcw className="h-4 w-4" />
+          刷新状态
+        </Button>
+      </div>
+    </section>
+  );
+}
+
 function toDraft(line: ReviewLineDto): ReviewDraft {
   return {
     decision: line.decision,
@@ -520,6 +587,33 @@ function buildStats(lines: ReviewLineDto[]) {
     doNotShip: lines.filter((line) => line.decision === "do_not_ship").length,
     overSuggested: lines.filter((line) => line.decision === "ship" && line.approvedShipQty > line.suggestedShipQty).length,
   };
+}
+
+function realReviewBlockedMessage(run: WdtGoodsSyncRunDto | null, error: string) {
+  if (!run) return `真实初审已暂停：${error || "未读取到商品同步记录"}。请先完成商品档案同步。`;
+  if (run.status === "running") return "真实初审已暂停：商品档案仍在同步中，请等待同步完成后刷新状态。";
+  if (run.status === "failed") return "真实初审已暂停：最近一次商品档案同步失败，请先修复并重新同步。";
+  return `真实初审已暂停：最近同步状态为 ${run.status}，不能作为正式审核依据。`;
+}
+
+function syncStatusText(status: WdtGoodsSyncRunDto["status"] | "none") {
+  if (status === "success") return "可用于真实初审";
+  if (status === "failed") return "同步失败";
+  if (status === "running") return "同步中";
+  return "未同步";
+}
+
+function syncSummary(run: WdtGoodsSyncRunDto | null, error: string) {
+  if (!run) return error || "暂无商品档案同步记录";
+  const range = `${formatShortDate(run.rangeStart)} -> ${formatShortDate(run.rangeEnd)}`;
+  return `范围 ${range}，拉取 ${run.fetchedCount} 条，写入 ${run.upsertedCount} 条，完成于 ${formatShortDate(run.finishedAt || run.startedAt)}`;
+}
+
+function formatShortDate(value: string) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString();
 }
 
 function matchesFilter(line: ReviewLineDto, filter: FilterKey) {

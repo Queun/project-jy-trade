@@ -9,6 +9,7 @@ import type {
   ProductMatchCandidateDto,
   ReviewLineDto,
   WdtGoodsSpecSearchResultDto,
+  WdtGoodsSyncRunDto,
 } from "@jy-trade/shared";
 
 const batch: BatchSummary = {
@@ -29,6 +30,7 @@ let exportRows: ExportDto[];
 let mappingRows: ProductMappingDto[];
 let candidateRows: ProductMatchCandidateDto[];
 let specRows: WdtGoodsSpecSearchResultDto[];
+let latestGoodsSyncRun: WdtGoodsSyncRunDto | null;
 
 describe("App", () => {
   beforeEach(() => {
@@ -54,6 +56,7 @@ describe("App", () => {
     mappingRows = [productMapping()];
     candidateRows = [productCandidate()];
     specRows = [wdtSpec()];
+    latestGoodsSyncRun = goodsSyncRun();
     vi.stubGlobal("fetch", vi.fn(handleFetch));
   });
 
@@ -120,7 +123,7 @@ describe("App", () => {
   it("creates a production batch and runs real review", async () => {
     render(<App />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "运行真实初审" }));
+    fireEvent.click(await screen.findByRole("button", { name: /真实初审/ }));
 
     await waitFor(() =>
       expect(fetch).toHaveBeenCalledWith(
@@ -133,6 +136,22 @@ describe("App", () => {
     );
     expect(await screen.findByText("真实初审已完成，已查询库存 1 个规格")).toBeInTheDocument();
     expect(currentBatch.mode).toBe("production_api");
+  });
+
+  it("blocks real review when latest goods sync failed", async () => {
+    latestGoodsSyncRun = goodsSyncRun({ status: "failed", errorMessage: "fetch failed" });
+    render(<App />);
+
+    expect(await screen.findByText("同步失败")).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: /真实初审/ }));
+
+    expect(await screen.findByText("真实初审已暂停：最近一次商品档案同步失败，请先修复并重新同步。")).toBeInTheDocument();
+    expect(fetch).not.toHaveBeenCalledWith(
+      "/api/v1/batches",
+      expect.objectContaining({
+        method: "POST",
+      }),
+    );
   });
 
   it("creates and lists exports", async () => {
@@ -196,6 +215,9 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
     return json({ user: { id: "user-1", username: "admin", role: "admin", createdAt: "2026-06-30T00:00:00.000Z" } });
   }
   if (url === "/api/v1/auth/logout") return json({ ok: true });
+  if (url === "/api/v1/wdt/goods-sync-runs/latest") {
+    return latestGoodsSyncRun ? json(latestGoodsSyncRun) : json({ message: "WDT goods sync run not found" }, 404);
+  }
   if (url === "/api/v1/batches" && method === "GET") return json([currentBatch]);
   if (url === "/api/v1/batches" && method === "POST") {
     const body = JSON.parse(String(init?.body));
@@ -334,6 +356,24 @@ function wdtSpec(patch: Partial<WdtGoodsSpecSearchResultDto> = {}): WdtGoodsSpec
     deleted: 0,
     modified: "2026-07-01 00:00:00",
     syncedAt: "2026-07-03T00:00:00.000Z",
+    ...patch,
+  };
+}
+
+function goodsSyncRun(patch: Partial<WdtGoodsSyncRunDto> = {}): WdtGoodsSyncRunDto {
+  return {
+    id: "sync-1",
+    mode: "full",
+    status: "success",
+    startedAt: "2026-07-03T00:00:00.000Z",
+    finishedAt: "2026-07-03T00:01:00.000Z",
+    rangeStart: "2026-06-01T00:00:00.000Z",
+    rangeEnd: "2026-07-03T00:00:00.000Z",
+    windowCount: 2,
+    pageCount: 8,
+    fetchedCount: 3857,
+    upsertedCount: 3788,
+    errorMessage: "",
     ...patch,
   };
 }
