@@ -1,0 +1,26 @@
+[
+  {
+    "barcode": "6941594515256",
+    "wdt_spec_no": "DEMO-6941594515256",
+    "main_available_stock": 120,
+    "near_expiry_available_stock": 24
+  },
+  {
+    "barcode": "2153722460015",
+    "wdt_spec_no": "DEMO-2153722460015",
+    "main_available_stock": 60,
+    "near_expiry_available_stock": 0
+  },
+  {
+    "barcode": "8809985001673",
+    "wdt_spec_no": "DEMO-8809985001673",
+    "main_available_stock": 12,
+    "near_expiry_available_stock": 0
+  },
+  {
+    "barcode": "8800295960896",
+    "wdt_spec_no": "DEMO-8800295960896",
+    "main_available_stock": 0,
+    "near_expiry_available_stock": 6
+  }
+]

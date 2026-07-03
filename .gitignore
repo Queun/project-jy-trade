@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+node_modules/
+outputs/
+data/
+dist/
+coverage/
+test-results/
+playwright-report/
+.vite/
+.DS_Store
+.env
+.env.*
+!.env.example
+旺店通.txt
+**/旺店通.txt

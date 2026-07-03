@@ -1,0 +1,375 @@
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+
+import { App } from "./App.js";
+import type {
+  BatchSummary,
+  ExportDto,
+  ProductMappingDto,
+  ProductMatchCandidateDto,
+  ReviewLineDto,
+  WdtGoodsSpecSearchResultDto,
+} from "@jy-trade/shared";
+
+const batch: BatchSummary = {
+  id: "batch-1",
+  fileName: "订货通知单 .xls",
+  mode: "mock",
+  status: "review_generated",
+  orderLineCount: 3,
+  uniqueBarcodeCount: 3,
+  matchedBarcodeCount: 2,
+  createdAt: "2026-06-30T00:00:00.000Z",
+  updatedAt: "2026-06-30T00:00:00.000Z",
+};
+
+let lines: ReviewLineDto[];
+let currentBatch: BatchSummary;
+let exportRows: ExportDto[];
+let mappingRows: ProductMappingDto[];
+let candidateRows: ProductMatchCandidateDto[];
+let specRows: WdtGoodsSpecSearchResultDto[];
+
+describe("App", () => {
+  beforeEach(() => {
+    currentBatch = { ...batch };
+    lines = [
+      reviewLine({ id: "line-1", externalGoodsName: "可发商品", status: "库存充足", suggestedShipQty: 5 }),
+      reviewLine({
+        id: "line-2",
+        externalGoodsName: "部分满足商品",
+        status: "部分满足",
+        suggestedShipQty: 2,
+        orderQty: 5,
+      }),
+      reviewLine({
+        id: "line-3",
+        externalGoodsName: "未匹配商品",
+        status: "未匹配",
+        matchStatus: "not_found",
+        suggestedShipQty: 0,
+      }),
+    ];
+    exportRows = [];
+    mappingRows = [productMapping()];
+    candidateRows = [productCandidate()];
+    specRows = [wdtSpec()];
+    vi.stubGlobal("fetch", vi.fn(handleFetch));
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it("loads persisted batches and filters review lines", async () => {
+    render(<App />);
+
+    expect(await screen.findByText("订货通知单 .xls")).toBeInTheDocument();
+    await clickBatch();
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/v1/batches/batch-1/review-lines"));
+    await waitFor(() => expect(document.body.textContent).toContain("可发商品"));
+
+    fireEvent.click(screen.getByRole("button", { name: "未匹配" }));
+    expect(document.body.textContent).toContain("未匹配商品");
+    expect(document.body.textContent).not.toContain("可发商品");
+  });
+
+  it("requires reason for do-not-ship decisions", async () => {
+    render(<App />);
+    await clickBatch();
+
+    const row = await rowFor("可发商品");
+    fireEvent.click(within(row).getByRole("button", { name: "不发" }));
+
+    expect(await within(row).findByText("不发货必须填写原因")).toBeInTheDocument();
+  });
+
+  it("saves over-suggested quantities when a reason is provided", async () => {
+    render(<App />);
+    await clickBatch();
+
+    const row = await rowFor("可发商品");
+    fireEvent.click(within(row).getByRole("button", { name: "发货" }));
+    await waitFor(() => expect(lines.find((line) => line.id === "line-1")?.decision).toBe("ship"));
+    fireEvent.change(within(row).getByLabelText("审核发货数 line-1"), { target: { value: "8" } });
+    fireEvent.change(within(row).getByLabelText("审核原因 line-1"), { target: { value: "人工确认额外库存" } });
+    fireEvent.click(within(row).getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(within(row).getByText("超建议数")).toBeInTheDocument());
+    expect(lines.find((line) => line.id === "line-1")).toMatchObject({
+      decision: "ship",
+      approvedShipQty: 8,
+      reason: "人工确认额外库存",
+    });
+  });
+
+  it("bulk approves matched ready and partial lines, then submits review", async () => {
+    render(<App />);
+    await clickBatch();
+
+    fireEvent.click(screen.getByRole("button", { name: "批量通过可发项" }));
+    expect(await screen.findByText("已批量通过 2 行")).toBeInTheDocument();
+    expect(lines.filter((line) => line.decision === "ship")).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole("button", { name: "提交审核完成" }));
+    expect(await screen.findByText(/审核已提交/)).toBeInTheDocument();
+    expect(currentBatch.status).toBe("reviewed");
+  });
+
+  it("creates a production batch and runs real review", async () => {
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "运行真实初审" }));
+
+    await waitFor(() =>
+      expect(fetch).toHaveBeenCalledWith(
+        "/api/v1/batches/batch-1/actions/run-real-review",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ allowStaleCache: false }),
+        }),
+      ),
+    );
+    expect(await screen.findByText("真实初审已完成，已查询库存 1 个规格")).toBeInTheDocument();
+    expect(currentBatch.mode).toBe("production_api");
+  });
+
+  it("creates and lists exports", async () => {
+    render(<App />);
+    await clickBatch();
+
+    fireEvent.click(screen.getByRole("button", { name: "生成导出" }));
+
+    expect(await screen.findByText("导出文件已生成")).toBeInTheDocument();
+    expect(await screen.findByText("batch-1-review.xlsx")).toBeInTheDocument();
+    expect(screen.getByText("ready")).toBeInTheDocument();
+  });
+
+  it("confirms product mappings from searched WDT specs", async () => {
+    render(<App />);
+
+    expect(await screen.findByText("商品映射确认")).toBeInTheDocument();
+    expect(await screen.findByText("待确认候选")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByText("雅漾专研保湿修护面膜25ml*5片").length).toBeGreaterThan(0));
+
+    fireEvent.click(screen.getByRole("button", { name: /雅漾专研保湿修护面膜25ml/ }));
+    expect(screen.getByLabelText("旺店通 spec_no")).toHaveValue("3282770392869");
+
+    fireEvent.change(screen.getByLabelText("外部条码"), { target: { value: "2153722460015" } });
+    fireEvent.change(screen.getByLabelText("外部编码"), { target: { value: "5372246" } });
+    fireEvent.change(screen.getByLabelText("外部商品名"), { target: { value: "雅漾专研保湿修护面膜25ml*5片" } });
+    fireEvent.click(screen.getByRole("button", { name: "确认映射" }));
+
+    expect(await screen.findByText("商品映射已确认")).toBeInTheDocument();
+    expect(mappingRows[0]).toMatchObject({
+      externalBarcode: "2153722460015",
+      externalGoodsCode: "5372246",
+      wdtSpecNo: "3282770392869",
+      status: "confirmed",
+    });
+  });
+});
+
+async function rowFor(productName: string) {
+  await waitFor(() => expect(document.body.textContent).toContain(productName));
+  const row = [...document.querySelectorAll("tr")].find((item) => item.textContent?.includes(productName));
+  if (!row) throw new Error(`No row found for ${productName}`);
+  return row;
+}
+
+async function clickBatch() {
+  const label = await screen.findByText("订货通知单 .xls");
+  const button = label.closest("button");
+  if (!button) throw new Error("Batch button not found");
+  fireEvent.click(button);
+}
+
+async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
+  const url = String(input);
+  const method = init?.method ?? "GET";
+
+  if (url === "/api/v1/me") {
+    return json({ user: { id: "user-1", username: "admin", role: "admin", createdAt: "2026-06-30T00:00:00.000Z" } });
+  }
+  if (url === "/api/v1/auth/login") {
+    return json({ user: { id: "user-1", username: "admin", role: "admin", createdAt: "2026-06-30T00:00:00.000Z" } });
+  }
+  if (url === "/api/v1/auth/logout") return json({ ok: true });
+  if (url === "/api/v1/batches" && method === "GET") return json([currentBatch]);
+  if (url === "/api/v1/batches" && method === "POST") {
+    const body = JSON.parse(String(init?.body));
+    currentBatch = { ...currentBatch, mode: body.mode ?? currentBatch.mode };
+    return json(currentBatch, 201);
+  }
+  if (url.includes("/review-lines") && method === "GET") return json(lines);
+  if (url.includes("/actions/run-mock-review")) return json({ batch: currentBatch });
+  if (url.includes("/actions/run-real-review")) return json({ batch: currentBatch, stockQueriedCount: 1 });
+  if (url.includes("/actions/bulk-approve")) {
+    lines = lines.map((line) =>
+      line.matchStatus === "matched" && (line.status === "库存充足" || line.status === "部分满足")
+        ? { ...line, decision: "ship", approvedShipQty: line.suggestedShipQty, reason: "" }
+        : line,
+    );
+    return json({ batch: currentBatch, updatedCount: 2 });
+  }
+  if (url.includes("/actions/submit-review")) {
+    currentBatch = { ...currentBatch, status: "reviewed" };
+    return json({ batch: currentBatch, pendingCount: 1, shipCount: 2, doNotShipCount: 0 });
+  }
+  if (url.endsWith("/exports") && method === "GET") return json(exportRows);
+  if (url.endsWith("/exports") && method === "POST") {
+    const body = JSON.parse(String(init?.body));
+    const created: ExportDto = {
+      id: "export-1",
+      batchId: "batch-1",
+      type: body.type,
+      status: "ready",
+      fileName: "batch-1-review.xlsx",
+      downloadUrl: "/api/v1/exports/export-1/download",
+      errorMessage: null,
+      createdByUserId: "user-1",
+      createdByUsername: "admin",
+      createdAt: "2026-06-30T00:00:00.000Z",
+    };
+    exportRows = [created];
+    return json(created, 201);
+  }
+  if (url.startsWith("/api/v1/product-mappings") && method === "GET") return json(mappingRows);
+  if (url.startsWith("/api/v1/product-match-candidates") && method === "GET") return json(candidateRows);
+  if (url === "/api/v1/product-mappings" && method === "POST") {
+    const body = JSON.parse(String(init?.body));
+    const spec = specRows.find((item) => item.specNo === body.wdtSpecNo);
+    const created = productMapping({
+      externalBarcode: body.externalBarcode,
+      externalGoodsCode: body.externalGoodsCode,
+      externalGoodsName: body.externalGoodsName,
+      wdtGoodsNo: spec?.goodsNo ?? "",
+      wdtGoodsName: spec?.goodsName ?? "",
+      wdtSpecNo: body.wdtSpecNo,
+      wdtSpecName: spec?.specName ?? "",
+      wdtBarcode: spec?.barcode ?? "",
+      note: body.note,
+      status: "confirmed",
+    });
+    mappingRows = [created];
+    return json(created, 201);
+  }
+  if (url.includes("/api/v1/product-mappings/") && url.endsWith("/status") && method === "PATCH") {
+    const body = JSON.parse(String(init?.body));
+    mappingRows = mappingRows.map((item) => ({ ...item, status: body.status, note: body.note }));
+    return json(mappingRows[0]);
+  }
+  if (url.startsWith("/api/v1/wdt/goods-specs/search")) return json(specRows);
+  if (url.includes("/decision") && method === "PATCH") {
+    const lineId = url.split("/review-lines/")[1]?.split("/")[0];
+    const body = JSON.parse(String(init?.body));
+    const line = lines.find((item) => item.id === lineId);
+    if (!line) return json({ message: "Review line not found" }, 404);
+    if (body.approvedShipQty < 0) return json({ message: "发货数量不能小于 0" }, 400);
+    if (body.decision === "do_not_ship" && !body.reason) return json({ message: "不发货必须填写原因" }, 400);
+    if (body.decision === "ship" && body.approvedShipQty > line.suggestedShipQty && !body.reason) {
+      return json({ message: "发货数量超过建议发货数时必须填写原因" }, 400);
+    }
+    const updated = { ...line, ...body };
+    lines = lines.map((item) => (item.id === lineId ? updated : item));
+    return json(updated);
+  }
+  return json({ message: `Unhandled ${method} ${url}` }, 500);
+}
+
+function productMapping(patch: Partial<ProductMappingDto> = {}): ProductMappingDto {
+  return {
+    id: "mapping-1",
+    externalBarcode: "2153722460015",
+    externalGoodsName: "雅漾专研保湿修护面膜25ml*5片",
+    externalGoodsCode: "5372246",
+    wdtGoodsNo: "3282770392869",
+    wdtGoodsName: "雅漾专研保湿修护面膜",
+    wdtSpecNo: "3282770392869",
+    wdtSpecName: "25ml*5",
+    wdtBarcode: "3282770392869",
+    status: "confirmed",
+    sourceBatchId: "",
+    confirmedByUserId: "user-1",
+    confirmedAt: "2026-07-03T00:00:00.000Z",
+    note: "人工确认",
+    createdAt: "2026-07-03T00:00:00.000Z",
+    updatedAt: "2026-07-03T00:00:00.000Z",
+    ...patch,
+  };
+}
+
+function productCandidate(patch: Partial<ProductMatchCandidateDto> = {}): ProductMatchCandidateDto {
+  return {
+    id: "candidate-1",
+    batchId: "diagnosis-order",
+    reviewLineId: "line-1",
+    externalBarcode: "2153722460015",
+    externalGoodsName: "雅漾专研保湿修护面膜25ml*5片",
+    externalGoodsCode: "5372246",
+    wdtSpecNo: "3282770392869",
+    wdtGoodsNo: "3282770392869",
+    wdtGoodsName: "雅漾专研保湿修护面膜",
+    wdtSpecName: "25ml*5",
+    wdtBarcode: "3282770392869",
+    score: 82,
+    basis: "contains_name",
+    source: "goods",
+    createdAt: "2026-07-03T00:00:00.000Z",
+    ...patch,
+  };
+}
+
+function wdtSpec(patch: Partial<WdtGoodsSpecSearchResultDto> = {}): WdtGoodsSpecSearchResultDto {
+  return {
+    id: "wdt-goods-spec-3282770392869",
+    goodsNo: "3282770392869",
+    goodsName: "雅漾专研保湿修护面膜",
+    specNo: "3282770392869",
+    specName: "25ml*5",
+    specCode: "",
+    barcode: "3282770392869",
+    barcodes: ["3282770392869"],
+    deleted: 0,
+    modified: "2026-07-01 00:00:00",
+    syncedAt: "2026-07-03T00:00:00.000Z",
+    ...patch,
+  };
+}
+
+function json(data: unknown, status = 200) {
+  return Promise.resolve({
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => data,
+  } as Response);
+}
+
+function reviewLine(patch: Partial<ReviewLineDto>): ReviewLineDto {
+  return {
+    id: "line",
+    batchId: "batch-1",
+    orderNoticeNo: "ORDER-1",
+    excelRow: 2,
+    storeNo: "STORE",
+    storeName: "测试门店",
+    uploadTime: "2026-06-30 10:00:00",
+    externalBarcode: "BARCODE",
+    externalGoodsName: "商品",
+    goodsName: "商品",
+    specName: "规格",
+    wdtSpecNo: "SPEC",
+    matchStatus: "matched",
+    matchMessage: "matched",
+    orderQty: 5,
+    mainAvailableBefore: 5,
+    nearExpiryAvailableBefore: 0,
+    suggestedShipQty: 5,
+    status: "库存充足",
+    decision: "pending",
+    approvedShipQty: 0,
+    reason: "",
+    ...patch,
+  };
+}

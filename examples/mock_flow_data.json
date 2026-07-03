@@ -1,0 +1,66 @@
+{
+  "matches": [
+    {
+      "barcode": "8809985001673",
+      "status": "matched",
+      "wdtSpecNo": "MOCK-8809985001673",
+      "goodsName": "稀洛因保湿安瓶精华素面膜",
+      "specName": "30g*5片/盒",
+      "candidateCount": 1,
+      "message": "mock 已匹配"
+    },
+    {
+      "barcode": "8800295960896",
+      "status": "matched",
+      "wdtSpecNo": "MOCK-8800295960896",
+      "goodsName": "稀洛因谷胱甘肽精华面膜",
+      "specName": "30g*5片/盒",
+      "candidateCount": 1,
+      "message": "mock 已匹配"
+    },
+    {
+      "barcode": "6941594515256",
+      "status": "matched",
+      "wdtSpecNo": "MOCK-6941594515256",
+      "goodsName": "理肤泉新B5多效密集保湿修护面膜",
+      "specName": "25g*10片",
+      "candidateCount": 1,
+      "message": "mock 已匹配"
+    },
+    {
+      "barcode": "2153722460015",
+      "status": "matched",
+      "wdtSpecNo": "MOCK-2153722460015",
+      "goodsName": "雅漾专研保湿修护面膜",
+      "specName": "25ml*5片",
+      "candidateCount": 1,
+      "message": "mock 已匹配"
+    }
+  ],
+  "inventory": [
+    {
+      "barcode": "8809985001673",
+      "wdtSpecNo": "MOCK-8809985001673",
+      "mainAvailableStock": 12,
+      "nearExpiryAvailableStock": 0
+    },
+    {
+      "barcode": "8800295960896",
+      "wdtSpecNo": "MOCK-8800295960896",
+      "mainAvailableStock": 0,
+      "nearExpiryAvailableStock": 6
+    },
+    {
+      "barcode": "6941594515256",
+      "wdtSpecNo": "MOCK-6941594515256",
+      "mainAvailableStock": 120,
+      "nearExpiryAvailableStock": 24
+    },
+    {
+      "barcode": "2153722460015",
+      "wdtSpecNo": "MOCK-2153722460015",
+      "mainAvailableStock": 60,
+      "nearExpiryAvailableStock": 0
+    }
+  ]
+}

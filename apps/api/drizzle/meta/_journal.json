@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1782812680980,
+      "tag": "0000_bent_spirit",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1782820800000,
+      "tag": "0001_auth_exports",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1783019399387,
+      "tag": "0002_remarkable_silver_samurai",
+      "breakpoints": true
+    }
+  ]
+}
