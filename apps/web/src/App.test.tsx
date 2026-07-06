@@ -144,7 +144,7 @@ describe("App", () => {
     fireEvent.change(await screen.findByLabelText("选择文件"), { target: { files: [file] } });
     const importButton = await screen.findByRole("button", { name: "导入新订单" });
     expect(importButton).toBeDisabled();
-    expect(screen.getByText("商品档案同步可用后才能导入新订单。请刷新右侧状态，或先完成商品档案同步。")).toBeInTheDocument();
+    expect(screen.getByText("商品档案同步可用后才能导入新订单。请在设置中刷新状态，或先完成商品档案同步。")).toBeInTheDocument();
   });
 
   it("requires selecting an order file before import", async () => {
@@ -159,8 +159,12 @@ describe("App", () => {
   it("lets admins save warehouse usage settings", async () => {
     render(<App />);
 
+    expect(await screen.findByText(/商品档案/)).toBeInTheDocument();
+    expect(screen.getByText(/上次更新：/)).toBeInTheDocument();
     fireEvent.click(await screen.findByRole("button", { name: "设置" }));
     expect(await screen.findByText("可用仓库范围")).toBeInTheDocument();
+    expect(screen.getByText("商品档案同步")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "刷新" })).toBeInTheDocument();
     const nearExpiry = screen.getByRole("checkbox", { name: "临期仓" });
     const other = screen.getByRole("checkbox", { name: "其他仓" });
 
@@ -359,7 +363,7 @@ describe("App", () => {
     const importButton = await screen.findByRole("button", { name: "导入新订单" });
 
     expect(importButton).toBeDisabled();
-    expect(screen.getByText("商品档案同步可用后才能导入新订单。请刷新右侧状态，或先完成商品档案同步。")).toBeInTheDocument();
+    expect(screen.getByText("商品档案同步可用后才能导入新订单。请在设置中刷新状态，或先完成商品档案同步。")).toBeInTheDocument();
     expect(fetch).not.toHaveBeenCalledWith(
       "/api/v1/batches",
       expect.objectContaining({

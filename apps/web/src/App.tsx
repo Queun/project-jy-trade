@@ -512,6 +512,7 @@ export function App() {
             <p className="text-sm text-muted-foreground">漾锦贸易订单初审平台</p>
             <h1 className="mt-1 text-2xl font-semibold tracking-normal">订单处理工作台</h1>
           </div>
+          <GoodsSyncHeaderStatus error={goodsSyncError} run={goodsSyncRun} />
           <div className="flex flex-wrap items-center gap-2">
             {activeBatch ? <Badge tone={batchStatusTone(activeBatch.status)}>{batchStatusText(activeBatch.status)}</Badge> : null}
             <Button className="h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80" onClick={reopenHelp}>
@@ -542,10 +543,13 @@ export function App() {
         {showSettings ? (
           <SettingsPanel
             canManageSettings={permissions.canManageSettings}
+            goodsSyncError={goodsSyncError}
+            goodsSyncRun={goodsSyncRun}
             warehouseSettings={warehouseSettings}
             warehouseSettingsDraft={warehouseSettingsDraft}
             warehouseSettingsMessage={warehouseSettingsMessage}
             onClose={() => setShowSettings(false)}
+            onRefreshGoodsSync={() => void refreshGoodsSyncStatus()}
             onSaveWarehouseSettings={() => void saveWarehouseSettings()}
             onWarehouseSettingsDraftChange={setWarehouseSettingsDraft}
           />
@@ -596,7 +600,6 @@ export function App() {
                 }}
                 onMockFileChange={setMockFile}
                 onOrderFileChange={setOrderFile}
-                onRefreshGoodsSync={() => void refreshGoodsSyncStatus()}
                 onRunDemo={() => void runMockBatch()}
                 onRunReal={() => void runRealBatch()}
               />
@@ -765,18 +768,24 @@ function HelpPanel({ onDismiss }: { onDismiss: () => void }) {
 
 function SettingsPanel({
   canManageSettings,
+  goodsSyncError,
+  goodsSyncRun,
   warehouseSettings,
   warehouseSettingsDraft,
   warehouseSettingsMessage,
   onClose,
+  onRefreshGoodsSync,
   onSaveWarehouseSettings,
   onWarehouseSettingsDraftChange,
 }: {
   canManageSettings: boolean;
+  goodsSyncError: string;
+  goodsSyncRun: WdtGoodsSyncRunDto | null;
   warehouseSettings: WarehouseUsageSettingsDto | null;
   warehouseSettingsDraft: WarehouseUsageSettingsDto | null;
   warehouseSettingsMessage: string;
   onClose: () => void;
+  onRefreshGoodsSync: () => void;
   onSaveWarehouseSettings: () => void;
   onWarehouseSettingsDraftChange: (settings: WarehouseUsageSettingsDto) => void;
 }) {
@@ -794,7 +803,7 @@ function SettingsPanel({
           收起
         </Button>
       </div>
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,420px)_1fr]">
+      <div className="grid gap-4 lg:grid-cols-2">
         <WarehouseUsageSettingsPanel
           canManageSettings={canManageSettings}
           draft={warehouseSettingsDraft}
@@ -803,6 +812,7 @@ function SettingsPanel({
           onDraftChange={onWarehouseSettingsDraftChange}
           onSave={onSaveWarehouseSettings}
         />
+        <GoodsSyncStatusPanel error={goodsSyncError} run={goodsSyncRun} onRefresh={onRefreshGoodsSync} />
       </div>
     </section>
   );
@@ -819,7 +829,6 @@ function ImportTab({
   onOrderFileSelect,
   onMockFileChange,
   onOrderFileChange,
-  onRefreshGoodsSync,
   onRunDemo,
   onRunReal,
 }: {
@@ -833,14 +842,13 @@ function ImportTab({
   onOrderFileSelect: (file: File) => void;
   onMockFileChange: (value: string) => void;
   onOrderFileChange: (value: string) => void;
-  onRefreshGoodsSync: () => void;
   onRunDemo: () => void;
   onRunReal: () => void;
 }) {
   const canRunReal = canImport && goodsSyncRun?.status === "success" && (isDeveloperMode || Boolean(selectedOrderFileName));
 
   return (
-    <section className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+    <section className="mt-4">
       <div className="rounded-md border border-border bg-card p-4">
         <div className="mb-4 flex items-center gap-2">
           <FileSpreadsheet className="h-5 w-5 text-primary" />
@@ -896,7 +904,7 @@ function ImportTab({
           <PermissionHint message="当前账号不能导入订单，请联系管理员或切换到运营账号。" />
         ) : goodsSyncRun?.status !== "success" ? (
           <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
-            商品档案同步可用后才能导入新订单。请刷新右侧状态，或先完成商品档案同步。
+            商品档案同步可用后才能导入新订单。请在设置中刷新状态，或先完成商品档案同步。
           </div>
         ) : !selectedOrderFileName && !isDeveloperMode ? (
           <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
@@ -904,7 +912,6 @@ function ImportTab({
           </div>
         ) : null}
       </div>
-      <GoodsSyncStatusPanel error={goodsSyncError} run={goodsSyncRun} onRefresh={onRefreshGoodsSync} />
     </section>
   );
 }
@@ -1128,6 +1135,19 @@ function MetaItem({ label, value }: { label: string; value: string }) {
     <div>
       <dt className="text-xs text-muted-foreground">{label}</dt>
       <dd className="mt-1 font-medium">{value}</dd>
+    </div>
+  );
+}
+
+function GoodsSyncHeaderStatus({ error, run }: { error: string; run: WdtGoodsSyncRunDto | null }) {
+  const status = run?.status ?? "none";
+  return (
+    <div className="flex min-w-[260px] flex-1 justify-center">
+      <div className="inline-flex max-w-full items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-sm">
+        <span className="font-medium">商品档案</span>
+        <Badge tone={status === "success" ? "good" : status === "failed" ? "bad" : "warn"}>{userSyncStatusText(status)}</Badge>
+        <span className="truncate text-muted-foreground">上次更新：{run ? formatShortDate(run.finishedAt || run.startedAt) : error}</span>
+      </div>
     </div>
   );
 }
