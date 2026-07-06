@@ -32,6 +32,7 @@ let candidateRows: ProductMatchCandidateDto[];
 let specRows: WdtGoodsSpecSearchResultDto[];
 let latestGoodsSyncRun: WdtGoodsSyncRunDto | null;
 let currentUser: { id: string; username: string; role: "admin" | "operator" | "reviewer"; createdAt: string };
+let failReviewLines: boolean;
 
 describe("App", () => {
   beforeEach(() => {
@@ -60,6 +61,7 @@ describe("App", () => {
     specRows = [wdtSpec()];
     latestGoodsSyncRun = goodsSyncRun();
     currentUser = { id: "user-1", username: "admin", role: "admin", createdAt: "2026-06-30T00:00:00.000Z" };
+    failReviewLines = false;
     vi.stubGlobal("fetch", vi.fn(handleFetch));
   });
 
@@ -206,6 +208,16 @@ describe("App", () => {
     fireEvent.click(within(row).getByRole("button", { name: "不发" }));
 
     expect(await within(row).findByText("不发货必须填写原因")).toBeInTheDocument();
+  });
+
+  it("shows an error instead of crashing when review lines fail to load", async () => {
+    failReviewLines = true;
+    render(<App />);
+
+    await clickBatch();
+
+    expect(await screen.findByText("审核明细读取失败")).toBeInTheDocument();
+    expect(screen.queryByText("可发商品")).not.toBeInTheDocument();
   });
 
   it("saves over-suggested quantities when a reason is provided", async () => {
@@ -425,7 +437,9 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
     const body = JSON.parse(String(init?.body));
     return json({ filePath: `inputs/uploads/${body.fileName}`, fileName: body.fileName }, 201);
   }
-  if (url.includes("/review-lines") && method === "GET") return json(lines);
+  if (url.includes("/review-lines") && method === "GET") {
+    return failReviewLines ? json({ message: "审核明细读取失败" }, 500) : json(lines);
+  }
   if (url.includes("/actions/run-mock-review")) return json({ batch: currentBatch });
   if (url.includes("/actions/run-real-review")) return json({ batch: currentBatch, stockQueriedCount: 1 });
   if (url.includes("/actions/bulk-approve")) {

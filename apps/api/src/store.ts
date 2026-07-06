@@ -106,7 +106,7 @@ export function createSqliteStore(options: StoreOptions = {}) {
   const stockClient = options.stockClient ?? wdtClients?.stockClient;
   const bootstrapUsername = process.env.JY_TRADE_BOOTSTRAP_USERNAME ?? "admin";
   const bootstrapPassword = process.env.JY_TRADE_BOOTSTRAP_PASSWORD ?? "admin123";
-  const ready = ensureBootstrapUsers(database, [
+  const ready = prepareDatabase(database, [
     { username: bootstrapUsername, password: bootstrapPassword, role: "admin" },
     { username: "operator", password: "operator123", role: "operator" },
     { username: "reviewer", password: "reviewer123", role: "reviewer" },
@@ -1389,6 +1389,34 @@ async function insertAuditLog(
 function resolveProjectPath(path: string, projectRoot: string): string {
   if (isAbsolute(path)) return path;
   return resolve(projectRoot, path);
+}
+
+async function prepareDatabase(database: DatabaseContext, bootstrapUsers: Array<{ username: string; password: string; role: AuthUserDto["role"] }>) {
+  await database.ready;
+  await ensureReviewLinePriorityColumns(database);
+  await ensureBootstrapUsers(database, bootstrapUsers);
+}
+
+async function ensureReviewLinePriorityColumns(database: DatabaseContext) {
+  const columns = await getTableColumns(database, "review_lines");
+  if (columns.length === 0) return;
+  if (!columns.includes("priority")) {
+    await database.client.execute("alter table review_lines add column priority integer not null default 0");
+  }
+  if (!columns.includes("priority_reason")) {
+    await database.client.execute("alter table review_lines add column priority_reason text not null default ''");
+  }
+  if (columns.includes("is_priority")) {
+    await database.client.execute("update review_lines set priority = coalesce(is_priority, 0) where coalesce(priority, 0) = 0");
+  }
+  if (columns.includes("priority_reason")) {
+    await database.client.execute("update review_lines set priority_reason = coalesce(priority_reason, '')");
+  }
+}
+
+async function getTableColumns(database: DatabaseContext, tableName: string): Promise<string[]> {
+  const result = await database.client.execute(`pragma table_info(${tableName})`);
+  return result.rows.map((row) => String(row.name));
 }
 
 async function ensureBootstrapUsers(database: DatabaseContext, bootstrapUsers: Array<{ username: string; password: string; role: AuthUserDto["role"] }>) {

@@ -307,6 +307,38 @@ describe("api server", () => {
     await app.close();
   });
 
+  it("reads priority data from databases that already had is_priority columns", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await database.client.execute("alter table review_lines add column is_priority integer not null default 0");
+    await database.close();
+
+    const app = buildTestServer(databaseUrl);
+    const { batch, lines, cookie } = await createReviewedBatch(app);
+    await app.close();
+
+    const seededDatabase = createDatabaseContext(databaseUrl);
+    await seededDatabase.ready;
+    await seededDatabase.client.execute({
+      sql: "update review_lines set is_priority = 1, priority_reason = '历史优先' where id = ?",
+      args: [lines[1].id],
+    });
+    await seededDatabase.close();
+
+    const restarted = buildTestServer(databaseUrl);
+    const restartedCookie = await loginCookie(restarted);
+    const response = await restarted.inject({
+      method: "GET",
+      url: `/api/v1/batches/${batch.id}/review-lines`,
+      headers: { cookie: restartedCookie },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()[0]).toMatchObject({ id: lines[1].id, priority: true, priorityReason: "历史优先" });
+    await restarted.close();
+  });
+
   it("rejects priority updates from operator accounts", async () => {
     const app = buildTestServer();
     const { batch, firstLine } = await createReviewedBatch(app);

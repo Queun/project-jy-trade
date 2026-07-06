@@ -132,8 +132,8 @@ export function App() {
   async function loadBatch(batch: BatchSummary, nextTab?: WorkTab) {
     setActiveBatch(batch);
     if (nextTab) setActiveTab(nextTab);
-    const response = await fetch(`/api/v1/batches/${batch.id}/review-lines`);
-    const lines = (await response.json()) as ReviewLineDto[];
+    const lines = await fetchReviewLines(batch.id);
+    if (!lines) return;
     setReviewLines(sortReviewLines(lines));
     setDraftById(buildDrafts(lines));
     setErrorsById({});
@@ -147,6 +147,19 @@ export function App() {
       return;
     }
     setExports((await response.json()) as ExportDto[]);
+  }
+
+  async function fetchReviewLines(batchId: string) {
+    const response = await fetch(`/api/v1/batches/${batchId}/review-lines`);
+    const body = await response.json();
+    if (!response.ok || !Array.isArray(body)) {
+      setReviewLines([]);
+      setDraftById({});
+      setErrorsById({});
+      setMessage(body?.message ?? "审核明细读取失败");
+      return null;
+    }
+    return body as ReviewLineDto[];
   }
 
   async function runMockBatch() {
@@ -166,8 +179,8 @@ export function App() {
     const review = await reviewResponse.json();
     setActiveBatch(review.batch);
     setActiveTab("review");
-    const linesResponse = await fetch(`/api/v1/batches/${created.id}/review-lines`);
-    const lines = (await linesResponse.json()) as ReviewLineDto[];
+    const lines = await fetchReviewLines(created.id);
+    if (!lines) return;
     setReviewLines(sortReviewLines(lines));
     setDraftById(buildDrafts(lines));
     setErrorsById({});
@@ -218,8 +231,8 @@ export function App() {
     const review = await reviewResponse.json();
     setActiveBatch(review.batch);
     setActiveTab("review");
-    const linesResponse = await fetch(`/api/v1/batches/${created.id}/review-lines`);
-    const lines = (await linesResponse.json()) as ReviewLineDto[];
+    const lines = await fetchReviewLines(created.id);
+    if (!lines) return;
     setReviewLines(sortReviewLines(lines));
     setDraftById(buildDrafts(lines));
     setErrorsById({});
