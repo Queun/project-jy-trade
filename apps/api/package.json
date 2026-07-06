@@ -8,6 +8,7 @@
     "start": "tsx src/index.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
+    "trial-acceptance": "tsx src/trialAcceptanceCli.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

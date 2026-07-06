@@ -21,6 +21,7 @@
     "node:review": "tsx backend/src/probes/review-allocation.ts",
     "node:make-test-order": "tsx backend/src/probes/make-test-api-order.ts",
     "node:simulate": "tsx backend/src/probes/simulate-flow.ts",
+    "node:trial-acceptance": "npm run trial-acceptance -w @jy-trade/api --",
     "node:wdt:contract": "tsx backend/src/probes/wdt-contract.ts",
     "node:wdt:sync-goods": "tsx backend/src/probes/sync-wdt-goods.ts",
     "node:diagnose-order": "tsx backend/src/probes/diagnose-order.ts",
