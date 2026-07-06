@@ -3,6 +3,7 @@ import type { ReviewDecision, ReviewLineDto } from "@jy-trade/shared";
 
 import { Badge } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
+import { cn } from "@/lib/utils.js";
 
 interface ReviewTableProps {
   rows: ReviewLineDto[];
@@ -40,6 +41,63 @@ function decisionText(decision: ReviewDecision) {
   if (decision === "ship") return "发货";
   if (decision === "do_not_ship") return "不发";
   return "待审核";
+}
+
+function matchStatusText(matchStatus: ReviewLineDto["matchStatus"]) {
+  if (matchStatus === "matched") return "已匹配";
+  if (matchStatus === "ambiguous") return "待确认";
+  if (matchStatus === "not_found") return "未匹配";
+  return "匹配异常";
+}
+
+function reviewRowTone(line: ReviewLineDto, decision: ReviewDecision) {
+  if (decision === "ship") {
+    return {
+      key: "ship",
+      rowClass: "bg-emerald-50/70 hover:bg-emerald-50",
+      stripeClass: "border-l-emerald-500",
+    };
+  }
+  if (decision === "do_not_ship") {
+    return {
+      key: "do_not_ship",
+      rowClass: "bg-rose-50/70 hover:bg-rose-50",
+      stripeClass: "border-l-rose-500",
+    };
+  }
+  if (line.matchStatus !== "matched" || line.status === "未匹配") {
+    return {
+      key: "unmatched",
+      rowClass: "bg-sky-50/60 hover:bg-sky-50",
+      stripeClass: "border-l-sky-500",
+    };
+  }
+  if (line.status === "库存不足") {
+    return {
+      key: "out_of_stock",
+      rowClass: "bg-red-50/60 hover:bg-red-50",
+      stripeClass: "border-l-red-500",
+    };
+  }
+  if (line.status === "部分满足") {
+    return {
+      key: "partial",
+      rowClass: "bg-amber-50/70 hover:bg-amber-50",
+      stripeClass: "border-l-amber-500",
+    };
+  }
+  if (line.status === "库存充足") {
+    return {
+      key: "ready",
+      rowClass: "bg-emerald-50/35 hover:bg-emerald-50/60",
+      stripeClass: "border-l-emerald-300",
+    };
+  }
+  return {
+    key: "pending",
+    rowClass: "bg-background hover:bg-muted/30",
+    stripeClass: "border-l-transparent",
+  };
 }
 
 export function ReviewTable({
@@ -91,7 +149,7 @@ export function ReviewTable({
       cell: ({ row }) => (
         <div className="flex min-w-28 flex-col items-start gap-2">
           <Badge tone={statusTone(row.original.status)}>{row.original.status}</Badge>
-          <Badge tone={row.original.matchStatus === "matched" ? "info" : "warn"}>{row.original.matchStatus}</Badge>
+          <Badge tone={row.original.matchStatus === "matched" ? "info" : "warn"}>{matchStatusText(row.original.matchStatus)}</Badge>
         </div>
       ),
     },
@@ -186,15 +244,21 @@ export function ReviewTable({
           ))}
         </thead>
         <tbody>
-          {table.getRowModel().rows.map((row) => (
-            <tr key={row.id} className="border-t border-border">
-              {row.getVisibleCells().map((cell) => (
-                <td key={cell.id} className="px-3 py-3 align-top">
-                  {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                </td>
-              ))}
-            </tr>
-          ))}
+          {table.getRowModel().rows.map((row) => {
+            const line = row.original;
+            const decision = draftById[line.id]?.decision ?? line.decision;
+            const tone = reviewRowTone(line, decision);
+
+            return (
+              <tr key={row.id} className={cn("border-t border-border transition-colors", tone.rowClass)} data-review-state={tone.key}>
+                {row.getVisibleCells().map((cell, index) => (
+                  <td key={cell.id} className={cn("px-3 py-3 align-top", index === 0 ? "border-l-4" : "", index === 0 ? tone.stripeClass : "")}>
+                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                  </td>
+                ))}
+              </tr>
+            );
+          })}
           {rows.length === 0 ? (
             <tr>
               <td className="px-3 py-8 text-center text-sm text-muted-foreground" colSpan={columns.length}>

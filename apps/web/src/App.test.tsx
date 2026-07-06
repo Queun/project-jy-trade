@@ -258,6 +258,23 @@ describe("App", () => {
     expect(within(row).queryByText("不发货必须填写原因")).not.toBeInTheDocument();
   });
 
+  it("colors review rows by shipping and inventory state", async () => {
+    render(<App />);
+    await clickBatch();
+    switchToReviewTab();
+
+    const readyRow = await rowFor("可发商品");
+    const partialRow = await rowFor("部分满足商品");
+    const unmatchedRow = await rowFor("未匹配商品");
+
+    expect(readyRow).toHaveAttribute("data-review-state", "ready");
+    expect(partialRow).toHaveAttribute("data-review-state", "partial");
+    expect(unmatchedRow).toHaveAttribute("data-review-state", "unmatched");
+
+    fireEvent.click(within(readyRow).getByRole("button", { name: "不发" }));
+    await waitFor(() => expect(readyRow).toHaveAttribute("data-review-state", "do_not_ship"));
+  });
+
   it("shows an error instead of crashing when review lines fail to load", async () => {
     failReviewLines = true;
     render(<App />);
