@@ -131,6 +131,29 @@ export const warehouseUsageSettings = sqliteTable("warehouse_usage_settings", {
   updatedAt: text("updated_at").notNull(),
 });
 
+export const storeAddresses = sqliteTable(
+  "store_addresses",
+  {
+    id: text("id").primaryKey(),
+    storeNo: text("store_no").notNull().default(""),
+    storeName: text("store_name").notNull(),
+    normalizedStoreName: text("normalized_store_name").notNull().default(""),
+    receiver: text("receiver").notNull().default(""),
+    phone: text("phone").notNull().default(""),
+    address: text("address").notNull(),
+    note: text("note").notNull().default(""),
+    updatedByUserId: text("updated_by_user_id"),
+    updatedByUsername: text("updated_by_username"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    index("store_addresses_store_no_idx").on(table.storeNo),
+    index("store_addresses_normalized_store_name_idx").on(table.normalizedStoreName),
+    index("store_addresses_updated_at_idx").on(table.updatedAt),
+  ],
+);
+
 export const wdtGoodsSpecs = sqliteTable(
   "wdt_goods_specs",
   {

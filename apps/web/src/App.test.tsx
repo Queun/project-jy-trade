@@ -9,6 +9,7 @@ import type {
   ProductMappingDto,
   ProductMatchCandidateDto,
   ReviewLineDto,
+  StoreAddressDto,
   WarehouseUsageSettingsDto,
   WdtGoodsSpecSearchResultDto,
   WdtGoodsSyncRunDto,
@@ -35,6 +36,7 @@ let specRows: WdtGoodsSpecSearchResultDto[];
 let latestGoodsSyncRun: WdtGoodsSyncRunDto | null;
 let warehouseSettings: WarehouseUsageSettingsDto;
 let makeOrderReadiness: MakeOrderReadinessDto;
+let storeAddressRows: StoreAddressDto[];
 let currentUser: { id: string; username: string; role: "admin" | "operator" | "reviewer"; createdAt: string };
 let failReviewLines: boolean;
 
@@ -65,6 +67,7 @@ describe("App", () => {
     specRows = [wdtSpec()];
     latestGoodsSyncRun = goodsSyncRun();
     warehouseSettings = warehouseUsageSettings();
+    storeAddressRows = [];
     makeOrderReadiness = {
       batchId: "batch-1",
       canExport: false,
@@ -430,9 +433,27 @@ describe("App", () => {
 
     expect(await screen.findByText("做单预检查")).toBeInTheDocument();
     expect(screen.getByText("可做单 2 行 / 缺地址 1 个门店")).toBeInTheDocument();
-    expect(screen.getByText("测试门店")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "测试门店" })).toBeInTheDocument();
     expect(screen.getByText("2 行待做单")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "生成导出" })).toBeDisabled();
+  });
+
+  it("saves store addresses from the export tab", async () => {
+    currentBatch = { ...currentBatch, status: "reviewed" };
+    render(<App />);
+    await clickBatch();
+    switchToExportTab();
+
+    expect(await screen.findByText("门店地址维护")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "测试门店" }));
+    fireEvent.change(screen.getByLabelText("收件人"), { target: { value: "张三" } });
+    fireEvent.change(screen.getByLabelText("手机"), { target: { value: "18800000000" } });
+    fireEvent.change(screen.getByLabelText("地址"), { target: { value: "深圳市南山区测试地址" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存地址" }));
+
+    expect(await screen.findByText("门店地址已保存")).toBeInTheDocument();
+    expect(await screen.findByText("张三 / 18800000000")).toBeInTheDocument();
+    expect(screen.getByText("深圳市南山区测试地址")).toBeInTheDocument();
   });
 
   it("keeps exports disabled until review is submitted", async () => {
@@ -552,6 +573,34 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
     return failReviewLines ? json({ message: "审核明细读取失败" }, 500) : json(lines);
   }
   if (url.includes("/make-order-readiness") && method === "GET") return json(makeOrderReadiness);
+  if (url.startsWith("/api/v1/store-addresses") && method === "GET") {
+    const query = decodeURIComponent(url.split("query=")[1] ?? "").trim();
+    const rows = query
+      ? storeAddressRows.filter((row) => [row.storeNo, row.storeName, row.receiver, row.phone, row.address].some((value) => value.includes(query)))
+      : storeAddressRows;
+    return json(rows);
+  }
+  if (url === "/api/v1/store-addresses" && method === "POST") {
+    if (!["admin", "operator"].includes(currentUser.role)) return json({ message: "Forbidden" }, 403);
+    const body = JSON.parse(String(init?.body));
+    const existing = storeAddressRows.find((row) => row.storeNo === body.storeNo || row.storeName === body.storeName);
+    const saved: StoreAddressDto = {
+      id: existing?.id ?? "store-address-1",
+      storeNo: body.storeNo ?? "",
+      storeName: body.storeName,
+      receiver: body.receiver,
+      phone: body.phone,
+      address: body.address,
+      note: body.note ?? "",
+      updatedByUserId: currentUser.id,
+      updatedByUsername: currentUser.username,
+      createdAt: existing?.createdAt ?? "2026-07-07T00:00:00.000Z",
+      updatedAt: "2026-07-07T00:00:00.000Z",
+    };
+    storeAddressRows = existing ? storeAddressRows.map((row) => (row.id === existing.id ? saved : row)) : [saved, ...storeAddressRows];
+    makeOrderReadiness = { ...makeOrderReadiness, canExport: true, missingAddressCount: 0, missingStores: [] };
+    return json(saved, 201);
+  }
   if (url.includes("/actions/run-mock-review")) return json({ batch: currentBatch });
   if (url.includes("/actions/run-real-review")) return json({ batch: currentBatch, stockQueriedCount: 1 });
   if (url.includes("/actions/bulk-approve")) {

@@ -605,6 +605,112 @@ describe("api server", () => {
     await app.close();
   });
 
+  it("maintains store addresses and uses them before the fallback workbook", async () => {
+    const app = buildTestServer();
+    const { batch, lines, cookie } = await createReviewedBatch(app, "examples/mock_flow_mixed.json");
+    const shipLine = lines.find((line: { decision: string }) => line.decision === "ship");
+    expect(shipLine).toBeTruthy();
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/v1/store-addresses",
+      payload: {
+        storeNo: shipLine.storeNo,
+        storeName: shipLine.storeName,
+        receiver: "系统收货人",
+        phone: "18800001111",
+        address: "系统维护地址一号",
+        note: "首次维护",
+      },
+      headers: { cookie },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({
+      storeNo: shipLine.storeNo,
+      storeName: shipLine.storeName,
+      receiver: "系统收货人",
+      updatedByUsername: "admin",
+    });
+
+    const updated = await app.inject({
+      method: "POST",
+      url: "/api/v1/store-addresses",
+      payload: {
+        storeNo: shipLine.storeNo,
+        storeName: shipLine.storeName,
+        receiver: "系统收货人更新",
+        phone: "18800002222",
+        address: "系统维护地址二号",
+        note: "覆盖旧地址",
+      },
+      headers: { cookie },
+    });
+    expect(updated.statusCode).toBe(201);
+    expect(updated.json().id).toBe(created.json().id);
+
+    const list = await app.inject({
+      method: "GET",
+      url: `/api/v1/store-addresses?query=${encodeURIComponent(shipLine.storeNo)}`,
+      headers: { cookie },
+    });
+    expect(list.statusCode).toBe(200);
+    expect(list.json()).toHaveLength(1);
+    expect(list.json()[0]).toMatchObject({ address: "系统维护地址二号", phone: "18800002222" });
+
+    await app.inject({
+      method: "PATCH",
+      url: `/api/v1/batches/${batch.id}/review-lines/${shipLine.id}/decision`,
+      payload: { decision: "ship", approvedShipQty: 3, reason: "" },
+      headers: { cookie },
+    });
+    const exportResponse = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${batch.id}/exports`,
+      payload: { type: "wdt_import" },
+      headers: { cookie },
+    });
+    expect(exportResponse.statusCode).toBe(201);
+    expect(exportResponse.json().status).toBe("ready");
+    const downloadResponse = await app.inject({
+      method: "GET",
+      url: exportResponse.json().downloadUrl,
+      headers: { cookie },
+    });
+    const workbook = XLSX.read(downloadResponse.rawPayload, { type: "buffer" });
+    const rows = XLSX.utils.sheet_to_json<Record<string, string | number>>(workbook.Sheets["导入表"], { defval: "" });
+    const exportedLine = rows.find(
+      (row) =>
+        row["原始单号"] === shipLine.orderNoticeNo
+        && row["商家编码"] === shipLine.wdtSpecNo
+        && row["平台货品名称"] === shipLine.externalGoodsName,
+    );
+    expect(exportedLine).toMatchObject({
+      收件人: "系统收货人更新",
+      手机: "18800002222",
+      地址: "系统维护地址二号",
+    });
+    await app.close();
+  });
+
+  it("rejects store address writes from reviewer accounts", async () => {
+    const app = buildTestServer();
+    const reviewerCookie = await loginCookie(app, "reviewer", "reviewer123");
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/store-addresses",
+      payload: {
+        storeNo: "STORE",
+        storeName: "测试门店",
+        receiver: "收货人",
+        phone: "18800000000",
+        address: "测试地址",
+      },
+      headers: { cookie: reviewerCookie },
+    });
+    expect(response.statusCode).toBe(403);
+    await app.close();
+  });
+
   it("exports WDT make-order Excel with the client import template", async () => {
     const app = buildTestServer();
     const { batch, lines, cookie } = await createReviewedBatch(app, "examples/mock_flow_mixed.json");

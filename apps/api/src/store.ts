@@ -18,9 +18,11 @@
   ReviewLineDto,
   SubmitReviewResponseDto,
   CreateWdtGoodsSyncRunRequest,
+  StoreAddressDto,
   UpdateWarehouseUsageSettingsRequest,
   UpdateReviewLinePriorityRequest,
   UpdateProductMappingStatusRequest,
+  UpsertStoreAddressRequest,
   WarehouseUsageSettingsDto,
   WdtGoodsSpecSearchResultDto,
   WdtGoodsSyncRunDto,
@@ -29,7 +31,7 @@ import { buildMockReview } from "@jy-trade/workflow";
 import { and, desc, eq, like, or } from "drizzle-orm";
 import * as XLSX from "xlsx";
 import { randomBytes, randomUUID, scrypt as scryptCallback } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -42,6 +44,7 @@ import {
   reviewDecisions,
   reviewLines,
   sessions,
+  storeAddresses,
   productMappings,
   productMatchCandidates,
   users,
@@ -72,6 +75,7 @@ type ReviewDecisionRow = typeof reviewDecisions.$inferSelect;
 type ExportRow = typeof exportsTable.$inferSelect;
 type UserRow = typeof users.$inferSelect;
 type SessionRow = typeof sessions.$inferSelect;
+type StoreAddressRow = typeof storeAddresses.$inferSelect;
 type WarehouseUsageSettingsRow = typeof warehouseUsageSettings.$inferSelect;
 type WdtGoodsSyncRunRow = typeof wdtGoodsSyncRuns.$inferSelect;
 type WdtGoodsSpecRow = typeof wdtGoodsSpecs.$inferSelect;
@@ -332,8 +336,66 @@ export function createSqliteStore(options: StoreOptions = {}) {
       const batch = await getBatchRow(database, batchId);
       if (!batch) return undefined;
       const lines = await getReviewLineDtos(database, batchId);
-      const addressIndex = loadMakeOrderAddressIndex(makeOrderAddressBookPath);
+      const addressIndex = await loadMakeOrderAddressIndex(database, makeOrderAddressBookPath);
       return buildMakeOrderReadiness(batchId, lines, addressIndex);
+    },
+
+    async listStoreAddresses(query = ""): Promise<StoreAddressDto[]> {
+      await ready;
+      const trimmed = query.trim();
+      const base = database.db.select().from(storeAddresses);
+      const rows = trimmed
+        ? await base
+            .where(
+              or(
+                like(storeAddresses.storeNo, `%${trimmed}%`),
+                like(storeAddresses.storeName, `%${trimmed}%`),
+                like(storeAddresses.receiver, `%${trimmed}%`),
+                like(storeAddresses.phone, `%${trimmed}%`),
+                like(storeAddresses.address, `%${trimmed}%`),
+              ),
+            )
+            .orderBy(desc(storeAddresses.updatedAt))
+            .limit(50)
+        : await base.orderBy(desc(storeAddresses.updatedAt)).limit(50);
+      return rows.map(toStoreAddressDto);
+    },
+
+    async upsertStoreAddress(input: UpsertStoreAddressRequest, actor?: AuthUserDto): Promise<StoreAddressDto> {
+      await ready;
+      const now = new Date().toISOString();
+      const storeNo = input.storeNo.trim();
+      const storeName = input.storeName.trim();
+      const normalizedStoreName = normalizeStoreName(storeName);
+      const values = {
+        storeNo,
+        storeName,
+        normalizedStoreName,
+        receiver: input.receiver.trim(),
+        phone: input.phone.trim(),
+        address: input.address.trim(),
+        note: input.note.trim(),
+        updatedByUserId: actor?.id ?? null,
+        updatedByUsername: actor?.username ?? null,
+        updatedAt: now,
+      };
+
+      const existing = await findStoreAddressRow(database, storeNo, normalizedStoreName);
+      if (existing) {
+        const next: StoreAddressRow = { ...existing, ...values };
+        await database.db.update(storeAddresses).set(values).where(eq(storeAddresses.id, existing.id));
+        await insertAuditLog(database, actor?.id ?? null, "store_address.update", "store_address", existing.id, values);
+        return toStoreAddressDto(next);
+      }
+
+      const row: StoreAddressRow = {
+        id: `store-address-${randomUUID()}`,
+        ...values,
+        createdAt: now,
+      };
+      await database.db.insert(storeAddresses).values(row);
+      await insertAuditLog(database, actor?.id ?? null, "store_address.create", "store_address", row.id, values);
+      return toStoreAddressDto(row);
     },
 
     async getWarehouseUsageSettings(): Promise<WarehouseUsageSettingsDto> {
@@ -549,7 +611,7 @@ export function createSqliteStore(options: StoreOptions = {}) {
       await database.db.insert(exportsTable).values(exportRow);
       try {
         await mkdir(resolve(projectRoot, "outputs/exports"), { recursive: true });
-        const addressIndex = type === "wdt_import" ? loadMakeOrderAddressIndex(makeOrderAddressBookPath) : undefined;
+        const addressIndex = type === "wdt_import" ? await loadMakeOrderAddressIndex(database, makeOrderAddressBookPath) : undefined;
         if (type === "wdt_import") {
           const readiness = buildMakeOrderReadiness(batchId, lines, addressIndex ?? emptyMakeOrderAddressIndex());
           if (!readiness.canExport) {
@@ -794,6 +856,22 @@ async function getWarehouseUsageSettingsRow(database: DatabaseContext): Promise<
   };
   await database.db.insert(warehouseUsageSettings).values(defaultRow);
   return defaultRow;
+}
+
+async function findStoreAddressRow(database: DatabaseContext, storeNo: string, normalizedStoreName: string): Promise<StoreAddressRow | undefined> {
+  if (storeNo) {
+    const [byStoreNo] = await database.db.select().from(storeAddresses).where(eq(storeAddresses.storeNo, storeNo)).limit(1);
+    if (byStoreNo) return byStoreNo;
+  }
+  if (normalizedStoreName) {
+    const [byName] = await database.db
+      .select()
+      .from(storeAddresses)
+      .where(eq(storeAddresses.normalizedStoreName, normalizedStoreName))
+      .limit(1);
+    if (byName) return byName;
+  }
+  return undefined;
 }
 
 interface RealReviewBuildOptions {
@@ -1266,6 +1344,22 @@ function toWarehouseUsageSettingsDto(row: WarehouseUsageSettingsRow): WarehouseU
   };
 }
 
+function toStoreAddressDto(row: StoreAddressRow): StoreAddressDto {
+  return {
+    id: row.id,
+    storeNo: row.storeNo,
+    storeName: row.storeName,
+    receiver: row.receiver,
+    phone: row.phone,
+    address: row.address,
+    note: row.note,
+    updatedByUserId: row.updatedByUserId ?? null,
+    updatedByUsername: row.updatedByUsername ?? null,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
 function toReviewLineDto(line: ReviewLineRow, decision?: ReviewDecisionRow): ReviewLineDto {
   return {
     id: line.id,
@@ -1533,6 +1627,7 @@ async function prepareDatabase(database: DatabaseContext, bootstrapUsers: Array<
   await database.ready;
   await ensureReviewLinePriorityColumns(database);
   await ensureWarehouseUsageSettings(database);
+  await ensureStoreAddresses(database);
   await ensureBootstrapUsers(database, bootstrapUsers);
 }
 
@@ -1573,6 +1668,28 @@ async function ensureWarehouseUsageSettings(database: DatabaseContext) {
   `);
   await migrateLegacyWarehouseUsageSettings(database);
   await getWarehouseUsageSettingsRow(database);
+}
+
+async function ensureStoreAddresses(database: DatabaseContext) {
+  await database.client.execute(`
+    create table if not exists store_addresses (
+      id text primary key not null,
+      store_no text not null default '',
+      store_name text not null,
+      normalized_store_name text not null default '',
+      receiver text not null default '',
+      phone text not null default '',
+      address text not null,
+      note text not null default '',
+      updated_by_user_id text,
+      updated_by_username text,
+      created_at text not null,
+      updated_at text not null
+    )
+  `);
+  await database.client.execute("create index if not exists store_addresses_store_no_idx on store_addresses (store_no)");
+  await database.client.execute("create index if not exists store_addresses_normalized_store_name_idx on store_addresses (normalized_store_name)");
+  await database.client.execute("create index if not exists store_addresses_updated_at_idx on store_addresses (updated_at)");
 }
 
 async function migrateLegacyWarehouseUsageSettings(database: DatabaseContext) {
@@ -1891,11 +2008,30 @@ function makeOrderReadinessError(readiness: MakeOrderReadinessDto) {
   return `缺少发货地址：${names}${suffix}`;
 }
 
-function loadMakeOrderAddressIndex(filePath: string): MakeOrderAddressIndex {
+async function loadMakeOrderAddressIndex(database: DatabaseContext, filePath: string): Promise<MakeOrderAddressIndex> {
+  const index = loadFallbackMakeOrderAddressIndex(filePath);
+  const rows = await database.db.select().from(storeAddresses).orderBy(desc(storeAddresses.updatedAt));
+  for (const row of rows) {
+    addMakeOrderAddress(
+      index,
+      {
+        storeNo: row.storeNo,
+        storeName: row.storeName,
+        receiver: row.receiver,
+        phone: row.phone,
+        address: row.address,
+      },
+      true,
+    );
+  }
+  return index;
+}
+
+function loadFallbackMakeOrderAddressIndex(filePath: string): MakeOrderAddressIndex {
   const index = emptyMakeOrderAddressIndex();
   if (!existsSync(filePath)) return index;
 
-  const workbook = XLSX.readFile(filePath, { cellDates: false });
+  const workbook = XLSX.read(readFileSync(filePath), { type: "buffer", cellDates: false });
   for (const sheetName of workbook.SheetNames) {
     const rows = XLSX.utils.sheet_to_json<Array<string | number>>(workbook.Sheets[sheetName], { header: 1, defval: "" });
     if (rows.length < 2) continue;
@@ -1931,14 +2067,14 @@ function emptyMakeOrderAddressIndex(): MakeOrderAddressIndex {
   return { byStoreNo: new Map(), byStoreName: new Map() };
 }
 
-function addMakeOrderAddress(index: MakeOrderAddressIndex, address: MakeOrderAddress) {
+function addMakeOrderAddress(index: MakeOrderAddressIndex, address: MakeOrderAddress, overwrite = false) {
   if (address.storeNo) {
     const key = normalizeStoreNo(address.storeNo);
-    if (key && !index.byStoreNo.has(key)) index.byStoreNo.set(key, address);
+    if (key && (overwrite || !index.byStoreNo.has(key))) index.byStoreNo.set(key, address);
   }
   if (address.storeName) {
     const key = normalizeStoreName(address.storeName);
-    if (key && !index.byStoreName.has(key)) index.byStoreName.set(key, address);
+    if (key && (overwrite || !index.byStoreName.has(key))) index.byStoreName.set(key, address);
   }
 }
 

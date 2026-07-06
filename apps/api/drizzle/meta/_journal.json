@@ -36,6 +36,13 @@
       "when": 1783299600000,
       "tag": "0004_warehouse_usage_settings",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1783353957433,
+      "tag": "0005_store_addresses",
+      "breakpoints": true
     }
   ]
 }

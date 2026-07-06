@@ -136,6 +136,31 @@ export const MakeOrderReadinessDtoSchema = z.object({
 });
 export type MakeOrderReadinessDto = z.infer<typeof MakeOrderReadinessDtoSchema>;
 
+export const StoreAddressDtoSchema = z.object({
+  id: z.string(),
+  storeNo: z.string(),
+  storeName: z.string(),
+  receiver: z.string(),
+  phone: z.string(),
+  address: z.string(),
+  note: z.string(),
+  updatedByUserId: z.string().nullable().optional(),
+  updatedByUsername: z.string().nullable().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type StoreAddressDto = z.infer<typeof StoreAddressDtoSchema>;
+
+export const UpsertStoreAddressRequestSchema = z.object({
+  storeNo: z.string().default(""),
+  storeName: z.string().min(1),
+  receiver: z.string().min(1),
+  phone: z.string().min(1),
+  address: z.string().min(1),
+  note: z.string().max(500).default(""),
+});
+export type UpsertStoreAddressRequest = z.infer<typeof UpsertStoreAddressRequestSchema>;
+
 export const CreateBatchRequestSchema = z.object({
   filePath: z.string().min(1),
   fileName: z.string().optional(),

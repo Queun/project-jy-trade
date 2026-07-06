@@ -12,6 +12,7 @@ import {
   UpdateReviewLinePriorityRequestSchema,
   RunMockReviewRequestSchema,
   RunRealReviewRequestSchema,
+  UpsertStoreAddressRequestSchema,
   UpdateWarehouseUsageSettingsRequestSchema,
   UploadOrderFileRequestSchema,
   type AuthUserDto,
@@ -20,6 +21,7 @@ import {
   type MakeOrderReadinessDto,
   type ProductMatchCandidateDto,
   type ProductMappingDto,
+  type StoreAddressDto,
   type UserRole,
   type WarehouseUsageSettingsDto,
   type WdtGoodsSpecSearchResultDto,
@@ -266,6 +268,18 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   app.get("/api/v1/product-match-candidates", async (request): Promise<ProductMatchCandidateDto[]> => {
     const { query } = request.query as { query?: string };
     return store.listProductMatchCandidates(query ?? "");
+  });
+
+  app.get("/api/v1/store-addresses", async (request): Promise<StoreAddressDto[]> => {
+    const { query } = request.query as { query?: string };
+    return store.listStoreAddresses(query ?? "");
+  });
+
+  app.post("/api/v1/store-addresses", async (request, reply): Promise<StoreAddressDto> => {
+    requireRole(request, ["admin", "operator"]);
+    const body = UpsertStoreAddressRequestSchema.parse(request.body ?? {});
+    const address = await store.upsertStoreAddress(body, getCurrentUser(request));
+    return reply.code(201).send(address);
   });
 
   app.patch("/api/v1/product-mappings/:mappingId/status", async (request, reply): Promise<ProductMappingDto | unknown> => {

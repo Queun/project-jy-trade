@@ -13,6 +13,7 @@ import type {
 
 import { ProductMappingPanel } from "./components/ProductMappingPanel.js";
 import { ReviewTable, type ReviewDraft } from "./components/ReviewTable.js";
+import { StoreAddressPanel } from "./components/StoreAddressPanel.js";
 import { Badge } from "./components/ui/badge.js";
 import { Button } from "./components/ui/button.js";
 
@@ -693,6 +694,10 @@ export function App() {
                 makeOrderReadiness={makeOrderReadiness}
                 onCreateExport={() => void createExport()}
                 onExportTypeChange={setExportType}
+                onMessage={setMessage}
+                onStoreAddressSaved={() => {
+                  if (activeBatch) void refreshMakeOrderReadiness(activeBatch.id);
+                }}
               />
             ) : null}
           </section>
@@ -1108,6 +1113,8 @@ function ExportTab({
   makeOrderReadiness,
   onCreateExport,
   onExportTypeChange,
+  onMessage,
+  onStoreAddressSaved,
 }: {
   activeBatch: BatchSummary | null;
   canExport: boolean;
@@ -1116,6 +1123,8 @@ function ExportTab({
   makeOrderReadiness: MakeOrderReadinessDto | null;
   onCreateExport: () => void;
   onExportTypeChange: (type: ExportDto["type"]) => void;
+  onMessage: (message: string) => void;
+  onStoreAddressSaved: () => void;
 }) {
   const batchReadyForExport = activeBatch?.status === "reviewed" || activeBatch?.status === "exported";
   const makeOrderReady = exportType !== "wdt_import" || makeOrderReadiness?.canExport === true;
@@ -1182,6 +1191,14 @@ function ExportTab({
             </div>
           ) : null}
         </div>
+      ) : null}
+      {activeBatch ? (
+        <StoreAddressPanel
+          canEdit={canExport}
+          missingStores={makeOrderReadiness?.missingStores ?? []}
+          onMessage={onMessage}
+          onSaved={onStoreAddressSaved}
+        />
       ) : null}
       <div className="mt-4 space-y-2">
         {exports.length === 0 && canCreateExport ? (
