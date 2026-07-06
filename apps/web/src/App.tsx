@@ -436,7 +436,6 @@ export function App() {
                 goodsSyncError={goodsSyncError}
                 goodsSyncRun={goodsSyncRun}
                 isDeveloperMode={developerMode}
-                message={message}
                 mockFile={mockFile}
                 orderFile={orderFile}
                 onMockFileChange={setMockFile}
@@ -582,7 +581,6 @@ function ImportTab({
   goodsSyncError: string;
   goodsSyncRun: WdtGoodsSyncRunDto | null;
   isDeveloperMode: boolean;
-  message: string;
   mockFile: string;
   orderFile: string;
   onMockFileChange: (value: string) => void;
@@ -591,6 +589,8 @@ function ImportTab({
   onRunDemo: () => void;
   onRunReal: () => void;
 }) {
+  const canRunReal = goodsSyncRun?.status === "success";
+
   return (
     <section className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
       <div className="rounded-md border border-border bg-card p-4">
@@ -615,7 +615,7 @@ function ImportTab({
           </>
         ) : null}
         <div className="mt-4 flex flex-wrap items-center gap-3">
-          <Button onClick={onRunReal}>
+          <Button disabled={!canRunReal} onClick={onRunReal}>
             <FileSpreadsheet className="h-4 w-4" />
             导入新订单
           </Button>
@@ -626,6 +626,11 @@ function ImportTab({
             </Button>
           ) : null}
         </div>
+        {!canRunReal ? (
+          <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+            商品档案同步可用后才能导入新订单。请刷新右侧状态，或先完成商品档案同步。
+          </div>
+        ) : null}
       </div>
       <GoodsSyncStatusPanel error={goodsSyncError} run={goodsSyncRun} onRefresh={onRefreshGoodsSync} />
     </section>
@@ -663,6 +668,8 @@ function ReviewTab({
   onSave: (line: ReviewLineDto) => void;
   onSubmitReview: () => void;
 }) {
+  const hasRows = filteredLines.length > 0;
+
   return (
     <section className="mt-4 min-w-0 space-y-4">
       <div className="grid grid-cols-2 gap-3 xl:grid-cols-5">
@@ -689,29 +696,39 @@ function ReviewTab({
             </Button>
           </div>
         </div>
-        <div className="mb-3 flex flex-wrap gap-2">
-          {filters.map((filter) => (
-            <button
-              key={filter.key}
-              className={
-                filter.key === activeFilter
-                  ? "rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground"
-                  : "rounded-md border border-border bg-card px-3 py-2 text-sm text-muted-foreground hover:bg-muted"
-              }
-              onClick={() => onFilterChange(filter.key)}
-            >
-              {filter.label}
-            </button>
-          ))}
-        </div>
-        <ReviewTable
-          draftById={draftById}
-          errorsById={errorsById}
-          rows={filteredLines}
-          onDraftChange={onDraftChange}
-          onQuickDecision={onQuickDecision}
-          onSave={onSave}
-        />
+        {activeBatch ? (
+          <>
+            <div className="mb-3 flex flex-wrap gap-2">
+              {filters.map((filter) => (
+                <button
+                  key={filter.key}
+                  className={
+                    filter.key === activeFilter
+                      ? "rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground"
+                      : "rounded-md border border-border bg-card px-3 py-2 text-sm text-muted-foreground hover:bg-muted"
+                  }
+                  onClick={() => onFilterChange(filter.key)}
+                >
+                  {filter.label}
+                </button>
+              ))}
+            </div>
+            {hasRows ? (
+              <ReviewTable
+                draftById={draftById}
+                errorsById={errorsById}
+                rows={filteredLines}
+                onDraftChange={onDraftChange}
+                onQuickDecision={onQuickDecision}
+                onSave={onSave}
+              />
+            ) : (
+              <EmptyState title="当前筛选没有明细" description="切换筛选条件，或检查本批次是否已经生成初审明细。" />
+            )}
+          </>
+        ) : (
+          <EmptyState title="先选择一个批次" description="从左侧历史批次选择订单，或回到导入订单创建新批次。" />
+        )}
       </section>
       {isDeveloperMode ? <ProductMappingPanel onMessage={onMessage} /> : null}
     </section>
@@ -731,6 +748,8 @@ function ExportTab({
   onCreateExport: () => void;
   onExportTypeChange: (type: ExportDto["type"]) => void;
 }) {
+  const canCreateExport = activeBatch?.status === "reviewed" || activeBatch?.status === "exported";
+
   return (
     <section className="mt-4 rounded-md border border-border bg-card p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -743,19 +762,25 @@ function ExportTab({
             className="h-9 rounded-md border border-input bg-background px-3 text-sm"
             value={exportType}
             onChange={(event) => onExportTypeChange(event.target.value as ExportDto["type"])}
+            disabled={!canCreateExport}
           >
             <option value="review">初审单</option>
             <option value="confirmed">确定发货单</option>
             <option value="wdt_import">做单 Excel</option>
           </select>
-          <Button data-testid="create-export" disabled={!activeBatch} onClick={onCreateExport}>
+          <Button data-testid="create-export" disabled={!canCreateExport} onClick={onCreateExport}>
             <Download className="h-4 w-4" />
             生成导出
           </Button>
         </div>
       </div>
+      {!activeBatch ? (
+        <EmptyState className="mt-4" title="先选择一个批次" description="完成审核后，这里会生成初审单、确定发货单或做单 Excel。" />
+      ) : !canCreateExport ? (
+        <EmptyState className="mt-4" title="等待审核完成" description="当前批次还没有提交审核，确认发货数量后再生成做单文件。" />
+      ) : null}
       <div className="mt-4 space-y-2">
-        {exports.length === 0 ? (
+        {exports.length === 0 && canCreateExport ? (
           <div className="text-sm text-muted-foreground">暂无导出记录</div>
         ) : (
           exports.map((item) => (
@@ -783,6 +808,15 @@ function ExportTab({
         )}
       </div>
     </section>
+  );
+}
+
+function EmptyState({ className = "", description, title }: { className?: string; description: string; title: string }) {
+  return (
+    <div className={`rounded-md border border-dashed border-border bg-muted/30 px-4 py-8 text-center ${className}`}>
+      <div className="text-sm font-medium">{title}</div>
+      <div className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">{description}</div>
+    </div>
   );
 }
 

@@ -123,6 +123,28 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "生成演示批次" })).toBeInTheDocument();
   });
 
+  it("disables order import while goods sync is unavailable", async () => {
+    latestGoodsSyncRun = goodsSyncRun({ status: "running" });
+    render(<App />);
+
+    const importButton = await screen.findByRole("button", { name: "导入新订单" });
+    expect(importButton).toBeDisabled();
+    expect(screen.getByText("商品档案同步可用后才能导入新订单。请刷新右侧状态，或先完成商品档案同步。")).toBeInTheDocument();
+  });
+
+  it("shows clear empty states before a batch is selected", async () => {
+    render(<App />);
+
+    await screen.findByText("订单处理工作台");
+    switchToReviewTab();
+    expect(screen.getByText("先选择一个批次")).toBeInTheDocument();
+    expect(screen.getByText("从左侧历史批次选择订单，或回到导入订单创建新批次。")).toBeInTheDocument();
+
+    switchToExportTab();
+    expect(screen.getByText("完成审核后，这里会生成初审单、确定发货单或做单 Excel。")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "生成导出" })).toBeDisabled();
+  });
+
   it("requires reason for do-not-ship decisions", async () => {
     render(<App />);
     await clickBatch();
@@ -191,9 +213,10 @@ describe("App", () => {
     render(<App />);
 
     expect(await screen.findByText("同步失败")).toBeInTheDocument();
-    fireEvent.click(await screen.findByRole("button", { name: "导入新订单" }));
+    const importButton = await screen.findByRole("button", { name: "导入新订单" });
 
-    expect(await screen.findByText("真实初审已暂停：最近一次商品档案同步失败，请先修复并重新同步。")).toBeInTheDocument();
+    expect(importButton).toBeDisabled();
+    expect(screen.getByText("商品档案同步可用后才能导入新订单。请刷新右侧状态，或先完成商品档案同步。")).toBeInTheDocument();
     expect(fetch).not.toHaveBeenCalledWith(
       "/api/v1/batches",
       expect.objectContaining({
@@ -205,6 +228,9 @@ describe("App", () => {
   it("creates and lists exports", async () => {
     render(<App />);
     await clickBatch();
+    switchToReviewTab();
+    fireEvent.click(screen.getByRole("button", { name: "提交审核完成" }));
+    await screen.findByText(/审核已提交/);
     switchToExportTab();
 
     fireEvent.click(screen.getByRole("button", { name: "生成导出" }));
@@ -212,6 +238,16 @@ describe("App", () => {
     expect(await screen.findByText("导出文件已生成")).toBeInTheDocument();
     expect(await screen.findByText("batch-1-review.xlsx")).toBeInTheDocument();
     expect(screen.getByText("已生成")).toBeInTheDocument();
+  });
+
+  it("keeps exports disabled until review is submitted", async () => {
+    render(<App />);
+    await clickBatch();
+    switchToExportTab();
+
+    expect(screen.getByText("等待审核完成")).toBeInTheDocument();
+    expect(screen.getByText("当前批次还没有提交审核，确认发货数量后再生成做单文件。")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "生成导出" })).toBeDisabled();
   });
 
   it("confirms product mappings from searched WDT specs", async () => {
