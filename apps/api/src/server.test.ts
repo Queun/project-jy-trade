@@ -250,7 +250,7 @@ describe("api server", () => {
       payload: { decision: "do_not_ship", approvedShipQty: 0, reason: "" },
       headers: { cookie },
     });
-    expect(doNotShipWithoutReason.statusCode).toBe(400);
+    expect(doNotShipWithoutReason.statusCode).toBe(200);
 
     const overSuggestedWithoutReason = await app.inject({
       method: "PATCH",
@@ -258,7 +258,7 @@ describe("api server", () => {
       payload: { decision: "ship", approvedShipQty: firstLine.suggestedShipQty + 1, reason: "" },
       headers: { cookie },
     });
-    expect(overSuggestedWithoutReason.statusCode).toBe(400);
+    expect(overSuggestedWithoutReason.statusCode).toBe(200);
 
     const overSuggestedWithReason = await app.inject({
       method: "PATCH",
@@ -280,13 +280,14 @@ describe("api server", () => {
     const { batch, lines, cookie } = await createReviewedBatch(app);
     const targetLine = lines[1];
 
-    const missingReason = await app.inject({
+    const updatedWithoutReason = await app.inject({
       method: "PATCH",
       url: `/api/v1/batches/${batch.id}/review-lines/${targetLine.id}/priority`,
       payload: { priority: true, reason: "" },
       headers: { cookie },
     });
-    expect(missingReason.statusCode).toBe(400);
+    expect(updatedWithoutReason.statusCode).toBe(200);
+    expect(updatedWithoutReason.json()).toMatchObject({ id: targetLine.id, priority: true, priorityReason: "" });
 
     const updated = await app.inject({
       method: "PATCH",

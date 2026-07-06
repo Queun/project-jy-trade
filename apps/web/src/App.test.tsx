@@ -199,7 +199,7 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "生成导出" })).toBeDisabled();
   });
 
-  it("requires reason for do-not-ship decisions", async () => {
+  it("allows do-not-ship decisions without a reason", async () => {
     render(<App />);
     await clickBatch();
     switchToReviewTab();
@@ -207,7 +207,8 @@ describe("App", () => {
     const row = await rowFor("可发商品");
     fireEvent.click(within(row).getByRole("button", { name: "不发" }));
 
-    expect(await within(row).findByText("不发货必须填写原因")).toBeInTheDocument();
+    await waitFor(() => expect(lines.find((line) => line.id === "line-1")?.decision).toBe("do_not_ship"));
+    expect(within(row).queryByText("不发货必须填写原因")).not.toBeInTheDocument();
   });
 
   it("shows an error instead of crashing when review lines fail to load", async () => {
@@ -230,7 +231,7 @@ describe("App", () => {
     await waitFor(() => expect(lines.find((line) => line.id === "line-1")?.decision).toBe("ship"));
     fireEvent.change(within(row).getByLabelText("审核发货数 line-1"), { target: { value: "8" } });
     fireEvent.change(within(row).getByLabelText("审核原因 line-1"), { target: { value: "人工确认额外库存" } });
-    fireEvent.click(within(row).getByRole("button", { name: "保存" }));
+    fireEvent.click(within(row).getByRole("button", { name: "保存数量" }));
 
     await waitFor(() => expect(within(row).getByText("超建议数")).toBeInTheDocument());
     expect(lines.find((line) => line.id === "line-1")).toMatchObject({
@@ -240,7 +241,7 @@ describe("App", () => {
     });
   });
 
-  it("requires a reason before marking a line as priority", async () => {
+  it("marks priority lines without a reason", async () => {
     render(<App />);
     await clickBatch();
     switchToReviewTab();
@@ -248,8 +249,21 @@ describe("App", () => {
     const row = await rowFor("部分满足商品");
     fireEvent.click(within(row).getByRole("checkbox", { name: "优先处理 line-2" }));
 
-    expect(await within(row).findByText("优先处理必须填写原因")).toBeInTheDocument();
-    expect(lines.find((line) => line.id === "line-2")?.priority).toBe(false);
+    await waitFor(() => expect(lines.find((line) => line.id === "line-2")?.priority).toBe(true));
+    expect(within(row).queryByText("优先处理必须填写原因")).not.toBeInTheDocument();
+  });
+
+  it("auto-saves reason edits when the field loses focus", async () => {
+    render(<App />);
+    await clickBatch();
+    switchToReviewTab();
+
+    const row = await rowFor("可发商品");
+    const reasonInput = within(row).getByLabelText("审核原因 line-1");
+    fireEvent.change(reasonInput, { target: { value: "门店备注" } });
+    fireEvent.blur(reasonInput);
+
+    await waitFor(() => expect(lines.find((line) => line.id === "line-1")?.reason).toBe("门店备注"));
   });
 
   it("marks priority lines and moves them to the top", async () => {
@@ -504,10 +518,6 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
     const line = lines.find((item) => item.id === lineId);
     if (!line) return json({ message: "Review line not found" }, 404);
     if (body.approvedShipQty < 0) return json({ message: "发货数量不能小于 0" }, 400);
-    if (body.decision === "do_not_ship" && !body.reason) return json({ message: "不发货必须填写原因" }, 400);
-    if (body.decision === "ship" && body.approvedShipQty > line.suggestedShipQty && !body.reason) {
-      return json({ message: "发货数量超过建议发货数时必须填写原因" }, 400);
-    }
     const updated = { ...line, ...body };
     lines = lines.map((item) => (item.id === lineId ? updated : item));
     return json(updated);
@@ -517,7 +527,6 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
     const body = JSON.parse(String(init?.body));
     const line = lines.find((item) => item.id === lineId);
     if (!line) return json({ message: "Review line not found" }, 404);
-    if (body.priority && !body.reason) return json({ message: "优先处理必须填写原因" }, 400);
     const updated = { ...line, priority: body.priority, priorityReason: body.priority ? body.reason : "" };
     lines = lines.map((item) => (item.id === lineId ? updated : item)).sort((left, right) => {
       if (left.priority !== right.priority) return left.priority ? -1 : 1;

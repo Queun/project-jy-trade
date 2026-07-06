@@ -366,9 +366,6 @@ export function createSqliteStore(options: StoreOptions = {}) {
       if (!line) return undefined;
 
       const reason = input.reason.trim();
-      if (input.priority && !reason) {
-        throw new StoreValidationError("优先处理必须填写原因");
-      }
 
       await database.db
         .update(reviewLines)
@@ -1102,15 +1099,8 @@ async function replaceReviewDecision(
 }
 
 function validateReviewDecision(line: ReviewLineRow, decision: ReviewDecisionDto) {
-  const reason = (decision.reason ?? "").trim();
   if (decision.approvedShipQty < 0) {
     throw new StoreValidationError("发货数量不能小于 0");
-  }
-  if (decision.decision === "do_not_ship" && !reason) {
-    throw new StoreValidationError("不发货必须填写原因");
-  }
-  if (decision.decision === "ship" && decision.approvedShipQty > line.suggestedShipQty && !reason) {
-    throw new StoreValidationError("发货数量超过建议发货数时必须填写原因");
   }
 }
 

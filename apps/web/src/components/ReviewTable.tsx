@@ -8,10 +8,12 @@ interface ReviewTableProps {
   rows: ReviewLineDto[];
   draftById: Record<string, ReviewDraft>;
   errorsById: Record<string, string>;
+  savingReasonById: Record<string, boolean>;
   readOnly?: boolean;
   onDraftChange: (lineId: string, patch: Partial<ReviewDraft>) => void;
   onPriorityChange: (line: ReviewLineDto, priority: boolean) => void;
   onSave: (line: ReviewLineDto) => void;
+  onReasonSave: (line: ReviewLineDto, reason: string) => void;
   onQuickDecision: (line: ReviewLineDto, decision: ReviewDecision) => void;
 }
 
@@ -44,9 +46,11 @@ export function ReviewTable({
   rows,
   draftById,
   errorsById,
+  savingReasonById,
   readOnly = false,
   onDraftChange,
   onPriorityChange,
+  onReasonSave,
   onSave,
   onQuickDecision,
 }: ReviewTableProps) {
@@ -101,6 +105,7 @@ export function ReviewTable({
           reason: line.reason,
         };
         const error = errorsById[line.id];
+        const isSavingReason = Boolean(savingReasonById[line.id]);
         const approvedQty = Number(draft.approvedShipQty);
         const isOverSuggested = draft.decision === "ship" && Number.isFinite(approvedQty) && approvedQty > line.suggestedShipQty;
 
@@ -148,12 +153,16 @@ export function ReviewTable({
                 disabled={readOnly}
                 placeholder="原因"
                 value={draft.reason}
-                onChange={(event) => onDraftChange(line.id, { reason: event.target.value })}
+                onChange={(event) => {
+                  onDraftChange(line.id, { reason: event.target.value });
+                  onReasonSave(line, event.target.value);
+                }}
               />
               <Button className="h-9 px-3" disabled={readOnly} onClick={() => onSave(line)}>
-                保存
+                保存数量
               </Button>
             </div>
+            {isSavingReason ? <div className="text-xs text-muted-foreground">原因保存中...</div> : null}
             {error ? <div className="text-xs text-rose-700">{error}</div> : null}
           </div>
         );

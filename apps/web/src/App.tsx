@@ -61,6 +61,7 @@ export function App() {
   const [activeFilter, setActiveFilter] = useState<FilterKey>("all");
   const [draftById, setDraftById] = useState<Record<string, ReviewDraft>>({});
   const [errorsById, setErrorsById] = useState<Record<string, string>>({});
+  const [savingReasonById, setSavingReasonById] = useState<Record<string, boolean>>({});
   const [goodsSyncRun, setGoodsSyncRun] = useState<WdtGoodsSyncRunDto | null>(null);
   const [goodsSyncError, setGoodsSyncError] = useState("正在读取商品同步状态");
   const [selectedOrderFileName, setSelectedOrderFileName] = useState("");
@@ -274,7 +275,7 @@ export function App() {
     return uploaded;
   }
 
-  async function saveDecision(line: ReviewLineDto, patch?: Partial<ReviewDraft>) {
+  async function saveDecision(line: ReviewLineDto, patch?: Partial<ReviewDraft>, options: { silent?: boolean } = {}) {
     const draft = { ...draftById[line.id], ...patch };
     const approvedShipQty = Number(draft.approvedShipQty);
     const localError = validateDraft(line, draft, approvedShipQty);
@@ -305,7 +306,7 @@ export function App() {
       delete next[updated.id];
       return next;
     });
-    setMessage("审核决定已保存");
+    if (!options.silent) setMessage("审核决定已保存");
   }
 
   async function quickDecision(line: ReviewLineDto, decision: ReviewDecision) {
@@ -319,10 +320,6 @@ export function App() {
 
   async function togglePriority(line: ReviewLineDto, priority: boolean) {
     const reason = (draftById[line.id]?.reason ?? line.reason ?? line.priorityReason ?? "").trim();
-    if (priority && !reason) {
-      setErrorsById((current) => ({ ...current, [line.id]: "优先处理必须填写原因" }));
-      return;
-    }
 
     const response = await fetch(`/api/v1/batches/${line.batchId}/review-lines/${line.id}/priority`, {
       method: "PATCH",
@@ -342,6 +339,17 @@ export function App() {
       return next;
     });
     setMessage(priority ? "已标记为优先处理" : "已取消优先处理");
+  }
+
+  async function autoSaveReason(line: ReviewLineDto, reason: string) {
+    const draft = { ...draftById[line.id], reason };
+    setSavingReasonById((current) => ({ ...current, [line.id]: true }));
+    await saveDecision(line, draft, { silent: true });
+    setSavingReasonById((current) => {
+      const next = { ...current };
+      delete next[line.id];
+      return next;
+    });
   }
 
   async function bulkApprove() {
@@ -541,6 +549,7 @@ export function App() {
                 errorsById={errorsById}
                 filteredLines={filteredLines}
                 isDeveloperMode={developerMode}
+                savingReasonById={savingReasonById}
                 canReview={permissions.canReview}
                 stats={stats}
                 onBulkApprove={() => void bulkApprove()}
@@ -549,6 +558,7 @@ export function App() {
                 onMessage={setMessage}
                 onPriorityChange={togglePriority}
                 onQuickDecision={quickDecision}
+                onReasonSave={autoSaveReason}
                 onSave={saveDecision}
                 onSubmitReview={() => void submitReview()}
               />
@@ -800,6 +810,7 @@ function ReviewTab({
   errorsById,
   filteredLines,
   isDeveloperMode,
+  savingReasonById,
   canReview,
   stats,
   onBulkApprove,
@@ -808,6 +819,7 @@ function ReviewTab({
   onMessage,
   onPriorityChange,
   onQuickDecision,
+  onReasonSave,
   onSave,
   onSubmitReview,
 }: {
@@ -817,6 +829,7 @@ function ReviewTab({
   errorsById: Record<string, string>;
   filteredLines: ReviewLineDto[];
   isDeveloperMode: boolean;
+  savingReasonById: Record<string, boolean>;
   canReview: boolean;
   stats: ReturnType<typeof buildStats>;
   onBulkApprove: () => void;
@@ -825,6 +838,7 @@ function ReviewTab({
   onMessage: (message: string) => void;
   onPriorityChange: (line: ReviewLineDto, priority: boolean) => void;
   onQuickDecision: (line: ReviewLineDto, decision: ReviewDecision) => void;
+  onReasonSave: (line: ReviewLineDto, reason: string) => void;
   onSave: (line: ReviewLineDto) => void;
   onSubmitReview: () => void;
 }) {
@@ -878,11 +892,13 @@ function ReviewTab({
               <ReviewTable
                 draftById={draftById}
                 errorsById={errorsById}
+                savingReasonById={savingReasonById}
                 rows={filteredLines}
                 readOnly={!canReview}
                 onDraftChange={onDraftChange}
                 onPriorityChange={onPriorityChange}
                 onQuickDecision={onQuickDecision}
+                onReasonSave={onReasonSave}
                 onSave={onSave}
               />
             ) : (
@@ -1176,9 +1192,5 @@ function matchesFilter(line: ReviewLineDto, filter: FilterKey) {
 
 function validateDraft(line: ReviewLineDto, draft: ReviewDraft, approvedShipQty: number) {
   if (!Number.isFinite(approvedShipQty) || approvedShipQty < 0) return "发货数量不能小于 0";
-  if (draft.decision === "do_not_ship" && !draft.reason.trim()) return "不发货必须填写原因";
-  if (draft.decision === "ship" && approvedShipQty > line.suggestedShipQty && !draft.reason.trim()) {
-    return "发货数量超过建议发货数时必须填写原因";
-  }
   return "";
 }
