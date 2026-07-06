@@ -16,8 +16,10 @@
   ReviewLineDto,
   SubmitReviewResponseDto,
   CreateWdtGoodsSyncRunRequest,
+  UpdateWarehouseUsageSettingsRequest,
   UpdateReviewLinePriorityRequest,
   UpdateProductMappingStatusRequest,
+  WarehouseUsageSettingsDto,
   WdtGoodsSpecSearchResultDto,
   WdtGoodsSyncRunDto,
 } from "@jy-trade/shared";
@@ -40,6 +42,7 @@ import {
   productMappings,
   productMatchCandidates,
   users,
+  warehouseUsageSettings,
   wdtGoodsSpecs,
   wdtGoodsSyncRuns,
 } from "./db/schema.js";
@@ -66,6 +69,7 @@ type ReviewDecisionRow = typeof reviewDecisions.$inferSelect;
 type ExportRow = typeof exportsTable.$inferSelect;
 type UserRow = typeof users.$inferSelect;
 type SessionRow = typeof sessions.$inferSelect;
+type WarehouseUsageSettingsRow = typeof warehouseUsageSettings.$inferSelect;
 type WdtGoodsSyncRunRow = typeof wdtGoodsSyncRuns.$inferSelect;
 type WdtGoodsSpecRow = typeof wdtGoodsSpecs.$inferSelect;
 type ProductMappingRow = typeof productMappings.$inferSelect;
@@ -80,6 +84,7 @@ interface WarehouseStockSummary {
   nearExpiryAvailableStock: number;
   defectAvailableStock: number;
   otherAvailableStock: number;
+  usableAvailableStock: number;
   warehouseBreakdown: string;
 }
 
@@ -261,11 +266,13 @@ export function createSqliteStore(options: StoreOptions = {}) {
 
       const goodsSpecs = (await database.db.select().from(wdtGoodsSpecs)).map(toLocalGoodsSpecCandidate);
       const mappings = (await database.db.select().from(productMappings).where(eq(productMappings.status, "confirmed"))).map(toProductMappingCandidate);
+      const warehouseSettings = toWarehouseUsageSettingsDto(await getWarehouseUsageSettingsRow(database));
       const result = await buildRealReview(stockClient, {
         batchId,
         orderFile: batch.filePath,
         goodsSpecs,
         mappings,
+        warehouseSettings,
       });
       const now = new Date().toISOString();
 
@@ -312,6 +319,54 @@ export function createSqliteStore(options: StoreOptions = {}) {
       const batch = await getBatchRow(database, batchId);
       if (!batch) return undefined;
       return getReviewLineDtos(database, batchId);
+    },
+
+    async getWarehouseUsageSettings(): Promise<WarehouseUsageSettingsDto> {
+      await ready;
+      const row = await getWarehouseUsageSettingsRow(database);
+      return toWarehouseUsageSettingsDto(row);
+    },
+
+    async updateWarehouseUsageSettings(
+      input: UpdateWarehouseUsageSettingsRequest,
+      actor?: AuthUserDto,
+    ): Promise<WarehouseUsageSettingsDto> {
+      await ready;
+      const previous = await getWarehouseUsageSettingsRow(database);
+      const now = new Date().toISOString();
+      const row: WarehouseUsageSettingsRow = {
+        id: "default",
+        includeMainWarehouse: input.includeMainWarehouse ? 1 : 0,
+        includeNearExpiryWarehouse: input.includeNearExpiryWarehouse ? 1 : 0,
+        includeDefectWarehouse: input.includeDefectWarehouse ? 1 : 0,
+        includeOtherWarehouses: input.includeOtherWarehouses ? 1 : 0,
+        updatedByUserId: actor?.id ?? null,
+        updatedByUsername: actor?.username ?? null,
+        updatedAt: now,
+      };
+
+      await database.db
+        .insert(warehouseUsageSettings)
+        .values(row)
+        .onConflictDoUpdate({
+          target: warehouseUsageSettings.id,
+          set: {
+            includeMainWarehouse: row.includeMainWarehouse,
+            includeNearExpiryWarehouse: row.includeNearExpiryWarehouse,
+            includeDefectWarehouse: row.includeDefectWarehouse,
+            includeOtherWarehouses: row.includeOtherWarehouses,
+            updatedByUserId: row.updatedByUserId,
+            updatedByUsername: row.updatedByUsername,
+            updatedAt: row.updatedAt,
+          },
+        });
+
+      await insertAuditLog(database, actor?.id ?? null, "settings.update_warehouse_usage", "settings", "warehouse_usage", {
+        previous: toWarehouseUsageSettingsDto(previous),
+        next: toWarehouseUsageSettingsDto(row),
+      });
+
+      return toWarehouseUsageSettingsDto(row);
     },
 
     async updateReviewDecision(
@@ -701,11 +756,30 @@ async function getBatchRow(database: DatabaseContext, batchId: string): Promise<
   return batch;
 }
 
+async function getWarehouseUsageSettingsRow(database: DatabaseContext): Promise<WarehouseUsageSettingsRow> {
+  const [row] = await database.db.select().from(warehouseUsageSettings).where(eq(warehouseUsageSettings.id, "default")).limit(1);
+  if (row) return row;
+  const now = new Date().toISOString();
+  const defaultRow: WarehouseUsageSettingsRow = {
+    id: "default",
+    includeMainWarehouse: 1,
+    includeNearExpiryWarehouse: 1,
+    includeDefectWarehouse: 0,
+    includeOtherWarehouses: 0,
+    updatedByUserId: null,
+    updatedByUsername: null,
+    updatedAt: now,
+  };
+  await database.db.insert(warehouseUsageSettings).values(defaultRow);
+  return defaultRow;
+}
+
 interface RealReviewBuildOptions {
   batchId: string;
   orderFile: string;
   goodsSpecs: LocalGoodsSpecCandidate[];
   mappings: ProductMappingCandidate[];
+  warehouseSettings: WarehouseUsageSettingsDto;
 }
 
 interface RealReviewCandidateRow {
@@ -746,6 +820,8 @@ async function buildRealReview(client: StockLookupClient, options: RealReviewBui
   const stockBySpecNo = new Map<string, WarehouseStockSummary>();
   const remainingMain = new Map<string, number>();
   const remainingNearExpiry = new Map<string, number>();
+  const remainingDefect = new Map<string, number>();
+  const remainingOther = new Map<string, number>();
   const reviewLines: ReviewLineDto[] = [];
   const candidateRows: RealReviewCandidateRow[] = [];
   let stockQueriedCount = 0;
@@ -775,10 +851,12 @@ async function buildRealReview(client: StockLookupClient, options: RealReviewBui
           matchStatus = "api_error";
           matchMessage = `stock query status=${response.status}`;
         } else {
-          stock = summarizeWarehouseStock(response.data?.detail_list ?? []);
+          stock = summarizeWarehouseStock(response.data?.detail_list ?? [], options.warehouseSettings);
           stockBySpecNo.set(specNo, stock);
           remainingMain.set(specNo, stock.mainAvailableStock);
           remainingNearExpiry.set(specNo, stock.nearExpiryAvailableStock);
+          remainingDefect.set(specNo, stock.defectAvailableStock);
+          remainingOther.set(specNo, stock.otherAvailableStock);
           stockQueriedCount += 1;
         }
       }
@@ -799,6 +877,9 @@ async function buildRealReview(client: StockLookupClient, options: RealReviewBui
       stock,
       remainingMain,
       remainingNearExpiry,
+      remainingDefect,
+      remainingOther,
+      warehouseSettings: options.warehouseSettings,
     });
     reviewLines.push(reviewLine);
   }
@@ -826,17 +907,43 @@ function buildRealReviewLine(input: {
   stock: WarehouseStockSummary | undefined;
   remainingMain: Map<string, number>;
   remainingNearExpiry: Map<string, number>;
+  remainingDefect: Map<string, number>;
+  remainingOther: Map<string, number>;
+  warehouseSettings: WarehouseUsageSettingsDto;
 }): ReviewLineDto {
   const specNo = input.matchStatus === "matched" ? input.decision.candidate?.specNo ?? "" : "";
   const mainBefore = specNo ? input.remainingMain.get(specNo) ?? 0 : 0;
   const nearExpiryBefore = specNo ? input.remainingNearExpiry.get(specNo) ?? 0 : 0;
-  const suggestedMainQty = Math.min(input.orderLine.orderQty, mainBefore);
-  const suggestedNearExpiryQty = Math.min(input.orderLine.orderQty - suggestedMainQty, nearExpiryBefore);
-  const suggestedShipQty = input.matchStatus === "matched" ? suggestedMainQty + suggestedNearExpiryQty : 0;
+  const defectBefore = specNo ? input.remainingDefect.get(specNo) ?? 0 : 0;
+  const otherBefore = specNo ? input.remainingOther.get(specNo) ?? 0 : 0;
+  const usableBefore =
+    (input.warehouseSettings.includeMainWarehouse ? mainBefore : 0)
+    + (input.warehouseSettings.includeNearExpiryWarehouse ? nearExpiryBefore : 0)
+    + (input.warehouseSettings.includeDefectWarehouse ? defectBefore : 0)
+    + (input.warehouseSettings.includeOtherWarehouses ? otherBefore : 0);
+  const suggestedShipQty = input.matchStatus === "matched" ? Math.min(input.orderLine.orderQty, usableBefore) : 0;
 
   if (specNo) {
-    input.remainingMain.set(specNo, mainBefore - suggestedMainQty);
-    input.remainingNearExpiry.set(specNo, nearExpiryBefore - suggestedNearExpiryQty);
+    let remainingToAllocate = suggestedShipQty;
+    if (input.warehouseSettings.includeMainWarehouse) {
+      const used = Math.min(remainingToAllocate, mainBefore);
+      input.remainingMain.set(specNo, mainBefore - used);
+      remainingToAllocate -= used;
+    }
+    if (input.warehouseSettings.includeNearExpiryWarehouse) {
+      const used = Math.min(remainingToAllocate, nearExpiryBefore);
+      input.remainingNearExpiry.set(specNo, nearExpiryBefore - used);
+      remainingToAllocate -= used;
+    }
+    if (input.warehouseSettings.includeDefectWarehouse) {
+      const used = Math.min(remainingToAllocate, defectBefore);
+      input.remainingDefect.set(specNo, defectBefore - used);
+      remainingToAllocate -= used;
+    }
+    if (input.warehouseSettings.includeOtherWarehouses) {
+      const used = Math.min(remainingToAllocate, otherBefore);
+      input.remainingOther.set(specNo, otherBefore - used);
+    }
   }
 
   const status = reviewStatusFor(input.matchStatus, input.orderLine.orderQty, suggestedShipQty);
@@ -1026,7 +1133,7 @@ function toProductMappingCandidate(row: ProductMappingRow): ProductMappingCandid
   };
 }
 
-function summarizeWarehouseStock(rows: WdtStockRow[]): WarehouseStockSummary {
+function summarizeWarehouseStock(rows: WdtStockRow[], settings: WarehouseUsageSettingsDto): WarehouseStockSummary {
   let mainAvailableStock = 0;
   let nearExpiryAvailableStock = 0;
   let defectAvailableStock = 0;
@@ -1041,11 +1148,18 @@ function summarizeWarehouseStock(rows: WdtStockRow[]): WarehouseStockSummary {
     else otherAvailableStock += available;
   }
 
+  const usableAvailableStock =
+    (settings.includeMainWarehouse ? mainAvailableStock : 0)
+    + (settings.includeNearExpiryWarehouse ? nearExpiryAvailableStock : 0)
+    + (settings.includeDefectWarehouse ? defectAvailableStock : 0)
+    + (settings.includeOtherWarehouses ? otherAvailableStock : 0);
+
   return {
     mainAvailableStock,
     nearExpiryAvailableStock,
     defectAvailableStock,
     otherAvailableStock,
+    usableAvailableStock,
     warehouseBreakdown: rows
       .map((row) => `${row.warehouse_no ?? ""}/${row.warehouse_name ?? ""}:${row.available_send_stock ?? 0}`)
       .filter(Boolean)
@@ -1115,6 +1229,18 @@ function toBatchSummary(batch: BatchRow): BatchSummary {
     matchedBarcodeCount: batch.matchedBarcodeCount,
     createdAt: batch.createdAt,
     updatedAt: batch.updatedAt,
+  };
+}
+
+function toWarehouseUsageSettingsDto(row: WarehouseUsageSettingsRow): WarehouseUsageSettingsDto {
+  return {
+    includeMainWarehouse: Boolean(row.includeMainWarehouse),
+    includeNearExpiryWarehouse: Boolean(row.includeNearExpiryWarehouse),
+    includeDefectWarehouse: Boolean(row.includeDefectWarehouse),
+    includeOtherWarehouses: Boolean(row.includeOtherWarehouses),
+    updatedAt: row.updatedAt,
+    updatedByUserId: row.updatedByUserId ?? null,
+    updatedByUsername: row.updatedByUsername ?? null,
   };
 }
 
@@ -1384,6 +1510,7 @@ function resolveProjectPath(path: string, projectRoot: string): string {
 async function prepareDatabase(database: DatabaseContext, bootstrapUsers: Array<{ username: string; password: string; role: AuthUserDto["role"] }>) {
   await database.ready;
   await ensureReviewLinePriorityColumns(database);
+  await ensureWarehouseUsageSettings(database);
   await ensureBootstrapUsers(database, bootstrapUsers);
 }
 
@@ -1407,6 +1534,85 @@ async function ensureReviewLinePriorityColumns(database: DatabaseContext) {
 async function getTableColumns(database: DatabaseContext, tableName: string): Promise<string[]> {
   const result = await database.client.execute(`pragma table_info(${tableName})`);
   return result.rows.map((row) => String(row.name));
+}
+
+async function ensureWarehouseUsageSettings(database: DatabaseContext) {
+  await database.client.execute(`
+    create table if not exists warehouse_usage_settings (
+      id text primary key not null,
+      include_main_warehouse integer not null default 1,
+      include_near_expiry_warehouse integer not null default 1,
+      include_defect_warehouse integer not null default 0,
+      include_other_warehouses integer not null default 0,
+      updated_by_user_id text,
+      updated_by_username text,
+      updated_at text not null
+    )
+  `);
+  await migrateLegacyWarehouseUsageSettings(database);
+  await getWarehouseUsageSettingsRow(database);
+}
+
+async function migrateLegacyWarehouseUsageSettings(database: DatabaseContext) {
+  const existing = await database.db.select().from(warehouseUsageSettings).where(eq(warehouseUsageSettings.id, "default")).limit(1);
+  const current = existing[0];
+  if (current?.updatedByUserId || current?.updatedByUsername) return;
+
+  let legacyRows: Awaited<ReturnType<DatabaseContext["client"]["execute"]>>["rows"];
+  try {
+    const result = await database.client.execute("select value_json, updated_at, updated_by_user_id from app_settings where key = 'warehouse_usage' limit 1");
+    legacyRows = result.rows;
+  } catch {
+    return;
+  }
+  const legacy = legacyRows[0];
+  if (!legacy) return;
+
+  const parsed = parseLegacyWarehouseUsageSettings(String(legacy.value_json ?? ""));
+  if (!parsed) return;
+  const row: WarehouseUsageSettingsRow = {
+    id: "default",
+    includeMainWarehouse: parsed.includeMainWarehouse ? 1 : 0,
+    includeNearExpiryWarehouse: parsed.includeNearExpiryWarehouse ? 1 : 0,
+    includeDefectWarehouse: parsed.includeDefectWarehouse ? 1 : 0,
+    includeOtherWarehouses: parsed.includeOtherWarehouses ? 1 : 0,
+    updatedByUserId: legacy.updated_by_user_id ? String(legacy.updated_by_user_id) : null,
+    updatedByUsername: null,
+    updatedAt: legacy.updated_at ? String(legacy.updated_at) : new Date().toISOString(),
+  };
+
+  await database.db
+    .insert(warehouseUsageSettings)
+    .values(row)
+    .onConflictDoUpdate({
+      target: warehouseUsageSettings.id,
+      set: {
+        includeMainWarehouse: row.includeMainWarehouse,
+        includeNearExpiryWarehouse: row.includeNearExpiryWarehouse,
+        includeDefectWarehouse: row.includeDefectWarehouse,
+        includeOtherWarehouses: row.includeOtherWarehouses,
+        updatedByUserId: row.updatedByUserId,
+        updatedByUsername: row.updatedByUsername,
+        updatedAt: row.updatedAt,
+      },
+    });
+}
+
+function parseLegacyWarehouseUsageSettings(valueJson: string): Pick<
+  WarehouseUsageSettingsDto,
+  "includeMainWarehouse" | "includeNearExpiryWarehouse" | "includeDefectWarehouse" | "includeOtherWarehouses"
+> | null {
+  try {
+    const parsed = JSON.parse(valueJson) as { enabledBuckets?: Record<string, unknown> };
+    return {
+      includeMainWarehouse: parsed.enabledBuckets?.main === true,
+      includeNearExpiryWarehouse: parsed.enabledBuckets?.nearExpiry === true,
+      includeDefectWarehouse: parsed.enabledBuckets?.defect === true,
+      includeOtherWarehouses: parsed.enabledBuckets?.other === true,
+    };
+  } catch {
+    return null;
+  }
 }
 
 async function ensureBootstrapUsers(database: DatabaseContext, bootstrapUsers: Array<{ username: string; password: string; role: AuthUserDto["role"] }>) {

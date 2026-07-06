@@ -29,6 +29,13 @@
       "when": 1783296000000,
       "tag": "0003_priority_review_lines",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1783299600000,
+      "tag": "0004_warehouse_usage_settings",
+      "breakpoints": true
     }
   ]
 }

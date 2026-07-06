@@ -8,6 +8,7 @@ import type {
   ProductMappingDto,
   ProductMatchCandidateDto,
   ReviewLineDto,
+  WarehouseUsageSettingsDto,
   WdtGoodsSpecSearchResultDto,
   WdtGoodsSyncRunDto,
 } from "@jy-trade/shared";
@@ -31,6 +32,7 @@ let mappingRows: ProductMappingDto[];
 let candidateRows: ProductMatchCandidateDto[];
 let specRows: WdtGoodsSpecSearchResultDto[];
 let latestGoodsSyncRun: WdtGoodsSyncRunDto | null;
+let warehouseSettings: WarehouseUsageSettingsDto;
 let currentUser: { id: string; username: string; role: "admin" | "operator" | "reviewer"; createdAt: string };
 let failReviewLines: boolean;
 
@@ -60,6 +62,7 @@ describe("App", () => {
     candidateRows = [productCandidate()];
     specRows = [wdtSpec()];
     latestGoodsSyncRun = goodsSyncRun();
+    warehouseSettings = warehouseUsageSettings();
     currentUser = { id: "user-1", username: "admin", role: "admin", createdAt: "2026-06-30T00:00:00.000Z" };
     failReviewLines = false;
     vi.stubGlobal("fetch", vi.fn(handleFetch));
@@ -152,6 +155,23 @@ describe("App", () => {
     expect(screen.getByText("请先选择订货单文件，再开始导入。")).toBeInTheDocument();
   });
 
+  it("lets admins save warehouse usage settings", async () => {
+    render(<App />);
+
+    expect(await screen.findByText("可用仓库范围")).toBeInTheDocument();
+    const nearExpiry = screen.getByRole("checkbox", { name: "临期仓" });
+    const other = screen.getByRole("checkbox", { name: "其他仓" });
+
+    expect(nearExpiry).toBeChecked();
+    fireEvent.click(nearExpiry);
+    fireEvent.click(other);
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(warehouseSettings.includeNearExpiryWarehouse).toBe(false));
+    expect(warehouseSettings.includeOtherWarehouses).toBe(true);
+    expect(await screen.findByText("已保存，重新运行初审后生效")).toBeInTheDocument();
+  });
+
   it("disables import and export actions for reviewer accounts", async () => {
     currentUser = { id: "reviewer-1", username: "reviewer", role: "reviewer", createdAt: "2026-06-30T00:00:00.000Z" };
     render(<App />);
@@ -173,6 +193,10 @@ describe("App", () => {
     render(<App />);
 
     expect(await screen.findByText("operator")).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "主仓" })).toBeDisabled();
+    expect(screen.getByRole("checkbox", { name: "临期仓" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "保存" })).toBeDisabled();
+    expect(screen.getByText("当前账号只能查看仓库范围，请联系管理员调整。")).toBeInTheDocument();
     await clickBatch();
     switchToReviewTab();
 
@@ -441,6 +465,19 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
   if (url === "/api/v1/wdt/goods-sync-runs/latest") {
     return latestGoodsSyncRun ? json(latestGoodsSyncRun) : json({ message: "WDT goods sync run not found" }, 404);
   }
+  if (url === "/api/v1/settings/warehouse-usage" && method === "GET") return json(warehouseSettings);
+  if (url === "/api/v1/settings/warehouse-usage" && method === "PATCH") {
+    if (currentUser.role !== "admin") return json({ message: "Forbidden" }, 403);
+    const body = JSON.parse(String(init?.body));
+    warehouseSettings = {
+      ...warehouseSettings,
+      ...body,
+      updatedByUserId: currentUser.id,
+      updatedByUsername: currentUser.username,
+      updatedAt: "2026-07-06T00:00:00.000Z",
+    };
+    return json(warehouseSettings);
+  }
   if (url === "/api/v1/batches" && method === "GET") return json([currentBatch]);
   if (url === "/api/v1/batches" && method === "POST") {
     const body = JSON.parse(String(init?.body));
@@ -611,6 +648,19 @@ function goodsSyncRun(patch: Partial<WdtGoodsSyncRunDto> = {}): WdtGoodsSyncRunD
     fetchedCount: 3857,
     upsertedCount: 3788,
     errorMessage: "",
+    ...patch,
+  };
+}
+
+function warehouseUsageSettings(patch: Partial<WarehouseUsageSettingsDto> = {}): WarehouseUsageSettingsDto {
+  return {
+    includeMainWarehouse: true,
+    includeNearExpiryWarehouse: true,
+    includeDefectWarehouse: false,
+    includeOtherWarehouses: false,
+    updatedAt: "2026-07-03T00:00:00.000Z",
+    updatedByUserId: null,
+    updatedByUsername: null,
     ...patch,
   };
 }

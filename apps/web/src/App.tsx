@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { CheckCheck, ChevronDown, ChevronUp, ClipboardList, Download, FileSpreadsheet, HelpCircle, LogOut, PackageCheck, RefreshCcw, Send, Upload } from "lucide-react";
-import type { AuthUserDto, BatchSummary, ExportDto, ReviewDecision, ReviewLineDto, WdtGoodsSyncRunDto } from "@jy-trade/shared";
+import { CheckCheck, ChevronDown, ChevronUp, ClipboardList, Download, FileSpreadsheet, HelpCircle, LogOut, PackageCheck, RefreshCcw, Save, Send, Upload, Warehouse } from "lucide-react";
+import type { AuthUserDto, BatchSummary, ExportDto, ReviewDecision, ReviewLineDto, WarehouseUsageSettingsDto, WdtGoodsSyncRunDto } from "@jy-trade/shared";
 
 import { ProductMappingPanel } from "./components/ProductMappingPanel.js";
 import { ReviewTable, type ReviewDraft } from "./components/ReviewTable.js";
@@ -64,6 +64,9 @@ export function App() {
   const [savingReasonById, setSavingReasonById] = useState<Record<string, boolean>>({});
   const [goodsSyncRun, setGoodsSyncRun] = useState<WdtGoodsSyncRunDto | null>(null);
   const [goodsSyncError, setGoodsSyncError] = useState("正在读取商品同步状态");
+  const [warehouseSettings, setWarehouseSettings] = useState<WarehouseUsageSettingsDto | null>(null);
+  const [warehouseSettingsDraft, setWarehouseSettingsDraft] = useState<WarehouseUsageSettingsDto | null>(null);
+  const [warehouseSettingsMessage, setWarehouseSettingsMessage] = useState("");
   const [selectedOrderFileName, setSelectedOrderFileName] = useState("");
   const [pendingOrderUpload, setPendingOrderUpload] = useState<File | null>(null);
   const [developerMode, setDeveloperMode] = useState(false);
@@ -92,6 +95,19 @@ export function App() {
     return run;
   }
 
+  async function refreshWarehouseSettings() {
+    const response = await fetch("/api/v1/settings/warehouse-usage");
+    if (!response.ok) {
+      setWarehouseSettingsMessage("仓库范围读取失败");
+      return null;
+    }
+    const settings = (await response.json()) as WarehouseUsageSettingsDto;
+    setWarehouseSettings(settings);
+    setWarehouseSettingsDraft(settings);
+    setWarehouseSettingsMessage("");
+    return settings;
+  }
+
   async function checkMe() {
     const response = await fetch("/api/v1/me");
     const body = await response.json();
@@ -100,6 +116,7 @@ export function App() {
     if (body.user) {
       await refreshBatches();
       await refreshGoodsSyncStatus();
+      await refreshWarehouseSettings();
     }
   }
 
@@ -118,6 +135,7 @@ export function App() {
     setUser(body.user);
     await refreshBatches();
     await refreshGoodsSyncStatus();
+    await refreshWarehouseSettings();
   }
 
   async function logout() {
@@ -128,6 +146,9 @@ export function App() {
     setExports([]);
     setGoodsSyncRun(null);
     setGoodsSyncError("正在读取商品同步状态");
+    setWarehouseSettings(null);
+    setWarehouseSettingsDraft(null);
+    setWarehouseSettingsMessage("");
   }
 
   async function loadBatch(batch: BatchSummary, nextTab?: WorkTab) {
@@ -352,6 +373,29 @@ export function App() {
     });
   }
 
+  async function saveWarehouseSettings() {
+    if (!warehouseSettingsDraft) return;
+    const response = await fetch("/api/v1/settings/warehouse-usage", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        includeMainWarehouse: warehouseSettingsDraft.includeMainWarehouse,
+        includeNearExpiryWarehouse: warehouseSettingsDraft.includeNearExpiryWarehouse,
+        includeDefectWarehouse: warehouseSettingsDraft.includeDefectWarehouse,
+        includeOtherWarehouses: warehouseSettingsDraft.includeOtherWarehouses,
+      }),
+    });
+    if (!response.ok) {
+      const error = await response.json();
+      setWarehouseSettingsMessage(error.message ?? "仓库范围保存失败");
+      return;
+    }
+    const settings = (await response.json()) as WarehouseUsageSettingsDto;
+    setWarehouseSettings(settings);
+    setWarehouseSettingsDraft(settings);
+    setWarehouseSettingsMessage("已保存，重新运行初审后生效");
+  }
+
   async function bulkApprove() {
     if (!activeBatch) return;
     const response = await fetch(`/api/v1/batches/${activeBatch.id}/actions/bulk-approve`, { method: "POST" });
@@ -528,6 +572,12 @@ export function App() {
                 orderFile={orderFile}
                 selectedOrderFileName={selectedOrderFileName}
                 canImport={permissions.canImport}
+                canManageSettings={permissions.canManageSettings}
+                warehouseSettings={warehouseSettings}
+                warehouseSettingsDraft={warehouseSettingsDraft}
+                warehouseSettingsMessage={warehouseSettingsMessage}
+                onSaveWarehouseSettings={() => void saveWarehouseSettings()}
+                onWarehouseSettingsDraftChange={setWarehouseSettingsDraft}
                 onOrderFileSelect={(file) => {
                   setPendingOrderUpload(file);
                   setSelectedOrderFileName(file.name);
@@ -710,6 +760,12 @@ function ImportTab({
   orderFile,
   selectedOrderFileName,
   canImport,
+  canManageSettings,
+  warehouseSettings,
+  warehouseSettingsDraft,
+  warehouseSettingsMessage,
+  onSaveWarehouseSettings,
+  onWarehouseSettingsDraftChange,
   onOrderFileSelect,
   onMockFileChange,
   onOrderFileChange,
@@ -724,6 +780,12 @@ function ImportTab({
   orderFile: string;
   selectedOrderFileName: string;
   canImport: boolean;
+  canManageSettings: boolean;
+  warehouseSettings: WarehouseUsageSettingsDto | null;
+  warehouseSettingsDraft: WarehouseUsageSettingsDto | null;
+  warehouseSettingsMessage: string;
+  onSaveWarehouseSettings: () => void;
+  onWarehouseSettingsDraftChange: (settings: WarehouseUsageSettingsDto) => void;
   onOrderFileSelect: (file: File) => void;
   onMockFileChange: (value: string) => void;
   onOrderFileChange: (value: string) => void;
@@ -798,7 +860,17 @@ function ImportTab({
           </div>
         ) : null}
       </div>
-      <GoodsSyncStatusPanel error={goodsSyncError} run={goodsSyncRun} onRefresh={onRefreshGoodsSync} />
+      <div className="space-y-4">
+        <GoodsSyncStatusPanel error={goodsSyncError} run={goodsSyncRun} onRefresh={onRefreshGoodsSync} />
+        <WarehouseUsageSettingsPanel
+          canManageSettings={canManageSettings}
+          draft={warehouseSettingsDraft}
+          message={warehouseSettingsMessage}
+          settings={warehouseSettings}
+          onDraftChange={onWarehouseSettingsDraftChange}
+          onSave={onSaveWarehouseSettings}
+        />
+      </div>
     </section>
   );
 }
@@ -1056,6 +1128,111 @@ function GoodsSyncStatusPanel({
   );
 }
 
+function WarehouseUsageSettingsPanel({
+  canManageSettings,
+  draft,
+  message,
+  settings,
+  onDraftChange,
+  onSave,
+}: {
+  canManageSettings: boolean;
+  draft: WarehouseUsageSettingsDto | null;
+  message: string;
+  settings: WarehouseUsageSettingsDto | null;
+  onDraftChange: (settings: WarehouseUsageSettingsDto) => void;
+  onSave: () => void;
+}) {
+  const current = draft ?? settings;
+  const changed = Boolean(
+    current
+      && settings
+      && (current.includeMainWarehouse !== settings.includeMainWarehouse
+        || current.includeNearExpiryWarehouse !== settings.includeNearExpiryWarehouse
+        || current.includeDefectWarehouse !== settings.includeDefectWarehouse
+        || current.includeOtherWarehouses !== settings.includeOtherWarehouses),
+  );
+
+  function update(patch: Partial<WarehouseUsageSettingsDto>) {
+    if (!current || !canManageSettings) return;
+    onDraftChange({ ...current, ...patch });
+  }
+
+  return (
+    <section className="rounded-md border border-border bg-card p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2">
+            <Warehouse className="h-4 w-4 text-primary" />
+            <h3 className="text-sm font-semibold">可用仓库范围</h3>
+          </div>
+          <p className="mt-2 text-sm text-muted-foreground">
+            上次更新：{settings ? formatShortDate(settings.updatedAt) : "正在读取"}
+          </p>
+        </div>
+        <Button className="h-8 px-2" disabled={!canManageSettings || !changed} onClick={onSave}>
+          <Save className="h-4 w-4" />
+          保存
+        </Button>
+      </div>
+      <div className="mt-4 grid gap-2">
+        <WarehouseToggle
+          checked={Boolean(current?.includeMainWarehouse)}
+          disabled={!canManageSettings || !current}
+          label="主仓"
+          onChange={(checked) => update({ includeMainWarehouse: checked })}
+        />
+        <WarehouseToggle
+          checked={Boolean(current?.includeNearExpiryWarehouse)}
+          disabled={!canManageSettings || !current}
+          label="临期仓"
+          onChange={(checked) => update({ includeNearExpiryWarehouse: checked })}
+        />
+        <WarehouseToggle
+          checked={Boolean(current?.includeDefectWarehouse)}
+          disabled={!canManageSettings || !current}
+          label="次品仓"
+          onChange={(checked) => update({ includeDefectWarehouse: checked })}
+        />
+        <WarehouseToggle
+          checked={Boolean(current?.includeOtherWarehouses)}
+          disabled={!canManageSettings || !current}
+          label="其他仓"
+          onChange={(checked) => update({ includeOtherWarehouses: checked })}
+        />
+      </div>
+      {message ? <div className="mt-3 text-sm text-muted-foreground">{message}</div> : null}
+      {!canManageSettings ? <PermissionHint className="mt-3" message="当前账号只能查看仓库范围，请联系管理员调整。" /> : null}
+    </section>
+  );
+}
+
+function WarehouseToggle({
+  checked,
+  disabled,
+  label,
+  onChange,
+}: {
+  checked: boolean;
+  disabled: boolean;
+  label: string;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label className="flex min-h-10 items-center justify-between gap-3 rounded-md border border-border px-3 py-2 text-sm">
+      <span className="font-medium">{label}</span>
+      <input
+        aria-label={label}
+        className="h-4 w-4"
+        checked={checked}
+        disabled={disabled}
+        type="checkbox"
+        onChange={(event) => onChange(event.target.checked)}
+      />
+    </label>
+  );
+}
+
 function toDraft(line: ReviewLineDto): ReviewDraft {
   return {
     decision: line.decision,
@@ -1106,6 +1283,7 @@ function buildUserPermissions(user: AuthUserDto | null) {
     canImport: role === "admin" || role === "operator",
     canReview: role === "admin" || role === "reviewer",
     canExport: role === "admin" || role === "operator",
+    canManageSettings: role === "admin",
   };
 }
 

@@ -120,6 +120,17 @@ export const auditLogs = sqliteTable(
   ],
 );
 
+export const warehouseUsageSettings = sqliteTable("warehouse_usage_settings", {
+  id: text("id").primaryKey(),
+  includeMainWarehouse: integer("include_main_warehouse").notNull().default(1),
+  includeNearExpiryWarehouse: integer("include_near_expiry_warehouse").notNull().default(1),
+  includeDefectWarehouse: integer("include_defect_warehouse").notNull().default(0),
+  includeOtherWarehouses: integer("include_other_warehouses").notNull().default(0),
+  updatedByUserId: text("updated_by_user_id"),
+  updatedByUsername: text("updated_by_username"),
+  updatedAt: text("updated_at").notNull(),
+});
+
 export const wdtGoodsSpecs = sqliteTable(
   "wdt_goods_specs",
   {

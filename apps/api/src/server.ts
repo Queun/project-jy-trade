@@ -12,6 +12,7 @@ import {
   UpdateReviewLinePriorityRequestSchema,
   RunMockReviewRequestSchema,
   RunRealReviewRequestSchema,
+  UpdateWarehouseUsageSettingsRequestSchema,
   UploadOrderFileRequestSchema,
   type AuthUserDto,
   type BatchSummary,
@@ -19,6 +20,7 @@ import {
   type ProductMatchCandidateDto,
   type ProductMappingDto,
   type UserRole,
+  type WarehouseUsageSettingsDto,
   type WdtGoodsSpecSearchResultDto,
   type WdtGoodsSyncRunDto,
 } from "@jy-trade/shared";
@@ -165,6 +167,14 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     const lines = await store.getReviewLines(batchId);
     if (!lines) return reply.code(404).send({ message: "Batch not found" });
     return lines;
+  });
+
+  app.get("/api/v1/settings/warehouse-usage", async (): Promise<WarehouseUsageSettingsDto> => store.getWarehouseUsageSettings());
+
+  app.patch("/api/v1/settings/warehouse-usage", async (request): Promise<WarehouseUsageSettingsDto> => {
+    requireRole(request, ["admin"]);
+    const body = UpdateWarehouseUsageSettingsRequestSchema.parse(request.body ?? {});
+    return store.updateWarehouseUsageSettings(body, getCurrentUser(request));
   });
 
   app.patch("/api/v1/batches/:batchId/review-lines/:lineId/decision", async (request, reply) => {

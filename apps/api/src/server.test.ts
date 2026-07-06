@@ -356,6 +356,101 @@ describe("api server", () => {
     await app.close();
   });
 
+  it("gets and updates warehouse usage settings for admins only", async () => {
+    const app = buildTestServer();
+    const adminCookie = await loginCookie(app);
+    const operatorCookie = await loginCookie(app, "operator", "operator123");
+
+    const defaults = await app.inject({
+      method: "GET",
+      url: "/api/v1/settings/warehouse-usage",
+      headers: { cookie: operatorCookie },
+    });
+    expect(defaults.statusCode).toBe(200);
+    expect(defaults.json()).toMatchObject({
+      includeMainWarehouse: true,
+      includeNearExpiryWarehouse: true,
+      includeDefectWarehouse: false,
+      includeOtherWarehouses: false,
+    });
+
+    const forbidden = await app.inject({
+      method: "PATCH",
+      url: "/api/v1/settings/warehouse-usage",
+      payload: {
+        includeMainWarehouse: true,
+        includeNearExpiryWarehouse: false,
+        includeDefectWarehouse: false,
+        includeOtherWarehouses: true,
+      },
+      headers: { cookie: operatorCookie },
+    });
+    expect(forbidden.statusCode).toBe(403);
+
+    const updated = await app.inject({
+      method: "PATCH",
+      url: "/api/v1/settings/warehouse-usage",
+      payload: {
+        includeMainWarehouse: true,
+        includeNearExpiryWarehouse: false,
+        includeDefectWarehouse: false,
+        includeOtherWarehouses: true,
+      },
+      headers: { cookie: adminCookie },
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json()).toMatchObject({
+      includeMainWarehouse: true,
+      includeNearExpiryWarehouse: false,
+      includeDefectWarehouse: false,
+      includeOtherWarehouses: true,
+      updatedByUsername: "admin",
+    });
+    await app.close();
+  });
+
+  it("migrates legacy warehouse usage settings from app_settings", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await database.client.execute(`
+      create table if not exists app_settings (
+        key text primary key not null,
+        value_json text not null,
+        updated_at text not null,
+        updated_by_user_id text
+      )
+    `);
+    await database.client.execute({
+      sql: "insert into app_settings (key, value_json, updated_at, updated_by_user_id) values (?, ?, ?, ?)",
+      args: [
+        "warehouse_usage",
+        JSON.stringify({ enabledBuckets: { main: true, nearExpiry: false, defect: true, other: true } }),
+        "2026-07-06T08:05:26.244Z",
+        "legacy-user",
+      ],
+    });
+    await database.close();
+
+    const app = buildTestServer(databaseUrl);
+    const cookie = await loginCookie(app);
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/v1/settings/warehouse-usage",
+      headers: { cookie },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      includeMainWarehouse: true,
+      includeNearExpiryWarehouse: false,
+      includeDefectWarehouse: true,
+      includeOtherWarehouses: true,
+      updatedByUserId: "legacy-user",
+    });
+    await app.close();
+  });
+
   it("bulk approves matched ready and partial lines only", async () => {
     const app = buildTestServer();
     const { batch, cookie } = await createReviewedBatch(app, "examples/mock_flow_mixed.json");
@@ -651,6 +746,73 @@ describe("api server", () => {
     expect(matched.length).toBeGreaterThan(1);
     expect(matched[0]).toMatchObject({ matchStatus: "matched", mainAvailableBefore: 15 });
     expect(matched[1].mainAvailableBefore).toBeLessThanOrEqual(15);
+    await app.close();
+  });
+
+  it("applies warehouse usage settings to real review suggestions", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await seedSuccessfulGoodsCache(database);
+    await database.close();
+
+    const stockClient: StockLookupClient = {
+      async queryStock(specNo) {
+        return {
+          status: 0,
+          data: {
+            total_count: 3,
+            detail_list: [
+              { spec_no: specNo, warehouse_no: "001", warehouse_name: "main", available_send_stock: 1 },
+              { spec_no: specNo, warehouse_no: "LINQI", warehouse_name: "near-expiry", available_send_stock: 40 },
+              { spec_no: specNo, warehouse_no: "002", warehouse_name: "other", available_send_stock: 40 },
+            ],
+          },
+        };
+      },
+    };
+    const app = buildTestServer(databaseUrl, undefined, stockClient);
+    const cookie = await loginCookie(app);
+
+    const settings = await app.inject({
+      method: "PATCH",
+      url: "/api/v1/settings/warehouse-usage",
+      payload: {
+        includeMainWarehouse: true,
+        includeNearExpiryWarehouse: false,
+        includeDefectWarehouse: false,
+        includeOtherWarehouses: true,
+      },
+      headers: { cookie },
+    });
+    expect(settings.statusCode).toBe(200);
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/v1/batches",
+      payload: { filePath: orderFile, mode: "production_api" },
+      headers: { cookie },
+    });
+    const review = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${created.json().id}/actions/run-real-review`,
+      payload: {},
+      headers: { cookie },
+    });
+    expect(review.statusCode).toBe(200);
+
+    const linesResponse = await app.inject({
+      method: "GET",
+      url: `/api/v1/batches/${created.json().id}/review-lines`,
+      headers: { cookie },
+    });
+    const firstMatched = linesResponse.json().find((line: { wdtSpecNo: string }) => line.wdtSpecNo === "3282770392869");
+    expect(firstMatched).toMatchObject({
+      matchStatus: "matched",
+      mainAvailableBefore: 1,
+      nearExpiryAvailableBefore: 40,
+      suggestedShipQty: 12,
+    });
     await app.close();
   });
 

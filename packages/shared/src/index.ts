@@ -148,6 +148,25 @@ export const RunRealReviewRequestSchema = z.object({
 });
 export type RunRealReviewRequest = z.infer<typeof RunRealReviewRequestSchema>;
 
+export const WarehouseUsageSettingsDtoSchema = z.object({
+  includeMainWarehouse: z.boolean(),
+  includeNearExpiryWarehouse: z.boolean(),
+  includeDefectWarehouse: z.boolean(),
+  includeOtherWarehouses: z.boolean(),
+  updatedAt: z.string(),
+  updatedByUserId: z.string().nullable().optional(),
+  updatedByUsername: z.string().nullable().optional(),
+});
+export type WarehouseUsageSettingsDto = z.infer<typeof WarehouseUsageSettingsDtoSchema>;
+
+export const UpdateWarehouseUsageSettingsRequestSchema = z.object({
+  includeMainWarehouse: z.boolean(),
+  includeNearExpiryWarehouse: z.boolean(),
+  includeDefectWarehouse: z.boolean(),
+  includeOtherWarehouses: z.boolean(),
+});
+export type UpdateWarehouseUsageSettingsRequest = z.infer<typeof UpdateWarehouseUsageSettingsRequestSchema>;
+
 export const BulkApproveResponseDtoSchema = z.object({
   batch: BatchSummarySchema,
   updatedCount: z.number(),
