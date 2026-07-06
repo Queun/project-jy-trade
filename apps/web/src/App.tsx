@@ -366,6 +366,7 @@ export function App() {
 
   const stats = useMemo(() => buildStats(reviewLines), [reviewLines]);
   const filteredLines = useMemo(() => reviewLines.filter((line) => matchesFilter(line, activeFilter)), [reviewLines, activeFilter]);
+  const permissions = useMemo(() => buildUserPermissions(user), [user]);
 
   if (authLoading) {
     return (
@@ -476,6 +477,7 @@ export function App() {
                 mockFile={mockFile}
                 orderFile={orderFile}
                 selectedOrderFileName={selectedOrderFileName}
+                canImport={permissions.canImport}
                 onOrderFileSelect={(file) => {
                   setPendingOrderUpload(file);
                   setSelectedOrderFileName(file.name);
@@ -497,6 +499,7 @@ export function App() {
                 errorsById={errorsById}
                 filteredLines={filteredLines}
                 isDeveloperMode={developerMode}
+                canReview={permissions.canReview}
                 stats={stats}
                 onBulkApprove={() => void bulkApprove()}
                 onDraftChange={updateDraft}
@@ -511,6 +514,7 @@ export function App() {
             {activeTab === "export" ? (
               <ExportTab
                 activeBatch={activeBatch}
+                canExport={permissions.canExport}
                 exportType={exportType}
                 exports={exports}
                 onCreateExport={() => void createExport()}
@@ -652,6 +656,7 @@ function ImportTab({
   mockFile,
   orderFile,
   selectedOrderFileName,
+  canImport,
   onOrderFileSelect,
   onMockFileChange,
   onOrderFileChange,
@@ -665,6 +670,7 @@ function ImportTab({
   mockFile: string;
   orderFile: string;
   selectedOrderFileName: string;
+  canImport: boolean;
   onOrderFileSelect: (file: File) => void;
   onMockFileChange: (value: string) => void;
   onOrderFileChange: (value: string) => void;
@@ -672,7 +678,7 @@ function ImportTab({
   onRunDemo: () => void;
   onRunReal: () => void;
 }) {
-  const canRunReal = goodsSyncRun?.status === "success" && (isDeveloperMode || Boolean(selectedOrderFileName));
+  const canRunReal = canImport && goodsSyncRun?.status === "success" && (isDeveloperMode || Boolean(selectedOrderFileName));
 
   return (
     <section className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
@@ -727,7 +733,9 @@ function ImportTab({
             </Button>
           ) : null}
         </div>
-        {goodsSyncRun?.status !== "success" ? (
+        {!canImport ? (
+          <PermissionHint message="当前账号不能导入订单，请联系管理员或切换到运营账号。" />
+        ) : goodsSyncRun?.status !== "success" ? (
           <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
             商品档案同步可用后才能导入新订单。请刷新右侧状态，或先完成商品档案同步。
           </div>
@@ -749,6 +757,7 @@ function ReviewTab({
   errorsById,
   filteredLines,
   isDeveloperMode,
+  canReview,
   stats,
   onBulkApprove,
   onDraftChange,
@@ -764,6 +773,7 @@ function ReviewTab({
   errorsById: Record<string, string>;
   filteredLines: ReviewLineDto[];
   isDeveloperMode: boolean;
+  canReview: boolean;
   stats: ReturnType<typeof buildStats>;
   onBulkApprove: () => void;
   onDraftChange: (lineId: string, patch: Partial<ReviewDraft>) => void;
@@ -791,16 +801,17 @@ function ReviewTab({
             <p className="text-sm text-muted-foreground">{activeBatch ? "确认本批次发货数量和原因" : "请先选择或导入批次"}</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Button disabled={!activeBatch} onClick={onBulkApprove}>
+            <Button disabled={!activeBatch || !canReview} onClick={onBulkApprove}>
               <CheckCheck className="h-4 w-4" />
               批量通过可发项
             </Button>
-            <Button disabled={!activeBatch} onClick={onSubmitReview}>
+            <Button disabled={!activeBatch || !canReview} onClick={onSubmitReview}>
               <Send className="h-4 w-4" />
               提交审核完成
             </Button>
           </div>
         </div>
+        {!canReview ? <PermissionHint className="mb-3" message="当前账号不能审核发货，请联系管理员或切换到审核账号。" /> : null}
         {activeBatch ? (
           <>
             <div className="mb-3 flex flex-wrap gap-2">
@@ -823,6 +834,7 @@ function ReviewTab({
                 draftById={draftById}
                 errorsById={errorsById}
                 rows={filteredLines}
+                readOnly={!canReview}
                 onDraftChange={onDraftChange}
                 onQuickDecision={onQuickDecision}
                 onSave={onSave}
@@ -842,18 +854,21 @@ function ReviewTab({
 
 function ExportTab({
   activeBatch,
+  canExport,
   exportType,
   exports,
   onCreateExport,
   onExportTypeChange,
 }: {
   activeBatch: BatchSummary | null;
+  canExport: boolean;
   exportType: ExportDto["type"];
   exports: ExportDto[];
   onCreateExport: () => void;
   onExportTypeChange: (type: ExportDto["type"]) => void;
 }) {
-  const canCreateExport = activeBatch?.status === "reviewed" || activeBatch?.status === "exported";
+  const batchReadyForExport = activeBatch?.status === "reviewed" || activeBatch?.status === "exported";
+  const canCreateExport = canExport && batchReadyForExport;
 
   return (
     <section className="mt-4 rounded-md border border-border bg-card p-4">
@@ -879,9 +894,11 @@ function ExportTab({
           </Button>
         </div>
       </div>
-      {!activeBatch ? (
+      {!canExport ? (
+        <PermissionHint className="mt-4" message="当前账号不能生成做单文件，请联系管理员或切换到运营账号。" />
+      ) : !activeBatch ? (
         <EmptyState className="mt-4" title="先选择一个批次" description="完成审核后，这里会生成初审单、确定发货单或做单 Excel。" />
-      ) : !canCreateExport ? (
+      ) : !batchReadyForExport ? (
         <EmptyState className="mt-4" title="等待审核完成" description="当前批次还没有提交审核，确认发货数量后再生成做单文件。" />
       ) : null}
       <div className="mt-4 space-y-2">
@@ -923,6 +940,10 @@ function EmptyState({ className = "", description, title }: { className?: string
       <div className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">{description}</div>
     </div>
   );
+}
+
+function PermissionHint({ className = "", message }: { className?: string; message: string }) {
+  return <div className={`rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950 ${className}`}>{message}</div>;
 }
 
 function Stat({ label, value }: { label: string; value: number }) {
@@ -1006,6 +1027,15 @@ function buildBatchDetail(lines: ReviewLineDto[]) {
     orderTimeRange: firstTime === lastTime ? firstTime : `${firstTime} 至 ${lastTime}`,
     storeCount: new Set(lines.map((line) => line.storeNo || line.storeName).filter(Boolean)).size,
     orderCount: new Set(lines.map((line) => line.orderNoticeNo).filter(Boolean)).size,
+  };
+}
+
+function buildUserPermissions(user: AuthUserDto | null) {
+  const role = user?.role;
+  return {
+    canImport: role === "admin" || role === "operator",
+    canReview: role === "admin" || role === "reviewer",
+    canExport: role === "admin" || role === "operator",
   };
 }
 

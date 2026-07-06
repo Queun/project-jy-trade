@@ -108,6 +108,66 @@ describe("api server", () => {
     await app.close();
   });
 
+  it("bootstraps fixed operator and reviewer accounts", async () => {
+    const app = buildTestServer();
+
+    const operator = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      payload: { username: "operator", password: "operator123" },
+    });
+    expect(operator.statusCode).toBe(200);
+    expect(operator.json().user.role).toBe("operator");
+
+    const reviewer = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      payload: { username: "reviewer", password: "reviewer123" },
+    });
+    expect(reviewer.statusCode).toBe(200);
+    expect(reviewer.json().user.role).toBe("reviewer");
+    await app.close();
+  });
+
+  it("enforces role permissions on write operations", async () => {
+    const app = buildTestServer();
+    const reviewerCookie = await loginCookie(app, "reviewer", "reviewer123");
+    const operatorCookie = await loginCookie(app, "operator", "operator123");
+
+    const reviewerCreate = await app.inject({
+      method: "POST",
+      url: "/api/v1/batches",
+      payload: { filePath: orderFile, mode: "mock" },
+      headers: { cookie: reviewerCookie },
+    });
+    expect(reviewerCreate.statusCode).toBe(403);
+    expect(reviewerCreate.json().message).toBe("当前账号没有执行此操作的权限");
+
+    const operatorCreate = await app.inject({
+      method: "POST",
+      url: "/api/v1/batches",
+      payload: { filePath: orderFile, mode: "mock" },
+      headers: { cookie: operatorCookie },
+    });
+    expect(operatorCreate.statusCode).toBe(201);
+    const batch = operatorCreate.json();
+
+    const operatorSubmit = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${batch.id}/actions/submit-review`,
+      headers: { cookie: operatorCookie },
+    });
+    expect(operatorSubmit.statusCode).toBe(403);
+
+    const reviewerSubmit = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${batch.id}/actions/submit-review`,
+      headers: { cookie: reviewerCookie },
+    });
+    expect(reviewerSubmit.statusCode).toBe(200);
+    await app.close();
+  });
+
   it("rejects protected endpoints without a session", async () => {
     const app = buildTestServer();
     const response = await app.inject({ method: "GET", url: "/api/v1/batches" });
@@ -600,11 +660,11 @@ async function createReviewedBatch(app: ReturnType<typeof buildApiServer>, mockD
   return { batch, lines, firstLine: lines[0], cookie };
 }
 
-async function loginCookie(app: ReturnType<typeof buildApiServer>) {
+async function loginCookie(app: ReturnType<typeof buildApiServer>, username = "admin", password = "admin123") {
   const login = await app.inject({
     method: "POST",
     url: "/api/v1/auth/login",
-    payload: { username: "admin", password: "admin123" },
+    payload: { username, password },
   });
   expect(login.statusCode).toBe(200);
   return String(login.headers["set-cookie"]);

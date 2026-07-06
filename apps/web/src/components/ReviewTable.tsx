@@ -8,6 +8,7 @@ interface ReviewTableProps {
   rows: ReviewLineDto[];
   draftById: Record<string, ReviewDraft>;
   errorsById: Record<string, string>;
+  readOnly?: boolean;
   onDraftChange: (lineId: string, patch: Partial<ReviewDraft>) => void;
   onSave: (line: ReviewLineDto) => void;
   onQuickDecision: (line: ReviewLineDto, decision: ReviewDecision) => void;
@@ -42,6 +43,7 @@ export function ReviewTable({
   rows,
   draftById,
   errorsById,
+  readOnly = false,
   onDraftChange,
   onSave,
   onQuickDecision,
@@ -105,11 +107,12 @@ export function ReviewTable({
             <div className="flex flex-wrap items-center gap-2">
               <Badge tone={decisionTone(draft.decision)}>{decisionText(draft.decision)}</Badge>
               {isOverSuggested ? <Badge tone="warn">超建议数</Badge> : null}
-              <Button className="h-8 px-2" onClick={() => onQuickDecision(line, "ship")}>
+              <Button className="h-8 px-2" disabled={readOnly} onClick={() => onQuickDecision(line, "ship")}>
                 发货
               </Button>
               <Button
                 className="h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80"
+                disabled={readOnly}
                 onClick={() => onQuickDecision(line, "do_not_ship")}
               >
                 不发
@@ -119,6 +122,7 @@ export function ReviewTable({
               <input
                 aria-label={`审核发货数 ${line.id}`}
                 className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+                disabled={readOnly}
                 min={0}
                 type="number"
                 value={draft.approvedShipQty}
@@ -127,11 +131,12 @@ export function ReviewTable({
               <input
                 aria-label={`审核原因 ${line.id}`}
                 className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+                disabled={readOnly}
                 placeholder="原因"
                 value={draft.reason}
                 onChange={(event) => onDraftChange(line.id, { reason: event.target.value })}
               />
-              <Button className="h-9 px-3" onClick={() => onSave(line)}>
+              <Button className="h-9 px-3" disabled={readOnly} onClick={() => onSave(line)}>
                 保存
               </Button>
             </div>

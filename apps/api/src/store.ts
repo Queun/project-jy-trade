@@ -105,7 +105,11 @@ export function createSqliteStore(options: StoreOptions = {}) {
   const stockClient = options.stockClient ?? wdtClients?.stockClient;
   const bootstrapUsername = process.env.JY_TRADE_BOOTSTRAP_USERNAME ?? "admin";
   const bootstrapPassword = process.env.JY_TRADE_BOOTSTRAP_PASSWORD ?? "admin123";
-  const ready = ensureBootstrapUser(database, bootstrapUsername, bootstrapPassword);
+  const ready = ensureBootstrapUsers(database, [
+    { username: bootstrapUsername, password: bootstrapPassword, role: "admin" },
+    { username: "operator", password: "operator123", role: "operator" },
+    { username: "reviewer", password: "reviewer123", role: "reviewer" },
+  ]);
   const goodsSyncRepository = createGoodsSyncRepository(database);
 
   return {
@@ -1342,18 +1346,20 @@ function resolveProjectPath(path: string, projectRoot: string): string {
   return resolve(projectRoot, path);
 }
 
-async function ensureBootstrapUser(database: DatabaseContext, username: string, password: string) {
+async function ensureBootstrapUsers(database: DatabaseContext, bootstrapUsers: Array<{ username: string; password: string; role: AuthUserDto["role"] }>) {
   await database.ready;
-  const existing = await findUserByUsername(database, username);
-  if (existing) return;
   const now = new Date().toISOString();
-  await database.db.insert(users).values({
-    id: `user-${randomUUID()}`,
-    username,
-    passwordHash: await hashPassword(password),
-    role: "admin",
-    createdAt: now,
-  });
+  for (const user of bootstrapUsers) {
+    const existing = await findUserByUsername(database, user.username);
+    if (existing) continue;
+    await database.db.insert(users).values({
+      id: `user-${randomUUID()}`,
+      username: user.username,
+      passwordHash: await hashPassword(user.password),
+      role: user.role,
+      createdAt: now,
+    });
+  }
 }
 
 async function findUserByUsername(database: DatabaseContext, username: string): Promise<UserRow | undefined> {

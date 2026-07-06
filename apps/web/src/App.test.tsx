@@ -31,6 +31,7 @@ let mappingRows: ProductMappingDto[];
 let candidateRows: ProductMatchCandidateDto[];
 let specRows: WdtGoodsSpecSearchResultDto[];
 let latestGoodsSyncRun: WdtGoodsSyncRunDto | null;
+let currentUser: { id: string; username: string; role: "admin" | "operator" | "reviewer"; createdAt: string };
 
 describe("App", () => {
   beforeEach(() => {
@@ -58,6 +59,7 @@ describe("App", () => {
     candidateRows = [productCandidate()];
     specRows = [wdtSpec()];
     latestGoodsSyncRun = goodsSyncRun();
+    currentUser = { id: "user-1", username: "admin", role: "admin", createdAt: "2026-06-30T00:00:00.000Z" };
     vi.stubGlobal("fetch", vi.fn(handleFetch));
   });
 
@@ -146,6 +148,39 @@ describe("App", () => {
     const importButton = await screen.findByRole("button", { name: "导入新订单" });
     expect(importButton).toBeDisabled();
     expect(screen.getByText("请先选择订货单文件，再开始导入。")).toBeInTheDocument();
+  });
+
+  it("disables import and export actions for reviewer accounts", async () => {
+    currentUser = { id: "reviewer-1", username: "reviewer", role: "reviewer", createdAt: "2026-06-30T00:00:00.000Z" };
+    render(<App />);
+
+    expect(await screen.findByText("reviewer")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "导入新订单" })).toBeDisabled();
+    expect(screen.getByText("当前账号不能导入订单，请联系管理员或切换到运营账号。")).toBeInTheDocument();
+
+    await clickBatch();
+    switchToReviewTab();
+    expect(screen.getByRole("button", { name: "提交审核完成" })).not.toBeDisabled();
+    switchToExportTab();
+    expect(screen.getByRole("button", { name: "生成导出" })).toBeDisabled();
+    expect(screen.getByText("当前账号不能生成做单文件，请联系管理员或切换到运营账号。")).toBeInTheDocument();
+  });
+
+  it("disables review actions for operator accounts", async () => {
+    currentUser = { id: "operator-1", username: "operator", role: "operator", createdAt: "2026-06-30T00:00:00.000Z" };
+    render(<App />);
+
+    expect(await screen.findByText("operator")).toBeInTheDocument();
+    await clickBatch();
+    switchToReviewTab();
+
+    expect(screen.getByText("当前账号不能审核发货，请联系管理员或切换到审核账号。")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "批量通过可发项" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "提交审核完成" })).toBeDisabled();
+    const row = await rowFor("可发商品");
+    expect(within(row).getByRole("button", { name: "发货" })).toBeDisabled();
+    switchToExportTab();
+    expect(screen.getByText("等待审核完成")).toBeInTheDocument();
   });
 
   it("shows clear empty states before a batch is selected", async () => {
@@ -336,10 +371,17 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
   const method = init?.method ?? "GET";
 
   if (url === "/api/v1/me") {
-    return json({ user: { id: "user-1", username: "admin", role: "admin", createdAt: "2026-06-30T00:00:00.000Z" } });
+    return json({ user: currentUser });
   }
   if (url === "/api/v1/auth/login") {
-    return json({ user: { id: "user-1", username: "admin", role: "admin", createdAt: "2026-06-30T00:00:00.000Z" } });
+    const body = JSON.parse(String(init?.body));
+    currentUser = {
+      id: `${body.username}-1`,
+      username: body.username,
+      role: body.username === "operator" ? "operator" : body.username === "reviewer" ? "reviewer" : "admin",
+      createdAt: "2026-06-30T00:00:00.000Z",
+    };
+    return json({ user: currentUser });
   }
   if (url === "/api/v1/auth/logout") return json({ ok: true });
   if (url === "/api/v1/wdt/goods-sync-runs/latest") {

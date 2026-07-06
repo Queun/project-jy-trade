@@ -17,6 +17,7 @@ import {
   type ExportDto,
   type ProductMatchCandidateDto,
   type ProductMappingDto,
+  type UserRole,
   type WdtGoodsSpecSearchResultDto,
   type WdtGoodsSyncRunDto,
 } from "@jy-trade/shared";
@@ -52,6 +53,9 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     if (error instanceof UnauthorizedError) {
       return reply.code(401).send({ message: "Unauthorized" });
     }
+    if (error instanceof ForbiddenError) {
+      return reply.code(403).send({ message: "当前账号没有执行此操作的权限" });
+    }
     if (error instanceof ZodError) {
       return reply.code(400).send({ message: "Invalid request", issues: error.issues });
     }
@@ -86,12 +90,14 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   app.get("/api/v1/me", async (request) => store.getMe(readSessionId(request.headers.cookie)));
 
   app.post("/api/v1/batches", async (request, reply) => {
+    requireRole(request, ["admin", "operator"]);
     const body = CreateBatchRequestSchema.parse(request.body ?? {});
     const batch = await store.createBatch(body, getCurrentUser(request));
     return reply.code(201).send(batch);
   });
 
   app.post("/api/v1/order-files", async (request, reply) => {
+    requireRole(request, ["admin", "operator"]);
     const body = UploadOrderFileRequestSchema.parse(request.body ?? {});
     const originalName = body.fileName.split(/[\\/]/).at(-1) ?? body.fileName;
     const extension = extname(originalName).toLowerCase();
@@ -120,6 +126,7 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   });
 
   app.post("/api/v1/batches/:batchId/actions/run-mock-review", async (request, reply) => {
+    requireRole(request, ["admin", "operator"]);
     const { batchId } = request.params as { batchId: string };
     const body = RunMockReviewRequestSchema.parse(request.body ?? {});
     const result = await store.runMockReview(batchId, body.mockDataFile, getCurrentUser(request));
@@ -128,6 +135,7 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   });
 
   app.post("/api/v1/batches/:batchId/actions/run-real-review", async (request, reply) => {
+    requireRole(request, ["admin", "operator"]);
     const { batchId } = request.params as { batchId: string };
     const body = RunRealReviewRequestSchema.parse(request.body ?? {});
     const result = await store.runRealReview(batchId, body, getCurrentUser(request));
@@ -136,6 +144,7 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   });
 
   app.post("/api/v1/batches/:batchId/actions/bulk-approve", async (request, reply) => {
+    requireRole(request, ["admin", "reviewer"]);
     const { batchId } = request.params as { batchId: string };
     const result = await store.bulkApprove(batchId, getCurrentUser(request));
     if (!result) return reply.code(404).send({ message: "Batch not found" });
@@ -143,6 +152,7 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   });
 
   app.post("/api/v1/batches/:batchId/actions/submit-review", async (request, reply) => {
+    requireRole(request, ["admin", "reviewer"]);
     const { batchId } = request.params as { batchId: string };
     const result = await store.submitReview(batchId, getCurrentUser(request));
     if (!result) return reply.code(404).send({ message: "Batch not found" });
@@ -157,6 +167,7 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   });
 
   app.patch("/api/v1/batches/:batchId/review-lines/:lineId/decision", async (request, reply) => {
+    requireRole(request, ["admin", "reviewer"]);
     const { batchId, lineId } = request.params as { batchId: string; lineId: string };
     const body = ReviewDecisionDtoSchema.parse(request.body ?? {});
     const line = await store.updateReviewDecision(batchId, lineId, body, getCurrentUser(request));
@@ -170,6 +181,7 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   });
 
   app.post("/api/v1/batches/:batchId/exports", async (request, reply): Promise<ExportDto | unknown> => {
+    requireRole(request, ["admin", "operator"]);
     const { batchId } = request.params as { batchId: string };
     const body = CreateExportRequestSchema.parse(request.body ?? {});
     const exportJob = await store.createExport(batchId, body, getCurrentUser(request));
@@ -192,6 +204,7 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   });
 
   app.post("/api/v1/wdt/goods-sync-runs", async (request, reply): Promise<WdtGoodsSyncRunDto | unknown> => {
+    requireRole(request, ["admin", "operator"]);
     const body = CreateWdtGoodsSyncRunRequestSchema.parse(request.body ?? {});
     const run = await store.runWdtGoodsSync(body, getCurrentUser(request));
     return reply.code(201).send(run);
@@ -211,6 +224,7 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   });
 
   app.post("/api/v1/product-mappings", async (request, reply): Promise<ProductMappingDto | unknown> => {
+    requireRole(request, ["admin", "operator"]);
     const body = ConfirmProductMappingRequestSchema.parse(request.body ?? {});
     const mapping = await store.confirmProductMapping(body, getCurrentUser(request));
     return reply.code(201).send(mapping);
@@ -227,6 +241,7 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   });
 
   app.patch("/api/v1/product-mappings/:mappingId/status", async (request, reply): Promise<ProductMappingDto | unknown> => {
+    requireRole(request, ["admin", "operator"]);
     const { mappingId } = request.params as { mappingId: string };
     const body = UpdateProductMappingStatusRequestSchema.parse(request.body ?? {});
     const mapping = await store.updateProductMappingStatus(mappingId, body, getCurrentUser(request));
@@ -239,6 +254,13 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
 
 function getCurrentUser(request: unknown) {
   return (request as { currentUser?: AuthUserDto }).currentUser;
+}
+
+function requireRole(request: unknown, allowedRoles: UserRole[]) {
+  const user = getCurrentUser(request);
+  if (!user || !allowedRoles.includes(user.role)) {
+    throw new ForbiddenError();
+  }
 }
 
 function readSessionId(cookieHeader: string | undefined) {
@@ -264,3 +286,5 @@ function isProtectedPath(url: string) {
 }
 
 class UnauthorizedError extends Error {}
+
+class ForbiddenError extends Error {}
