@@ -456,6 +456,43 @@ describe("App", () => {
     expect(screen.getByText("深圳市南山区测试地址")).toBeInTheDocument();
   });
 
+  it("keeps missing address repair read-only for reviewers", async () => {
+    currentUser = { ...currentUser, username: "reviewer", role: "reviewer" };
+    currentBatch = { ...currentBatch, status: "reviewed" };
+    render(<App />);
+    await clickBatch();
+    switchToExportTab();
+
+    expect(await screen.findByText("门店地址维护")).toBeInTheDocument();
+    expect(screen.getByText("当前账号只能查看门店地址。")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "保存地址" })).toBeDisabled();
+  });
+
+  it("shows failed export reasons clearly", async () => {
+    currentBatch = { ...currentBatch, status: "reviewed" };
+    exportRows = [
+      {
+        id: "export-failed",
+        batchId: "batch-1",
+        type: "wdt_import",
+        status: "failed",
+        fileName: "batch-1-wdt-import.xlsx",
+        downloadUrl: undefined,
+        errorMessage: "缺少发货地址：测试门店",
+        createdByUserId: "user-1",
+        createdByUsername: "admin",
+        createdAt: "2026-06-30T00:00:00.000Z",
+      },
+    ];
+    render(<App />);
+    await clickBatch();
+    switchToExportTab();
+
+    expect(await screen.findByText("batch-1-wdt-import.xlsx")).toBeInTheDocument();
+    expect(screen.getByText("失败原因：缺少发货地址：测试门店")).toBeInTheDocument();
+    expect(screen.getByText("失败")).toBeInTheDocument();
+  });
+
   it("keeps exports disabled until review is submitted", async () => {
     render(<App />);
     await clickBatch();

@@ -1205,13 +1205,24 @@ function ExportTab({
           <div className="text-sm text-muted-foreground">暂无导出记录</div>
         ) : (
           exports.map((item) => (
-            <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border px-3 py-2 text-sm">
-              <div>
+            <div
+              key={item.id}
+              className={
+                item.status === "failed"
+                  ? "flex flex-wrap items-start justify-between gap-3 rounded-md border border-rose-200 bg-rose-50/40 px-3 py-2 text-sm"
+                  : "flex flex-wrap items-center justify-between gap-3 rounded-md border border-border px-3 py-2 text-sm"
+              }
+            >
+              <div className="min-w-0">
                 <div className="font-medium">{item.fileName}</div>
                 <div className="mt-1 text-muted-foreground">
                   {exportTypeText(item.type)} / {item.createdByUsername ?? "系统"} / {formatShortDate(item.createdAt)}
                 </div>
-                {item.errorMessage ? <div className="mt-1 text-rose-700">{item.errorMessage}</div> : null}
+                {item.errorMessage ? (
+                  <div className="mt-2 rounded-md border border-rose-200 bg-rose-50 px-2 py-1.5 text-rose-800">
+                    失败原因：{item.errorMessage}
+                  </div>
+                ) : null}
               </div>
               <div className="flex items-center gap-2">
                 <Badge tone={item.status === "ready" ? "good" : item.status === "failed" ? "bad" : "neutral"}>{exportStatusText(item.status)}</Badge>
