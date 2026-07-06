@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import * as XLSX from "xlsx";
 
 import { createDatabaseContext } from "./db/client.js";
 import { batches, productMatchCandidates, wdtGoodsSpecs, wdtGoodsSyncRuns } from "./db/schema.js";
@@ -528,6 +529,133 @@ describe("api server", () => {
     expect(downloadResponse.statusCode).toBe(200);
     expect(downloadResponse.headers["content-type"]).toContain("spreadsheetml");
     expect(downloadResponse.body.length).toBeGreaterThan(100);
+    await app.close();
+  });
+
+  it("exports WDT make-order Excel with the client import template", async () => {
+    const app = buildTestServer();
+    const { batch, lines, cookie } = await createReviewedBatch(app, "examples/mock_flow_mixed.json");
+    const shipLine = lines.find((line: { decision: string }) => line.decision === "ship");
+    const pendingLine = lines.find((line: { decision: string }) => line.decision === "pending");
+    expect(shipLine).toBeTruthy();
+    expect(pendingLine).toBeTruthy();
+
+    await app.inject({
+      method: "PATCH",
+      url: `/api/v1/batches/${batch.id}/review-lines/${shipLine.id}/decision`,
+      payload: { decision: "ship", approvedShipQty: 3, reason: "门店优先处理" },
+      headers: { cookie },
+    });
+    await app.inject({
+      method: "PATCH",
+      url: `/api/v1/batches/${batch.id}/review-lines/${pendingLine.id}/decision`,
+      payload: { decision: "do_not_ship", approvedShipQty: 0, reason: "" },
+      headers: { cookie },
+    });
+
+    const exportResponse = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${batch.id}/exports`,
+      payload: { type: "wdt_import" },
+      headers: { cookie },
+    });
+    expect(exportResponse.statusCode).toBe(201);
+    expect(exportResponse.json()).toMatchObject({ type: "wdt_import", status: "ready" });
+
+    const downloadResponse = await app.inject({
+      method: "GET",
+      url: exportResponse.json().downloadUrl,
+      headers: { cookie },
+    });
+    expect(downloadResponse.statusCode).toBe(200);
+
+    const workbook = XLSX.read(downloadResponse.rawPayload, { type: "buffer" });
+    expect(workbook.SheetNames).toEqual(["导入表"]);
+    const rows = XLSX.utils.sheet_to_json<Record<string, string | number>>(workbook.Sheets["导入表"], { defval: "" });
+    const header = XLSX.utils.sheet_to_json<string[]>(workbook.Sheets["导入表"], { header: 1 })[0];
+    expect(header).toEqual([
+      "店铺名称",
+      "原始单号",
+      "订单编号",
+      "收货信息",
+      "收件人",
+      "省",
+      "市",
+      "区",
+      "手机",
+      "固话",
+      "邮编",
+      "网名",
+      "地址",
+      "发货条件",
+      "应收合计",
+      "邮费",
+      "优惠金额",
+      "COD买家费用",
+      "已收金额",
+      "收款账户",
+      "仓库名称",
+      "物流公司",
+      "下单时间",
+      "付款时间",
+      "买家备注",
+      "客服备注",
+      "打印备注",
+      "发票类型",
+      "发票抬头",
+      "发票内容",
+      "业务员",
+      "商家编码",
+      "货品数量",
+      "货品价格",
+      "货品总价",
+      "货品优惠",
+      "原始子单号",
+      "赠品方式",
+      "货品备注",
+      "订单类别",
+      "平台货品名称",
+      "平台规格名称",
+      "证件号码",
+      "计划发货时间",
+      "订单标签",
+      "标记名称",
+      "平台",
+      "付款账户",
+      "分销商名称",
+    ]);
+    expect(rows).toHaveLength(lines.filter((line: { decision: string; approvedShipQty: number }) => line.decision === "ship" && line.approvedShipQty > 0).length);
+
+    const exportedLine = rows.find(
+      (row) =>
+        row["原始单号"] === shipLine.orderNoticeNo
+        && row["商家编码"] === shipLine.wdtSpecNo
+        && row["平台货品名称"] === shipLine.externalGoodsName,
+    );
+    expect(exportedLine).toMatchObject({
+      店铺名称: "KA运营B组",
+      原始单号: shipLine.orderNoticeNo,
+      网名: "M7Z2OLE超市",
+      发货条件: "挂账",
+      仓库名称: "主仓",
+      物流公司: "加密-京东",
+      客服备注: "门店优先处理",
+      打印备注: shipLine.orderNoticeNo,
+      发票类型: "电子普通发票",
+      发票抬头: "润家商业(深圳)有限公司",
+      商家编码: shipLine.wdtSpecNo,
+      货品数量: 3,
+      平台货品名称: shipLine.externalGoodsName,
+      平台规格名称: shipLine.specName,
+    });
+    expect(
+      rows.some(
+        (row) =>
+          row["原始单号"] === pendingLine.orderNoticeNo
+          && row["商家编码"] === pendingLine.wdtSpecNo
+          && row["平台货品名称"] === pendingLine.externalGoodsName,
+      ),
+    ).toBe(false);
     await app.close();
   });
 

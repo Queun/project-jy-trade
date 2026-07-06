@@ -1682,7 +1682,75 @@ function buildExportFileName(fileName: string, type: ExportDto["type"], isoTime:
   return `${base}-${type}-${stamp}.xlsx`;
 }
 
+const WDT_IMPORT_SHEET_NAME = "导入表";
+
+const WDT_IMPORT_HEADERS = [
+  "店铺名称",
+  "原始单号",
+  "订单编号",
+  "收货信息",
+  "收件人",
+  "省",
+  "市",
+  "区",
+  "手机",
+  "固话",
+  "邮编",
+  "网名",
+  "地址",
+  "发货条件",
+  "应收合计",
+  "邮费",
+  "优惠金额",
+  "COD买家费用",
+  "已收金额",
+  "收款账户",
+  "仓库名称",
+  "物流公司",
+  "下单时间",
+  "付款时间",
+  "买家备注",
+  "客服备注",
+  "打印备注",
+  "发票类型",
+  "发票抬头",
+  "发票内容",
+  "业务员",
+  "商家编码",
+  "货品数量",
+  "货品价格",
+  "货品总价",
+  "货品优惠",
+  "原始子单号",
+  "赠品方式",
+  "货品备注",
+  "订单类别",
+  "平台货品名称",
+  "平台规格名称",
+  "证件号码",
+  "计划发货时间",
+  "订单标签",
+  "标记名称",
+  "平台",
+  "付款账户",
+  "分销商名称",
+] as const;
+
+const WDT_IMPORT_DEFAULTS = {
+  shopName: "KA运营B组",
+  customerName: "M7Z2OLE超市",
+  deliveryCondition: "挂账",
+  warehouseName: "主仓",
+  logisticsCompany: "加密-京东",
+  invoiceType: "电子普通发票",
+  invoiceTitle: "润家商业(深圳)有限公司",
+} as const;
+
 function renderExportWorkbook(batch: BatchRow, type: ExportDto["type"], lines: ReviewLineDto[]) {
+  if (type === "wdt_import") {
+    return renderWdtImportWorkbook(lines);
+  }
+
   const worksheetRows = [
     ["batchId", batch.id],
     ["batchFileName", batch.fileName],
@@ -1708,8 +1776,42 @@ function renderExportWorkbook(batch: BatchRow, type: ExportDto["type"], lines: R
   return XLSX.write(workbook, { bookType: "xlsx", type: "buffer" }) as Buffer;
 }
 
+function renderWdtImportWorkbook(lines: ReviewLineDto[]) {
+  const exportLines = lines.filter((line) => line.decision === "ship" && line.approvedShipQty > 0);
+  const worksheetRows = [
+    [...WDT_IMPORT_HEADERS],
+    ...exportLines.map((line) => renderWdtImportRow(line)),
+  ];
+
+  const workbook = XLSX.utils.book_new();
+  const sheet = XLSX.utils.aoa_to_sheet(worksheetRows);
+  XLSX.utils.book_append_sheet(workbook, sheet, WDT_IMPORT_SHEET_NAME);
+  return XLSX.write(workbook, { bookType: "xlsx", type: "buffer" }) as Buffer;
+}
+
+function renderWdtImportRow(line: ReviewLineDto) {
+  const values: Partial<Record<(typeof WDT_IMPORT_HEADERS)[number], string | number>> = {
+    店铺名称: WDT_IMPORT_DEFAULTS.shopName,
+    原始单号: line.orderNoticeNo,
+    网名: WDT_IMPORT_DEFAULTS.customerName,
+    发货条件: WDT_IMPORT_DEFAULTS.deliveryCondition,
+    仓库名称: WDT_IMPORT_DEFAULTS.warehouseName,
+    物流公司: WDT_IMPORT_DEFAULTS.logisticsCompany,
+    客服备注: line.reason,
+    打印备注: line.orderNoticeNo,
+    发票类型: WDT_IMPORT_DEFAULTS.invoiceType,
+    发票抬头: WDT_IMPORT_DEFAULTS.invoiceTitle,
+    商家编码: line.wdtSpecNo,
+    货品数量: line.approvedShipQty,
+    平台货品名称: line.externalGoodsName,
+    平台规格名称: line.specName,
+  };
+
+  return WDT_IMPORT_HEADERS.map((header) => values[header] ?? "");
+}
+
 function sheetNameFor(type: ExportDto["type"]) {
   if (type === "confirmed") return "confirmed";
-  if (type === "wdt_import") return "wdt_import";
+  if (type === "wdt_import") return WDT_IMPORT_SHEET_NAME;
   return "review";
 }
