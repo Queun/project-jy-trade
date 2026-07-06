@@ -70,17 +70,21 @@ describe("App", () => {
 
     expect(await screen.findByText("订货通知单 .xls")).toBeInTheDocument();
     await clickBatch();
+    switchToReviewTab();
     await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/v1/batches/batch-1/review-lines"));
     await waitFor(() => expect(document.body.textContent).toContain("可发商品"));
 
-    fireEvent.click(screen.getByRole("button", { name: "未匹配" }));
+    fireEvent.click(screen.getByRole("button", { name: "商品异常" }));
     expect(document.body.textContent).toContain("未匹配商品");
     expect(document.body.textContent).not.toContain("可发商品");
+    expect(document.body.textContent).not.toContain("production_api");
+    expect(document.body.textContent).not.toContain("Mock/API");
   });
 
   it("requires reason for do-not-ship decisions", async () => {
     render(<App />);
     await clickBatch();
+    switchToReviewTab();
 
     const row = await rowFor("可发商品");
     fireEvent.click(within(row).getByRole("button", { name: "不发" }));
@@ -91,6 +95,7 @@ describe("App", () => {
   it("saves over-suggested quantities when a reason is provided", async () => {
     render(<App />);
     await clickBatch();
+    switchToReviewTab();
 
     const row = await rowFor("可发商品");
     fireEvent.click(within(row).getByRole("button", { name: "发货" }));
@@ -110,6 +115,7 @@ describe("App", () => {
   it("bulk approves matched ready and partial lines, then submits review", async () => {
     render(<App />);
     await clickBatch();
+    switchToReviewTab();
 
     fireEvent.click(screen.getByRole("button", { name: "批量通过可发项" }));
     expect(await screen.findByText("已批量通过 2 行")).toBeInTheDocument();
@@ -123,7 +129,7 @@ describe("App", () => {
   it("creates a production batch and runs real review", async () => {
     render(<App />);
 
-    fireEvent.click(await screen.findByRole("button", { name: /真实初审/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "导入新订单" }));
 
     await waitFor(() =>
       expect(fetch).toHaveBeenCalledWith(
@@ -143,7 +149,7 @@ describe("App", () => {
     render(<App />);
 
     expect(await screen.findByText("同步失败")).toBeInTheDocument();
-    fireEvent.click(await screen.findByRole("button", { name: /真实初审/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "导入新订单" }));
 
     expect(await screen.findByText("真实初审已暂停：最近一次商品档案同步失败，请先修复并重新同步。")).toBeInTheDocument();
     expect(fetch).not.toHaveBeenCalledWith(
@@ -157,16 +163,19 @@ describe("App", () => {
   it("creates and lists exports", async () => {
     render(<App />);
     await clickBatch();
+    switchToExportTab();
 
     fireEvent.click(screen.getByRole("button", { name: "生成导出" }));
 
     expect(await screen.findByText("导出文件已生成")).toBeInTheDocument();
     expect(await screen.findByText("batch-1-review.xlsx")).toBeInTheDocument();
-    expect(screen.getByText("ready")).toBeInTheDocument();
+    expect(screen.getByText("已生成")).toBeInTheDocument();
   });
 
   it("confirms product mappings from searched WDT specs", async () => {
     render(<App />);
+    await clickBatch();
+    switchToReviewTab();
 
     expect(await screen.findByText("商品映射确认")).toBeInTheDocument();
     expect(await screen.findByText("待确认候选")).toBeInTheDocument();
@@ -202,6 +211,14 @@ async function clickBatch() {
   const button = label.closest("button");
   if (!button) throw new Error("Batch button not found");
   fireEvent.click(button);
+}
+
+function switchToReviewTab() {
+  fireEvent.click(screen.getByTestId("work-tab-review"));
+}
+
+function switchToExportTab() {
+  fireEvent.click(screen.getByTestId("work-tab-export"));
 }
 
 async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {

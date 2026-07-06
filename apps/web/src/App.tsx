@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { CheckCheck, Download, FileSpreadsheet, LogOut, RefreshCcw, Send } from "lucide-react";
+import { CheckCheck, ClipboardList, Download, FileSpreadsheet, LogOut, PackageCheck, RefreshCcw, Send } from "lucide-react";
 import type { AuthUserDto, BatchSummary, ExportDto, ReviewDecision, ReviewLineDto, WdtGoodsSyncRunDto } from "@jy-trade/shared";
 
 import { ProductMappingPanel } from "./components/ProductMappingPanel.js";
@@ -10,6 +10,7 @@ import { Button } from "./components/ui/button.js";
 const defaultOrderFile = "ole案例文件——发货前\\1订货单\\订货通知单 .xls";
 const defaultMockFile = "examples/mock_flow_data.json";
 
+type WorkTab = "import" | "review" | "export";
 type FilterKey =
   | "all"
   | "ready"
@@ -23,14 +24,20 @@ type FilterKey =
 
 const filters: Array<{ key: FilterKey; label: string }> = [
   { key: "all", label: "全部" },
-  { key: "ready", label: "库存充足" },
+  { key: "ready", label: "可发货" },
   { key: "partial", label: "部分满足" },
   { key: "blocked", label: "库存不足" },
-  { key: "unmatched", label: "未匹配" },
+  { key: "unmatched", label: "商品异常" },
   { key: "pending", label: "待审核" },
   { key: "ship", label: "已发货" },
   { key: "do_not_ship", label: "不发货" },
   { key: "over_suggested", label: "超建议数" },
+];
+
+const workTabs: Array<{ key: WorkTab; label: string; icon: typeof FileSpreadsheet }> = [
+  { key: "import", label: "导入订单", icon: FileSpreadsheet },
+  { key: "review", label: "审核发货", icon: ClipboardList },
+  { key: "export", label: "做单", icon: PackageCheck },
 ];
 
 export function App() {
@@ -41,12 +48,13 @@ export function App() {
   const [loginError, setLoginError] = useState("");
   const [batches, setBatches] = useState<BatchSummary[]>([]);
   const [activeBatch, setActiveBatch] = useState<BatchSummary | null>(null);
+  const [activeTab, setActiveTab] = useState<WorkTab>("import");
   const [reviewLines, setReviewLines] = useState<ReviewLineDto[]>([]);
   const [exports, setExports] = useState<ExportDto[]>([]);
   const [exportType, setExportType] = useState<ExportDto["type"]>("review");
   const [orderFile, setOrderFile] = useState(defaultOrderFile);
   const [mockFile, setMockFile] = useState(defaultMockFile);
-  const [message, setMessage] = useState("准备创建 mock 批次");
+  const [message, setMessage] = useState("请选择订单文件并开始初审");
   const [activeFilter, setActiveFilter] = useState<FilterKey>("all");
   const [draftById, setDraftById] = useState<Record<string, ReviewDraft>>({});
   const [errorsById, setErrorsById] = useState<Record<string, string>>({});
@@ -62,12 +70,12 @@ export function App() {
     const response = await fetch("/api/v1/wdt/goods-sync-runs/latest");
     if (response.status === 404) {
       setGoodsSyncRun(null);
-      setGoodsSyncError("还没有成功或失败的商品同步记录");
+      setGoodsSyncError("还没有可用的商品档案同步记录");
       return null;
     }
     if (!response.ok) {
       setGoodsSyncRun(null);
-      setGoodsSyncError("商品同步状态读取失败");
+      setGoodsSyncError("商品档案同步状态读取失败");
       return null;
     }
     const run = (await response.json()) as WdtGoodsSyncRunDto;
@@ -114,8 +122,9 @@ export function App() {
     setGoodsSyncError("正在读取商品同步状态");
   }
 
-  async function loadBatch(batch: BatchSummary) {
+  async function loadBatch(batch: BatchSummary, nextTab?: WorkTab) {
     setActiveBatch(batch);
+    if (nextTab) setActiveTab(nextTab);
     const response = await fetch(`/api/v1/batches/${batch.id}/review-lines`);
     const lines = (await response.json()) as ReviewLineDto[];
     setReviewLines(lines);
@@ -141,7 +150,7 @@ export function App() {
       body: JSON.stringify({ filePath: orderFile, mode: "mock" }),
     });
     const created = (await createdResponse.json()) as BatchSummary;
-    setMessage("正在运行 mock 初审...");
+    setMessage("正在生成初审结果...");
     const reviewResponse = await fetch(`/api/v1/batches/${created.id}/actions/run-mock-review`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -149,13 +158,14 @@ export function App() {
     });
     const review = await reviewResponse.json();
     setActiveBatch(review.batch);
+    setActiveTab("review");
     const linesResponse = await fetch(`/api/v1/batches/${created.id}/review-lines`);
     const lines = (await linesResponse.json()) as ReviewLineDto[];
     setReviewLines(lines);
     setDraftById(buildDrafts(lines));
     setErrorsById({});
     await refreshExports(created.id);
-    setMessage("mock 初审已完成");
+    setMessage("初审已完成，请进入审核发货");
     await refreshBatches();
   }
 
@@ -165,19 +175,19 @@ export function App() {
       setMessage(realReviewBlockedMessage(latestSync, goodsSyncError));
       return;
     }
-    setMessage("正在创建真实初审批次...");
+    setMessage("正在创建真实订单批次...");
     const createdResponse = await fetch("/api/v1/batches", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ filePath: orderFile, mode: "production_api" }),
     });
     if (!createdResponse.ok) {
-      setMessage("创建真实初审批次失败");
+      setMessage("导入未完成，请检查订单文件");
       return;
     }
 
     const created = (await createdResponse.json()) as BatchSummary;
-    setMessage("正在读取商品档案并查询旺店通库存...");
+    setMessage("正在读取商品档案并查询库存...");
     const reviewResponse = await fetch(`/api/v1/batches/${created.id}/actions/run-real-review`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -186,6 +196,7 @@ export function App() {
     if (!reviewResponse.ok) {
       const error = await reviewResponse.json();
       setActiveBatch(created);
+      setActiveTab("review");
       setReviewLines([]);
       setDraftById({});
       setErrorsById({});
@@ -197,6 +208,7 @@ export function App() {
 
     const review = await reviewResponse.json();
     setActiveBatch(review.batch);
+    setActiveTab("review");
     const linesResponse = await fetch(`/api/v1/batches/${created.id}/review-lines`);
     const lines = (await linesResponse.json()) as ReviewLineDto[];
     setReviewLines(lines);
@@ -259,7 +271,7 @@ export function App() {
     }
     const result = await response.json();
     setActiveBatch(result.batch);
-    await loadBatch(result.batch);
+    await loadBatch(result.batch, "review");
     await refreshBatches();
     setMessage(`已批量通过 ${result.updatedCount} 行`);
   }
@@ -316,8 +328,8 @@ export function App() {
   if (!user) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-background px-6 text-foreground">
-        <section className="w-full max-w-sm rounded-md border border-border bg-card p-6">
-          <p className="text-sm text-muted-foreground">甲方贸易发货初审平台</p>
+        <section className="w-full max-w-sm rounded-md border border-border bg-card p-6 shadow-sm">
+          <p className="text-sm text-muted-foreground">漾锦贸易订单初审平台</p>
           <h1 className="mt-1 text-2xl font-semibold tracking-normal">登录工作台</h1>
           <label className="mt-6 block text-sm text-muted-foreground">用户名</label>
           <input
@@ -348,16 +360,15 @@ export function App() {
 
   return (
     <main className="min-h-screen bg-background text-foreground">
-      <section className="mx-auto flex w-full max-w-[1500px] flex-col gap-6 px-6 py-6">
-        <header className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-5">
+      <section className="mx-auto flex w-full max-w-[1500px] flex-col gap-5 px-5 py-5">
+        <header className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
           <div>
-            <p className="text-sm text-muted-foreground">甲方贸易发货初审平台</p>
-            <h1 className="mt-1 text-3xl font-semibold tracking-normal">批次审核工作台</h1>
+            <p className="text-sm text-muted-foreground">漾锦贸易订单初审平台</p>
+            <h1 className="mt-1 text-2xl font-semibold tracking-normal">订单处理工作台</h1>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            {activeBatch ? <Badge tone={activeBatch.status === "reviewed" ? "good" : "info"}>{activeBatch.status}</Badge> : null}
+            {activeBatch ? <Badge tone={batchStatusTone(activeBatch.status)}>{batchStatusText(activeBatch.status)}</Badge> : null}
             <Badge tone="neutral">{user.username}</Badge>
-            <Badge tone="info">Mock/API 可切换架构</Badge>
             <Button className="h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80" onClick={() => void logout()}>
               <LogOut className="h-4 w-4" />
               退出
@@ -365,165 +376,351 @@ export function App() {
           </div>
         </header>
 
-        <section className="grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
-          <div className="rounded-md border border-border bg-card p-4">
-            <div className="mb-4 flex items-center gap-2">
-              <FileSpreadsheet className="h-5 w-5 text-primary" />
-              <h2 className="text-lg font-semibold">运行 mock 初审</h2>
-            </div>
-            <label className="block text-sm text-muted-foreground">订货单路径</label>
-            <input
-              className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-              value={orderFile}
-              onChange={(event) => setOrderFile(event.target.value)}
-            />
-            <label className="mt-3 block text-sm text-muted-foreground">Mock 数据</label>
-            <input
-              className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-              value={mockFile}
-              onChange={(event) => setMockFile(event.target.value)}
-            />
-            <div className="mt-4 flex flex-wrap items-center gap-3">
-              <Button onClick={runMockBatch}>
-                <RefreshCcw className="h-4 w-4" />
-                创建批次并初审
-              </Button>
-              <Button onClick={() => void runRealBatch()}>
-                <FileSpreadsheet className="h-4 w-4" />
-                运行真实初审
-              </Button>
-              <Button disabled={!activeBatch} onClick={bulkApprove}>
-                <CheckCheck className="h-4 w-4" />
-                批量通过可发项
-              </Button>
-              <Button disabled={!activeBatch} onClick={submitReview}>
-                <Send className="h-4 w-4" />
-                提交审核完成
-              </Button>
-              <span className="text-sm text-muted-foreground">{message}</span>
-            </div>
-            <GoodsSyncStatusPanel
-              error={goodsSyncError}
-              run={goodsSyncRun}
-              onRefresh={() => void refreshGoodsSyncStatus()}
-            />
-          </div>
-
-          <div className="grid grid-cols-2 gap-3 xl:grid-cols-5">
-            <Stat label="明细行" value={stats.total} />
-            <Stat label="待审核" value={stats.pending} />
-            <Stat label="已发货" value={stats.ship} />
-            <Stat label="不发货" value={stats.doNotShip} />
-            <Stat label="超建议数" value={stats.overSuggested} />
-          </div>
-        </section>
-
-        <section className="grid min-w-0 gap-4 lg:grid-cols-[300px_minmax(0,1fr)]">
-          <aside className="rounded-md border border-border bg-card p-4">
-            <h2 className="mb-3 text-lg font-semibold">批次列表</h2>
-            <div className="space-y-2">
-              {batches.map((batch) => (
-                <button
-                  key={batch.id}
-                  className="w-full rounded-md border border-border px-3 py-2 text-left text-sm transition hover:bg-muted"
-                  onClick={() => void loadBatch(batch)}
-                >
-                  <div className="font-medium">{batch.fileName}</div>
-                  <div className="mt-1 text-muted-foreground">
-                    {batch.status} / {batch.orderLineCount} 行
-                  </div>
-                </button>
-              ))}
-            </div>
-          </aside>
+        <section className="grid gap-4 xl:grid-cols-[300px_minmax(0,1fr)]">
+          <BatchList batches={batches} activeBatchId={activeBatch?.id} onSelect={(batch) => void loadBatch(batch)} />
 
           <section className="min-w-0">
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h2 className="text-lg font-semibold">初审明细</h2>
-                <p className="text-sm text-muted-foreground">{activeBatch ? activeBatch.id : "尚未选择批次"}</p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {filters.map((filter) => (
-                  <button
-                    key={filter.key}
-                    className={
-                      filter.key === activeFilter
-                        ? "rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground"
-                        : "rounded-md border border-border bg-card px-3 py-2 text-sm text-muted-foreground hover:bg-muted"
-                    }
-                    onClick={() => setActiveFilter(filter.key)}
-                  >
-                    {filter.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <ReviewTable
-              draftById={draftById}
-              errorsById={errorsById}
-              rows={filteredLines}
-              onDraftChange={updateDraft}
-              onQuickDecision={quickDecision}
-              onSave={saveDecision}
-            />
+            <CurrentBatchPanel batch={activeBatch} message={message} />
 
-            <section className="mt-4 rounded-md border border-border bg-card p-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-lg font-semibold">导出中心</h2>
-                  <p className="text-sm text-muted-foreground">{activeBatch ? "生成和下载当前批次的 Excel" : "选择批次后可导出"}</p>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <select
-                    className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-                    value={exportType}
-                    onChange={(event) => setExportType(event.target.value as ExportDto["type"])}
+            <nav className="mt-4 grid gap-2 rounded-md border border-border bg-card p-1 sm:grid-cols-3" aria-label="业务步骤">
+              {workTabs.map((tab) => {
+                const Icon = tab.icon;
+                const active = tab.key === activeTab;
+                return (
+                  <button
+                    key={tab.key}
+                    className={
+                      active
+                        ? "inline-flex h-10 items-center justify-center gap-2 rounded bg-primary px-3 text-sm font-medium text-primary-foreground"
+                        : "inline-flex h-10 items-center justify-center gap-2 rounded px-3 text-sm font-medium text-muted-foreground transition hover:bg-muted"
+                    }
+                    data-testid={`work-tab-${tab.key}`}
+                    onClick={() => setActiveTab(tab.key)}
                   >
-                    <option value="review">初审单</option>
-                    <option value="confirmed">确定发货单</option>
-                    <option value="wdt_import">做单 Excel</option>
-                  </select>
-                  <Button disabled={!activeBatch} onClick={() => void createExport()}>
-                    <Download className="h-4 w-4" />
-                    生成导出
-                  </Button>
-                </div>
-              </div>
-              <div className="mt-4 space-y-2">
-                {exports.length === 0 ? (
-                  <div className="text-sm text-muted-foreground">暂无导出记录</div>
-                ) : (
-                  exports.map((item) => (
-                    <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border px-3 py-2 text-sm">
-                      <div>
-                        <div className="font-medium">{item.fileName}</div>
-                        <div className="mt-1 text-muted-foreground">
-                          {item.type} / {item.createdByUsername ?? "system"} / {new Date(item.createdAt).toLocaleString()}
-                        </div>
-                        {item.errorMessage ? <div className="mt-1 text-rose-700">{item.errorMessage}</div> : null}
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Badge tone={item.status === "ready" ? "good" : item.status === "failed" ? "bad" : "neutral"}>{item.status}</Badge>
-                        {item.downloadUrl ? (
-                          <a
-                            className="inline-flex h-8 items-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground"
-                            href={item.downloadUrl}
-                          >
-                            下载
-                          </a>
-                        ) : null}
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-            </section>
-            <ProductMappingPanel onMessage={setMessage} />
+                    <Icon className="h-4 w-4" />
+                    {tab.label}
+                  </button>
+                );
+              })}
+            </nav>
+
+            {activeTab === "import" ? (
+              <ImportTab
+                goodsSyncError={goodsSyncError}
+                goodsSyncRun={goodsSyncRun}
+                message={message}
+                mockFile={mockFile}
+                orderFile={orderFile}
+                onMockFileChange={setMockFile}
+                onOrderFileChange={setOrderFile}
+                onRefreshGoodsSync={() => void refreshGoodsSyncStatus()}
+                onRunDemo={() => void runMockBatch()}
+                onRunReal={() => void runRealBatch()}
+              />
+            ) : null}
+
+            {activeTab === "review" ? (
+              <ReviewTab
+                activeBatch={activeBatch}
+                activeFilter={activeFilter}
+                draftById={draftById}
+                errorsById={errorsById}
+                filteredLines={filteredLines}
+                stats={stats}
+                onBulkApprove={() => void bulkApprove()}
+                onDraftChange={updateDraft}
+                onFilterChange={setActiveFilter}
+                onMessage={setMessage}
+                onQuickDecision={quickDecision}
+                onSave={saveDecision}
+                onSubmitReview={() => void submitReview()}
+              />
+            ) : null}
+
+            {activeTab === "export" ? (
+              <ExportTab
+                activeBatch={activeBatch}
+                exportType={exportType}
+                exports={exports}
+                onCreateExport={() => void createExport()}
+                onExportTypeChange={setExportType}
+              />
+            ) : null}
           </section>
         </section>
       </section>
     </main>
+  );
+}
+
+function BatchList({
+  activeBatchId,
+  batches,
+  onSelect,
+}: {
+  activeBatchId?: string;
+  batches: BatchSummary[];
+  onSelect: (batch: BatchSummary) => void;
+}) {
+  return (
+    <aside className="rounded-md border border-border bg-card p-4">
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <h2 className="text-base font-semibold">历史批次</h2>
+        <Badge tone="neutral">{batches.length} 个</Badge>
+      </div>
+      <div className="space-y-2">
+        {batches.length === 0 ? <div className="text-sm text-muted-foreground">暂无批次</div> : null}
+        {batches.map((batch) => (
+          <button
+            key={batch.id}
+            className={
+              batch.id === activeBatchId
+                ? "w-full rounded-md border border-primary bg-primary/5 px-3 py-2 text-left text-sm"
+                : "w-full rounded-md border border-border px-3 py-2 text-left text-sm transition hover:bg-muted"
+            }
+            data-testid={`batch-card-${batch.id}`}
+            onClick={() => onSelect(batch)}
+          >
+            <div className="font-medium">{batch.fileName}</div>
+            <div className="mt-1 flex flex-wrap items-center gap-2 text-muted-foreground">
+              <span>{batchStatusText(batch.status)}</span>
+              <span>{batch.orderLineCount} 行</span>
+            </div>
+          </button>
+        ))}
+      </div>
+    </aside>
+  );
+}
+
+function CurrentBatchPanel({ batch, message }: { batch: BatchSummary | null; message: string }) {
+  return (
+    <section className="rounded-md border border-border bg-card p-4">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h2 className="text-lg font-semibold">{batch ? batch.fileName : "尚未选择批次"}</h2>
+          <p className="mt-1 text-sm text-muted-foreground">{message}</p>
+        </div>
+        {batch ? <Badge tone={batchStatusTone(batch.status)}>{batchStatusText(batch.status)}</Badge> : null}
+      </div>
+      {batch ? (
+        <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-4">
+          <MetaItem label="订单行数" value={`${batch.orderLineCount}`} />
+          <MetaItem label="匹配条码" value={`${batch.matchedBarcodeCount}/${batch.uniqueBarcodeCount}`} />
+          <MetaItem label="创建时间" value={formatShortDate(batch.createdAt)} />
+          <MetaItem label="更新时间" value={formatShortDate(batch.updatedAt)} />
+        </dl>
+      ) : null}
+    </section>
+  );
+}
+
+function ImportTab({
+  goodsSyncError,
+  goodsSyncRun,
+  mockFile,
+  orderFile,
+  onMockFileChange,
+  onOrderFileChange,
+  onRefreshGoodsSync,
+  onRunDemo,
+  onRunReal,
+}: {
+  goodsSyncError: string;
+  goodsSyncRun: WdtGoodsSyncRunDto | null;
+  message: string;
+  mockFile: string;
+  orderFile: string;
+  onMockFileChange: (value: string) => void;
+  onOrderFileChange: (value: string) => void;
+  onRefreshGoodsSync: () => void;
+  onRunDemo: () => void;
+  onRunReal: () => void;
+}) {
+  return (
+    <section className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+      <div className="rounded-md border border-border bg-card p-4">
+        <div className="mb-4 flex items-center gap-2">
+          <FileSpreadsheet className="h-5 w-5 text-primary" />
+          <h2 className="text-lg font-semibold">导入订单</h2>
+        </div>
+        <label className="block text-sm text-muted-foreground">订货单路径</label>
+        <input
+          className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+          value={orderFile}
+          onChange={(event) => onOrderFileChange(event.target.value)}
+        />
+        <label className="mt-3 block text-sm text-muted-foreground">演示数据文件</label>
+        <input
+          className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+          value={mockFile}
+          onChange={(event) => onMockFileChange(event.target.value)}
+        />
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <Button onClick={onRunReal}>
+            <FileSpreadsheet className="h-4 w-4" />
+            导入新订单
+          </Button>
+          <Button className="bg-muted text-muted-foreground hover:bg-muted/80" onClick={onRunDemo}>
+            <RefreshCcw className="h-4 w-4" />
+            生成演示批次
+          </Button>
+        </div>
+      </div>
+      <GoodsSyncStatusPanel error={goodsSyncError} run={goodsSyncRun} onRefresh={onRefreshGoodsSync} />
+    </section>
+  );
+}
+
+function ReviewTab({
+  activeBatch,
+  activeFilter,
+  draftById,
+  errorsById,
+  filteredLines,
+  stats,
+  onBulkApprove,
+  onDraftChange,
+  onFilterChange,
+  onMessage,
+  onQuickDecision,
+  onSave,
+  onSubmitReview,
+}: {
+  activeBatch: BatchSummary | null;
+  activeFilter: FilterKey;
+  draftById: Record<string, ReviewDraft>;
+  errorsById: Record<string, string>;
+  filteredLines: ReviewLineDto[];
+  stats: ReturnType<typeof buildStats>;
+  onBulkApprove: () => void;
+  onDraftChange: (lineId: string, patch: Partial<ReviewDraft>) => void;
+  onFilterChange: (filter: FilterKey) => void;
+  onMessage: (message: string) => void;
+  onQuickDecision: (line: ReviewLineDto, decision: ReviewDecision) => void;
+  onSave: (line: ReviewLineDto) => void;
+  onSubmitReview: () => void;
+}) {
+  return (
+    <section className="mt-4 min-w-0 space-y-4">
+      <div className="grid grid-cols-2 gap-3 xl:grid-cols-5">
+        <Stat label="明细行" value={stats.total} />
+        <Stat label="待审核" value={stats.pending} />
+        <Stat label="发货" value={stats.ship} />
+        <Stat label="不发货" value={stats.doNotShip} />
+        <Stat label="超建议数" value={stats.overSuggested} />
+      </div>
+      <section className="rounded-md border border-border bg-card p-4">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-semibold">审核发货</h2>
+            <p className="text-sm text-muted-foreground">{activeBatch ? "确认本批次发货数量和原因" : "请先选择或导入批次"}</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button disabled={!activeBatch} onClick={onBulkApprove}>
+              <CheckCheck className="h-4 w-4" />
+              批量通过可发项
+            </Button>
+            <Button disabled={!activeBatch} onClick={onSubmitReview}>
+              <Send className="h-4 w-4" />
+              提交审核完成
+            </Button>
+          </div>
+        </div>
+        <div className="mb-3 flex flex-wrap gap-2">
+          {filters.map((filter) => (
+            <button
+              key={filter.key}
+              className={
+                filter.key === activeFilter
+                  ? "rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground"
+                  : "rounded-md border border-border bg-card px-3 py-2 text-sm text-muted-foreground hover:bg-muted"
+              }
+              onClick={() => onFilterChange(filter.key)}
+            >
+              {filter.label}
+            </button>
+          ))}
+        </div>
+        <ReviewTable
+          draftById={draftById}
+          errorsById={errorsById}
+          rows={filteredLines}
+          onDraftChange={onDraftChange}
+          onQuickDecision={onQuickDecision}
+          onSave={onSave}
+        />
+      </section>
+      <ProductMappingPanel onMessage={onMessage} />
+    </section>
+  );
+}
+
+function ExportTab({
+  activeBatch,
+  exportType,
+  exports,
+  onCreateExport,
+  onExportTypeChange,
+}: {
+  activeBatch: BatchSummary | null;
+  exportType: ExportDto["type"];
+  exports: ExportDto[];
+  onCreateExport: () => void;
+  onExportTypeChange: (type: ExportDto["type"]) => void;
+}) {
+  return (
+    <section className="mt-4 rounded-md border border-border bg-card p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-semibold">做单</h2>
+          <p className="text-sm text-muted-foreground">{activeBatch ? "生成并下载当前批次的 Excel 文件" : "选择批次后可生成 Excel"}</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+            value={exportType}
+            onChange={(event) => onExportTypeChange(event.target.value as ExportDto["type"])}
+          >
+            <option value="review">初审单</option>
+            <option value="confirmed">确定发货单</option>
+            <option value="wdt_import">做单 Excel</option>
+          </select>
+          <Button data-testid="create-export" disabled={!activeBatch} onClick={onCreateExport}>
+            <Download className="h-4 w-4" />
+            生成导出
+          </Button>
+        </div>
+      </div>
+      <div className="mt-4 space-y-2">
+        {exports.length === 0 ? (
+          <div className="text-sm text-muted-foreground">暂无导出记录</div>
+        ) : (
+          exports.map((item) => (
+            <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border px-3 py-2 text-sm">
+              <div>
+                <div className="font-medium">{item.fileName}</div>
+                <div className="mt-1 text-muted-foreground">
+                  {exportTypeText(item.type)} / {item.createdByUsername ?? "系统"} / {formatShortDate(item.createdAt)}
+                </div>
+                {item.errorMessage ? <div className="mt-1 text-rose-700">{item.errorMessage}</div> : null}
+              </div>
+              <div className="flex items-center gap-2">
+                <Badge tone={item.status === "ready" ? "good" : item.status === "failed" ? "bad" : "neutral"}>{exportStatusText(item.status)}</Badge>
+                {item.downloadUrl ? (
+                  <a
+                    className="inline-flex h-8 items-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground"
+                    href={item.downloadUrl}
+                  >
+                    下载
+                  </a>
+                ) : null}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -532,6 +729,15 @@ function Stat({ label, value }: { label: string; value: number }) {
     <div className="rounded-md border border-border bg-card p-4">
       <div className="text-sm text-muted-foreground">{label}</div>
       <div className="mt-2 text-3xl font-semibold">{value}</div>
+    </div>
+  );
+}
+
+function MetaItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <dt className="text-xs text-muted-foreground">{label}</dt>
+      <dd className="mt-1 font-medium">{value}</dd>
     </div>
   );
 }
@@ -548,19 +754,19 @@ function GoodsSyncStatusPanel({
   const status = run?.status ?? "none";
   const isReady = status === "success";
   return (
-    <section className="mt-4 rounded-md border border-border bg-background p-3">
+    <section className="rounded-md border border-border bg-card p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="text-sm font-semibold">商品档案同步</h3>
             <Badge tone={isReady ? "good" : status === "failed" ? "bad" : "warn"}>{syncStatusText(status)}</Badge>
           </div>
-          <p className="mt-1 text-sm text-muted-foreground">{syncSummary(run, error)}</p>
+          <p className="mt-2 text-sm text-muted-foreground">{syncSummary(run, error)}</p>
           {run?.errorMessage ? <p className="mt-1 text-xs text-rose-700">{run.errorMessage}</p> : null}
         </div>
         <Button className="h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80" onClick={onRefresh}>
           <RefreshCcw className="h-4 w-4" />
-          刷新状态
+          刷新
         </Button>
       </div>
     </section>
@@ -607,6 +813,34 @@ function syncSummary(run: WdtGoodsSyncRunDto | null, error: string) {
   if (!run) return error || "暂无商品档案同步记录";
   const range = `${formatShortDate(run.rangeStart)} -> ${formatShortDate(run.rangeEnd)}`;
   return `范围 ${range}，拉取 ${run.fetchedCount} 条，写入 ${run.upsertedCount} 条，完成于 ${formatShortDate(run.finishedAt || run.startedAt)}`;
+}
+
+function batchStatusText(status: BatchSummary["status"]) {
+  if (status === "uploaded") return "已导入";
+  if (status === "matched") return "已匹配";
+  if (status === "inventory_synced") return "已查库存";
+  if (status === "review_generated") return "待审核";
+  if (status === "reviewed") return "已审核";
+  if (status === "exported") return "已生成做单";
+  return status;
+}
+
+function batchStatusTone(status: BatchSummary["status"]) {
+  if (status === "reviewed" || status === "exported") return "good";
+  if (status === "review_generated") return "info";
+  return "neutral";
+}
+
+function exportTypeText(type: ExportDto["type"]) {
+  if (type === "confirmed") return "确定发货单";
+  if (type === "wdt_import") return "做单 Excel";
+  return "初审单";
+}
+
+function exportStatusText(status: ExportDto["status"]) {
+  if (status === "ready") return "已生成";
+  if (status === "failed") return "失败";
+  return "生成中";
 }
 
 function formatShortDate(value: string) {
