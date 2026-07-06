@@ -34,6 +34,7 @@ let latestGoodsSyncRun: WdtGoodsSyncRunDto | null;
 
 describe("App", () => {
   beforeEach(() => {
+    localStorage.clear();
     currentBatch = { ...batch };
     lines = [
       reviewLine({ id: "line-1", externalGoodsName: "可发商品", status: "库存充足", suggestedShipQty: 5 }),
@@ -79,6 +80,47 @@ describe("App", () => {
     expect(document.body.textContent).not.toContain("可发商品");
     expect(document.body.textContent).not.toContain("production_api");
     expect(document.body.textContent).not.toContain("Mock/API");
+  });
+
+  it("shows dismissible first-run help and can reopen it", async () => {
+    const { unmount } = render(<App />);
+
+    expect(await screen.findByText("按三个步骤处理订单")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "知道了" }));
+
+    await waitFor(() => expect(screen.queryByText("按三个步骤处理订单")).not.toBeInTheDocument());
+    expect(localStorage.getItem("jy-trade-help-dismissed-v1")).toBe("true");
+
+    unmount();
+    render(<App />);
+    await screen.findByText("订单处理工作台");
+    expect(screen.queryByText("按三个步骤处理订单")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "帮助" }));
+    expect(await screen.findByText("按三个步骤处理订单")).toBeInTheDocument();
+  });
+
+  it("keeps developer tools hidden until developer mode is enabled", async () => {
+    render(<App />);
+
+    expect(await screen.findByText("订单处理工作台")).toBeInTheDocument();
+    expect(screen.queryByText("演示数据文件")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "生成演示批次" })).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("mock");
+    expect(document.body.textContent).not.toContain("API");
+    expect(document.body.textContent).not.toContain("production_api");
+
+    await clickBatch();
+    switchToReviewTab();
+    expect(screen.queryByText("商品映射确认")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "开发者模式" }));
+    switchToReviewTab();
+
+    expect(await screen.findByText("商品映射确认")).toBeInTheDocument();
+    switchToImportTab();
+    expect(screen.getByText("演示数据文件")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "生成演示批次" })).toBeInTheDocument();
   });
 
   it("requires reason for do-not-ship decisions", async () => {
@@ -175,6 +217,7 @@ describe("App", () => {
   it("confirms product mappings from searched WDT specs", async () => {
     render(<App />);
     await clickBatch();
+    fireEvent.click(screen.getByRole("checkbox", { name: "开发者模式" }));
     switchToReviewTab();
 
     expect(await screen.findByText("商品映射确认")).toBeInTheDocument();
@@ -215,6 +258,10 @@ async function clickBatch() {
 
 function switchToReviewTab() {
   fireEvent.click(screen.getByTestId("work-tab-review"));
+}
+
+function switchToImportTab() {
+  fireEvent.click(screen.getByTestId("work-tab-import"));
 }
 
 function switchToExportTab() {

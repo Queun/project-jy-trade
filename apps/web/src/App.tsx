@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { CheckCheck, ClipboardList, Download, FileSpreadsheet, LogOut, PackageCheck, RefreshCcw, Send } from "lucide-react";
+import { CheckCheck, ClipboardList, Download, FileSpreadsheet, HelpCircle, LogOut, PackageCheck, RefreshCcw, Send } from "lucide-react";
 import type { AuthUserDto, BatchSummary, ExportDto, ReviewDecision, ReviewLineDto, WdtGoodsSyncRunDto } from "@jy-trade/shared";
 
 import { ProductMappingPanel } from "./components/ProductMappingPanel.js";
@@ -9,6 +9,7 @@ import { Button } from "./components/ui/button.js";
 
 const defaultOrderFile = "ole案例文件——发货前\\1订货单\\订货通知单 .xls";
 const defaultMockFile = "examples/mock_flow_data.json";
+const helpDismissedStorageKey = "jy-trade-help-dismissed-v1";
 
 type WorkTab = "import" | "review" | "export";
 type FilterKey =
@@ -60,6 +61,8 @@ export function App() {
   const [errorsById, setErrorsById] = useState<Record<string, string>>({});
   const [goodsSyncRun, setGoodsSyncRun] = useState<WdtGoodsSyncRunDto | null>(null);
   const [goodsSyncError, setGoodsSyncError] = useState("正在读取商品同步状态");
+  const [developerMode, setDeveloperMode] = useState(false);
+  const [showHelp, setShowHelp] = useState(() => localStorage.getItem(helpDismissedStorageKey) !== "true");
 
   async function refreshBatches() {
     const response = await fetch("/api/v1/batches");
@@ -310,6 +313,16 @@ export function App() {
     setDraftById((current) => ({ ...current, [lineId]: { ...current[lineId], ...patch } }));
   }
 
+  function dismissHelp() {
+    localStorage.setItem(helpDismissedStorageKey, "true");
+    setShowHelp(false);
+  }
+
+  function reopenHelp() {
+    localStorage.removeItem(helpDismissedStorageKey);
+    setShowHelp(true);
+  }
+
   useEffect(() => {
     void checkMe();
   }, []);
@@ -368,6 +381,19 @@ export function App() {
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {activeBatch ? <Badge tone={batchStatusTone(activeBatch.status)}>{batchStatusText(activeBatch.status)}</Badge> : null}
+            <Button className="h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80" onClick={reopenHelp}>
+              <HelpCircle className="h-4 w-4" />
+              帮助
+            </Button>
+            <label className="inline-flex h-8 items-center gap-2 rounded-md border border-border bg-card px-2 text-sm text-muted-foreground">
+              <input
+                className="h-4 w-4"
+                type="checkbox"
+                checked={developerMode}
+                onChange={(event) => setDeveloperMode(event.target.checked)}
+              />
+              开发者模式
+            </label>
             <Badge tone="neutral">{user.username}</Badge>
             <Button className="h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80" onClick={() => void logout()}>
               <LogOut className="h-4 w-4" />
@@ -380,6 +406,7 @@ export function App() {
           <BatchList batches={batches} activeBatchId={activeBatch?.id} onSelect={(batch) => void loadBatch(batch)} />
 
           <section className="min-w-0">
+            {showHelp ? <HelpPanel onDismiss={dismissHelp} /> : null}
             <CurrentBatchPanel batch={activeBatch} message={message} />
 
             <nav className="mt-4 grid gap-2 rounded-md border border-border bg-card p-1 sm:grid-cols-3" aria-label="业务步骤">
@@ -408,6 +435,7 @@ export function App() {
               <ImportTab
                 goodsSyncError={goodsSyncError}
                 goodsSyncRun={goodsSyncRun}
+                isDeveloperMode={developerMode}
                 message={message}
                 mockFile={mockFile}
                 orderFile={orderFile}
@@ -426,6 +454,7 @@ export function App() {
                 draftById={draftById}
                 errorsById={errorsById}
                 filteredLines={filteredLines}
+                isDeveloperMode={developerMode}
                 stats={stats}
                 onBulkApprove={() => void bulkApprove()}
                 onDraftChange={updateDraft}
@@ -515,9 +544,33 @@ function CurrentBatchPanel({ batch, message }: { batch: BatchSummary | null; mes
   );
 }
 
+function HelpPanel({ onDismiss }: { onDismiss: () => void }) {
+  return (
+    <section className="mb-4 rounded-md border border-blue-200 bg-blue-50 p-4 text-blue-950">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2">
+            <HelpCircle className="h-5 w-5" />
+            <h2 className="text-base font-semibold">按三个步骤处理订单</h2>
+          </div>
+          <div className="mt-2 grid gap-2 text-sm md:grid-cols-3">
+            <div>1. 导入订单：选择订货单，系统读取商品和库存。</div>
+            <div>2. 审核发货：确认每行发货数量，异常商品单独处理。</div>
+            <div>3. 做单：审核完成后生成给仓库或系统使用的 Excel。</div>
+          </div>
+        </div>
+        <Button className="h-8 bg-white px-2 text-blue-950 hover:bg-blue-100" onClick={onDismiss}>
+          知道了
+        </Button>
+      </div>
+    </section>
+  );
+}
+
 function ImportTab({
   goodsSyncError,
   goodsSyncRun,
+  isDeveloperMode,
   mockFile,
   orderFile,
   onMockFileChange,
@@ -528,6 +581,7 @@ function ImportTab({
 }: {
   goodsSyncError: string;
   goodsSyncRun: WdtGoodsSyncRunDto | null;
+  isDeveloperMode: boolean;
   message: string;
   mockFile: string;
   orderFile: string;
@@ -550,21 +604,27 @@ function ImportTab({
           value={orderFile}
           onChange={(event) => onOrderFileChange(event.target.value)}
         />
-        <label className="mt-3 block text-sm text-muted-foreground">演示数据文件</label>
-        <input
-          className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-          value={mockFile}
-          onChange={(event) => onMockFileChange(event.target.value)}
-        />
+        {isDeveloperMode ? (
+          <>
+            <label className="mt-3 block text-sm text-muted-foreground">演示数据文件</label>
+            <input
+              className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              value={mockFile}
+              onChange={(event) => onMockFileChange(event.target.value)}
+            />
+          </>
+        ) : null}
         <div className="mt-4 flex flex-wrap items-center gap-3">
           <Button onClick={onRunReal}>
             <FileSpreadsheet className="h-4 w-4" />
             导入新订单
           </Button>
-          <Button className="bg-muted text-muted-foreground hover:bg-muted/80" onClick={onRunDemo}>
-            <RefreshCcw className="h-4 w-4" />
-            生成演示批次
-          </Button>
+          {isDeveloperMode ? (
+            <Button className="bg-muted text-muted-foreground hover:bg-muted/80" onClick={onRunDemo}>
+              <RefreshCcw className="h-4 w-4" />
+              生成演示批次
+            </Button>
+          ) : null}
         </div>
       </div>
       <GoodsSyncStatusPanel error={goodsSyncError} run={goodsSyncRun} onRefresh={onRefreshGoodsSync} />
@@ -578,6 +638,7 @@ function ReviewTab({
   draftById,
   errorsById,
   filteredLines,
+  isDeveloperMode,
   stats,
   onBulkApprove,
   onDraftChange,
@@ -592,6 +653,7 @@ function ReviewTab({
   draftById: Record<string, ReviewDraft>;
   errorsById: Record<string, string>;
   filteredLines: ReviewLineDto[];
+  isDeveloperMode: boolean;
   stats: ReturnType<typeof buildStats>;
   onBulkApprove: () => void;
   onDraftChange: (lineId: string, patch: Partial<ReviewDraft>) => void;
@@ -651,7 +713,7 @@ function ReviewTab({
           onSave={onSave}
         />
       </section>
-      <ProductMappingPanel onMessage={onMessage} />
+      {isDeveloperMode ? <ProductMappingPanel onMessage={onMessage} /> : null}
     </section>
   );
 }
