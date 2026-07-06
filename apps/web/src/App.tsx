@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { CheckCheck, ClipboardList, Download, FileSpreadsheet, HelpCircle, LogOut, PackageCheck, RefreshCcw, Send } from "lucide-react";
+import { CheckCheck, ChevronDown, ChevronUp, ClipboardList, Download, FileSpreadsheet, HelpCircle, LogOut, PackageCheck, RefreshCcw, Send, Upload } from "lucide-react";
 import type { AuthUserDto, BatchSummary, ExportDto, ReviewDecision, ReviewLineDto, WdtGoodsSyncRunDto } from "@jy-trade/shared";
 
 import { ProductMappingPanel } from "./components/ProductMappingPanel.js";
@@ -61,6 +61,8 @@ export function App() {
   const [errorsById, setErrorsById] = useState<Record<string, string>>({});
   const [goodsSyncRun, setGoodsSyncRun] = useState<WdtGoodsSyncRunDto | null>(null);
   const [goodsSyncError, setGoodsSyncError] = useState("正在读取商品同步状态");
+  const [selectedOrderFileName, setSelectedOrderFileName] = useState("");
+  const [pendingOrderUpload, setPendingOrderUpload] = useState<File | null>(null);
   const [developerMode, setDeveloperMode] = useState(false);
   const [showHelp, setShowHelp] = useState(() => localStorage.getItem(helpDismissedStorageKey) !== "true");
 
@@ -178,11 +180,13 @@ export function App() {
       setMessage(realReviewBlockedMessage(latestSync, goodsSyncError));
       return;
     }
+    const orderFileInfo = await resolveOrderFile();
+    if (!orderFileInfo) return;
     setMessage("正在创建真实订单批次...");
     const createdResponse = await fetch("/api/v1/batches", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filePath: orderFile, mode: "production_api" }),
+      body: JSON.stringify({ filePath: orderFileInfo.filePath, fileName: orderFileInfo.fileName, mode: "production_api" }),
     });
     if (!createdResponse.ok) {
       setMessage("导入未完成，请检查订单文件");
@@ -220,6 +224,39 @@ export function App() {
     await refreshExports(created.id);
     setMessage(`真实初审已完成，已查询库存 ${review.stockQueriedCount ?? 0} 个规格`);
     await refreshBatches();
+  }
+
+  async function resolveOrderFile() {
+    if (!pendingOrderUpload) {
+      if (!selectedOrderFileName && !developerMode) {
+        setMessage("请先选择订货单文件");
+        return null;
+      }
+      return {
+        filePath: orderFile,
+        fileName: selectedOrderFileName || orderFile.split(/[\\/]/).at(-1) || orderFile,
+      };
+    }
+
+    setMessage("正在上传订货单...");
+    const response = await fetch("/api/v1/order-files", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        fileName: pendingOrderUpload.name,
+        contentBase64: await fileToBase64(pendingOrderUpload),
+      }),
+    });
+    if (!response.ok) {
+      const error = await response.json();
+      setMessage(error.message ?? "订货单上传失败");
+      return null;
+    }
+    const uploaded = (await response.json()) as { filePath: string; fileName: string };
+    setOrderFile(uploaded.filePath);
+    setSelectedOrderFileName(uploaded.fileName);
+    setPendingOrderUpload(null);
+    return uploaded;
   }
 
   async function saveDecision(line: ReviewLineDto, patch?: Partial<ReviewDraft>) {
@@ -407,7 +444,7 @@ export function App() {
 
           <section className="min-w-0">
             {showHelp ? <HelpPanel onDismiss={dismissHelp} /> : null}
-            <CurrentBatchPanel batch={activeBatch} message={message} />
+            <CurrentBatchPanel batch={activeBatch} message={message} reviewLines={reviewLines} />
 
             <nav className="mt-4 grid gap-2 rounded-md border border-border bg-card p-1 sm:grid-cols-3" aria-label="业务步骤">
               {workTabs.map((tab) => {
@@ -438,6 +475,12 @@ export function App() {
                 isDeveloperMode={developerMode}
                 mockFile={mockFile}
                 orderFile={orderFile}
+                selectedOrderFileName={selectedOrderFileName}
+                onOrderFileSelect={(file) => {
+                  setPendingOrderUpload(file);
+                  setSelectedOrderFileName(file.name);
+                  setMessage("已选择订货单，点击导入新订单开始初审");
+                }}
                 onMockFileChange={setMockFile}
                 onOrderFileChange={setOrderFile}
                 onRefreshGoodsSync={() => void refreshGoodsSyncStatus()}
@@ -490,6 +533,8 @@ function BatchList({
   batches: BatchSummary[];
   onSelect: (batch: BatchSummary) => void;
 }) {
+  const [expandedBatchId, setExpandedBatchId] = useState<string | null>(null);
+
   return (
     <aside className="rounded-md border border-border bg-card p-4">
       <div className="mb-3 flex items-center justify-between gap-2">
@@ -498,30 +543,62 @@ function BatchList({
       </div>
       <div className="space-y-2">
         {batches.length === 0 ? <div className="text-sm text-muted-foreground">暂无批次</div> : null}
-        {batches.map((batch) => (
-          <button
-            key={batch.id}
-            className={
-              batch.id === activeBatchId
-                ? "w-full rounded-md border border-primary bg-primary/5 px-3 py-2 text-left text-sm"
-                : "w-full rounded-md border border-border px-3 py-2 text-left text-sm transition hover:bg-muted"
-            }
-            data-testid={`batch-card-${batch.id}`}
-            onClick={() => onSelect(batch)}
-          >
-            <div className="font-medium">{batch.fileName}</div>
-            <div className="mt-1 flex flex-wrap items-center gap-2 text-muted-foreground">
-              <span>{batchStatusText(batch.status)}</span>
-              <span>{batch.orderLineCount} 行</span>
+        {batches.map((batch) => {
+          const expanded = expandedBatchId === batch.id;
+          return (
+            <div
+              key={batch.id}
+              className={
+                batch.id === activeBatchId
+                  ? `rounded-md border ${batchStatusCardClass(batch.status)} ring-1 ring-primary/40`
+                  : `rounded-md border ${batchStatusCardClass(batch.status)}`
+              }
+            >
+              <button
+                className="w-full px-3 py-2 text-left text-sm"
+                data-testid={`batch-card-${batch.id}`}
+                onClick={() => onSelect(batch)}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="truncate font-medium">{batch.fileName}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">上传 {formatShortDate(batch.createdAt)}</div>
+                  </div>
+                  <Badge tone={batchStatusTone(batch.status)}>{batchStatusText(batch.status)}</Badge>
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-muted-foreground">
+                  <span>{batch.orderLineCount} 行</span>
+                  <span>{batch.matchedBarcodeCount}/{batch.uniqueBarcodeCount} 已匹配</span>
+                </div>
+              </button>
+              <button
+                className="flex w-full items-center justify-center gap-1 border-t border-border/70 px-3 py-1.5 text-xs text-muted-foreground hover:bg-background/50"
+                onClick={() => setExpandedBatchId(expanded ? null : batch.id)}
+              >
+                {expanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                {expanded ? "收起详情" : "查看详情"}
+              </button>
+              {expanded ? (
+                <dl className="grid gap-2 border-t border-border/70 px-3 py-2 text-xs">
+                  <MetaItem label="上传时间" value={formatShortDate(batch.createdAt)} />
+                  <MetaItem label="更新时间" value={formatShortDate(batch.updatedAt)} />
+                  <MetaItem label="订单行数" value={`${batch.orderLineCount}`} />
+                  <MetaItem label="匹配情况" value={`${batch.matchedBarcodeCount}/${batch.uniqueBarcodeCount}`} />
+                  <MetaItem label="订单时间跨度" value="选择批次后查看" />
+                  <MetaItem label="门店 / 订单" value="选择批次后统计" />
+                </dl>
+              ) : null}
             </div>
-          </button>
-        ))}
+          );
+        })}
       </div>
     </aside>
   );
 }
 
-function CurrentBatchPanel({ batch, message }: { batch: BatchSummary | null; message: string }) {
+function CurrentBatchPanel({ batch, message, reviewLines }: { batch: BatchSummary | null; message: string; reviewLines: ReviewLineDto[] }) {
+  const detail = useMemo(() => buildBatchDetail(reviewLines), [reviewLines]);
+
   return (
     <section className="rounded-md border border-border bg-card p-4">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -535,8 +612,10 @@ function CurrentBatchPanel({ batch, message }: { batch: BatchSummary | null; mes
         <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-4">
           <MetaItem label="订单行数" value={`${batch.orderLineCount}`} />
           <MetaItem label="匹配条码" value={`${batch.matchedBarcodeCount}/${batch.uniqueBarcodeCount}`} />
-          <MetaItem label="创建时间" value={formatShortDate(batch.createdAt)} />
+          <MetaItem label="上传时间" value={formatShortDate(batch.createdAt)} />
           <MetaItem label="更新时间" value={formatShortDate(batch.updatedAt)} />
+          <MetaItem label="订单时间跨度" value={detail.orderTimeRange} />
+          <MetaItem label="门店 / 订单" value={`${detail.storeCount} 个门店 / ${detail.orderCount} 个订单`} />
         </dl>
       ) : null}
     </section>
@@ -572,6 +651,8 @@ function ImportTab({
   isDeveloperMode,
   mockFile,
   orderFile,
+  selectedOrderFileName,
+  onOrderFileSelect,
   onMockFileChange,
   onOrderFileChange,
   onRefreshGoodsSync,
@@ -583,13 +664,15 @@ function ImportTab({
   isDeveloperMode: boolean;
   mockFile: string;
   orderFile: string;
+  selectedOrderFileName: string;
+  onOrderFileSelect: (file: File) => void;
   onMockFileChange: (value: string) => void;
   onOrderFileChange: (value: string) => void;
   onRefreshGoodsSync: () => void;
   onRunDemo: () => void;
   onRunReal: () => void;
 }) {
-  const canRunReal = goodsSyncRun?.status === "success";
+  const canRunReal = goodsSyncRun?.status === "success" && (isDeveloperMode || Boolean(selectedOrderFileName));
 
   return (
     <section className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
@@ -598,14 +681,32 @@ function ImportTab({
           <FileSpreadsheet className="h-5 w-5 text-primary" />
           <h2 className="text-lg font-semibold">导入订单</h2>
         </div>
-        <label className="block text-sm text-muted-foreground">订货单路径</label>
-        <input
-          className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-          value={orderFile}
-          onChange={(event) => onOrderFileChange(event.target.value)}
-        />
+        <div className="rounded-md border border-dashed border-border bg-muted/20 px-4 py-5">
+          <div className="text-sm font-medium">选择订货单文件</div>
+          <div className="mt-1 text-sm text-muted-foreground">{selectedOrderFileName || "请选择 .xls 或 .xlsx 文件"}</div>
+          <label className="mt-4 inline-flex h-9 cursor-pointer items-center justify-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground shadow-sm transition hover:bg-primary/90">
+            <Upload className="h-4 w-4" />
+            选择文件
+            <input
+              className="sr-only"
+              type="file"
+              accept=".xls,.xlsx"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) onOrderFileSelect(file);
+                event.target.value = "";
+              }}
+            />
+          </label>
+        </div>
         {isDeveloperMode ? (
           <>
+            <label className="mt-3 block text-sm text-muted-foreground">订货单路径</label>
+            <input
+              className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              value={orderFile}
+              onChange={(event) => onOrderFileChange(event.target.value)}
+            />
             <label className="mt-3 block text-sm text-muted-foreground">演示数据文件</label>
             <input
               className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
@@ -626,9 +727,13 @@ function ImportTab({
             </Button>
           ) : null}
         </div>
-        {!canRunReal ? (
+        {goodsSyncRun?.status !== "success" ? (
           <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
             商品档案同步可用后才能导入新订单。请刷新右侧状态，或先完成商品档案同步。
+          </div>
+        ) : !selectedOrderFileName && !isDeveloperMode ? (
+          <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+            请先选择订货单文件，再开始导入。
           </div>
         ) : null}
       </div>
@@ -848,17 +953,16 @@ function GoodsSyncStatusPanel({
   onRefresh: () => void;
 }) {
   const status = run?.status ?? "none";
-  const isReady = status === "success";
   return (
     <section className="rounded-md border border-border bg-card p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="text-sm font-semibold">商品档案同步</h3>
-            <Badge tone={isReady ? "good" : status === "failed" ? "bad" : "warn"}>{syncStatusText(status)}</Badge>
+            <Badge tone={status === "success" ? "good" : status === "failed" ? "bad" : "warn"}>{userSyncStatusText(status)}</Badge>
           </div>
-          <p className="mt-2 text-sm text-muted-foreground">{syncSummary(run, error)}</p>
-          {run?.errorMessage ? <p className="mt-1 text-xs text-rose-700">{run.errorMessage}</p> : null}
+          <p className="mt-2 text-sm text-muted-foreground">上次更新：{run ? formatShortDate(run.finishedAt || run.startedAt) : error}</p>
+          {status !== "success" ? <p className="mt-1 text-xs text-amber-700">刷新后仍不可用时，请先完成商品档案同步。</p> : null}
         </div>
         <Button className="h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80" onClick={onRefresh}>
           <RefreshCcw className="h-4 w-4" />
@@ -891,6 +995,20 @@ function buildStats(lines: ReviewLineDto[]) {
   };
 }
 
+function buildBatchDetail(lines: ReviewLineDto[]) {
+  if (lines.length === 0) {
+    return { orderTimeRange: "-", storeCount: 0, orderCount: 0 };
+  }
+  const uploadTimes = lines.map((line) => line.uploadTime).filter(Boolean).sort();
+  const firstTime = uploadTimes[0] ?? "-";
+  const lastTime = uploadTimes.at(-1) ?? "-";
+  return {
+    orderTimeRange: firstTime === lastTime ? firstTime : `${firstTime} 至 ${lastTime}`,
+    storeCount: new Set(lines.map((line) => line.storeNo || line.storeName).filter(Boolean)).size,
+    orderCount: new Set(lines.map((line) => line.orderNoticeNo).filter(Boolean)).size,
+  };
+}
+
 function realReviewBlockedMessage(run: WdtGoodsSyncRunDto | null, error: string) {
   if (!run) return `真实初审已暂停：${error || "未读取到商品同步记录"}。请先完成商品档案同步。`;
   if (run.status === "running") return "真实初审已暂停：商品档案仍在同步中，请等待同步完成后刷新状态。";
@@ -898,17 +1016,11 @@ function realReviewBlockedMessage(run: WdtGoodsSyncRunDto | null, error: string)
   return `真实初审已暂停：最近同步状态为 ${run.status}，不能作为正式审核依据。`;
 }
 
-function syncStatusText(status: WdtGoodsSyncRunDto["status"] | "none") {
-  if (status === "success") return "可用于真实初审";
-  if (status === "failed") return "同步失败";
-  if (status === "running") return "同步中";
-  return "未同步";
-}
-
-function syncSummary(run: WdtGoodsSyncRunDto | null, error: string) {
-  if (!run) return error || "暂无商品档案同步记录";
-  const range = `${formatShortDate(run.rangeStart)} -> ${formatShortDate(run.rangeEnd)}`;
-  return `范围 ${range}，拉取 ${run.fetchedCount} 条，写入 ${run.upsertedCount} 条，完成于 ${formatShortDate(run.finishedAt || run.startedAt)}`;
+function userSyncStatusText(status: WdtGoodsSyncRunDto["status"] | "none") {
+  if (status === "success") return "已更新";
+  if (status === "failed") return "需刷新";
+  if (status === "running") return "更新中";
+  return "未更新";
 }
 
 function batchStatusText(status: BatchSummary["status"]) {
@@ -924,7 +1036,16 @@ function batchStatusText(status: BatchSummary["status"]) {
 function batchStatusTone(status: BatchSummary["status"]) {
   if (status === "reviewed" || status === "exported") return "good";
   if (status === "review_generated") return "info";
+  if (status === "uploaded") return "warn";
   return "neutral";
+}
+
+function batchStatusCardClass(status: BatchSummary["status"]) {
+  if (status === "exported") return "border-emerald-300 bg-emerald-50/70";
+  if (status === "reviewed") return "border-teal-300 bg-teal-50/70";
+  if (status === "review_generated") return "border-sky-300 bg-sky-50/70";
+  if (status === "uploaded") return "border-amber-300 bg-amber-50/70";
+  return "border-border bg-card";
 }
 
 function exportTypeText(type: ExportDto["type"]) {
@@ -944,6 +1065,15 @@ function formatShortDate(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString();
+}
+
+function fileToBase64(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(",")[1] ?? "");
+    reader.onerror = () => reject(reader.error ?? new Error("文件读取失败"));
+    reader.readAsDataURL(file);
+  });
 }
 
 function matchesFilter(line: ReviewLineDto, filter: FilterKey) {

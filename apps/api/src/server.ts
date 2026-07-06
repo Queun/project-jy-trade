@@ -11,6 +11,7 @@ import {
   ReviewDecisionDtoSchema,
   RunMockReviewRequestSchema,
   RunRealReviewRequestSchema,
+  UploadOrderFileRequestSchema,
   type AuthUserDto,
   type BatchSummary,
   type ExportDto,
@@ -19,7 +20,9 @@ import {
   type WdtGoodsSpecSearchResultDto,
   type WdtGoodsSyncRunDto,
 } from "@jy-trade/shared";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { extname, join } from "node:path";
+import { randomUUID } from "node:crypto";
 
 import { createSqliteStore, StoreValidationError, type StoreOptions } from "./store.js";
 
@@ -86,6 +89,25 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     const body = CreateBatchRequestSchema.parse(request.body ?? {});
     const batch = await store.createBatch(body, getCurrentUser(request));
     return reply.code(201).send(batch);
+  });
+
+  app.post("/api/v1/order-files", async (request, reply) => {
+    const body = UploadOrderFileRequestSchema.parse(request.body ?? {});
+    const originalName = body.fileName.split(/[\\/]/).at(-1) ?? body.fileName;
+    const extension = extname(originalName).toLowerCase();
+    if (![".xls", ".xlsx"].includes(extension)) {
+      return reply.code(400).send({ message: "只支持上传 Excel 订货单文件" });
+    }
+
+    const uploadDir = join(process.cwd(), "inputs", "uploads");
+    await mkdir(uploadDir, { recursive: true });
+    const storedName = `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID()}${extension}`;
+    const filePath = join(uploadDir, storedName);
+    await writeFile(filePath, Buffer.from(body.contentBase64, "base64"));
+    return reply.code(201).send({
+      filePath,
+      fileName: originalName,
+    });
   });
 
   app.get("/api/v1/batches", async (): Promise<BatchSummary[]> => store.listBatches());

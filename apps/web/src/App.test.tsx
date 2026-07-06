@@ -70,6 +70,10 @@ describe("App", () => {
     render(<App />);
 
     expect(await screen.findByText("订货通知单 .xls")).toBeInTheDocument();
+    expect(await screen.findByText(/上传/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "查看详情" }));
+    expect(screen.getByText("订单时间跨度")).toBeInTheDocument();
+    expect(screen.getByText("门店 / 订单")).toBeInTheDocument();
     await clickBatch();
     switchToReviewTab();
     await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/v1/batches/batch-1/review-lines"));
@@ -105,6 +109,7 @@ describe("App", () => {
 
     expect(await screen.findByText("订单处理工作台")).toBeInTheDocument();
     expect(screen.queryByText("演示数据文件")).not.toBeInTheDocument();
+    expect(screen.queryByText("订货单路径")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "生成演示批次" })).not.toBeInTheDocument();
     expect(document.body.textContent).not.toContain("mock");
     expect(document.body.textContent).not.toContain("API");
@@ -119,6 +124,7 @@ describe("App", () => {
 
     expect(await screen.findByText("商品映射确认")).toBeInTheDocument();
     switchToImportTab();
+    expect(screen.getByText("订货单路径")).toBeInTheDocument();
     expect(screen.getByText("演示数据文件")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "生成演示批次" })).toBeInTheDocument();
   });
@@ -127,9 +133,19 @@ describe("App", () => {
     latestGoodsSyncRun = goodsSyncRun({ status: "running" });
     render(<App />);
 
+    const file = new File(["order"], "新订货单.xlsx", { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    fireEvent.change(await screen.findByLabelText("选择文件"), { target: { files: [file] } });
     const importButton = await screen.findByRole("button", { name: "导入新订单" });
     expect(importButton).toBeDisabled();
     expect(screen.getByText("商品档案同步可用后才能导入新订单。请刷新右侧状态，或先完成商品档案同步。")).toBeInTheDocument();
+  });
+
+  it("requires selecting an order file before import", async () => {
+    render(<App />);
+
+    const importButton = await screen.findByRole("button", { name: "导入新订单" });
+    expect(importButton).toBeDisabled();
+    expect(screen.getByText("请先选择订货单文件，再开始导入。")).toBeInTheDocument();
   });
 
   it("shows clear empty states before a batch is selected", async () => {
@@ -193,8 +209,19 @@ describe("App", () => {
   it("creates a production batch and runs real review", async () => {
     render(<App />);
 
+    const file = new File(["order"], "新订货单.xlsx", { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    fireEvent.change(await screen.findByLabelText("选择文件"), { target: { files: [file] } });
+    expect(await screen.findByText("新订货单.xlsx")).toBeInTheDocument();
     fireEvent.click(await screen.findByRole("button", { name: "导入新订单" }));
 
+    await waitFor(() =>
+      expect(fetch).toHaveBeenCalledWith(
+        "/api/v1/order-files",
+        expect.objectContaining({
+          method: "POST",
+        }),
+      ),
+    );
     await waitFor(() =>
       expect(fetch).toHaveBeenCalledWith(
         "/api/v1/batches/batch-1/actions/run-real-review",
@@ -212,7 +239,7 @@ describe("App", () => {
     latestGoodsSyncRun = goodsSyncRun({ status: "failed", errorMessage: "fetch failed" });
     render(<App />);
 
-    expect(await screen.findByText("同步失败")).toBeInTheDocument();
+    expect(await screen.findByText("需刷新")).toBeInTheDocument();
     const importButton = await screen.findByRole("button", { name: "导入新订单" });
 
     expect(importButton).toBeDisabled();
@@ -321,8 +348,12 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
   if (url === "/api/v1/batches" && method === "GET") return json([currentBatch]);
   if (url === "/api/v1/batches" && method === "POST") {
     const body = JSON.parse(String(init?.body));
-    currentBatch = { ...currentBatch, mode: body.mode ?? currentBatch.mode };
+    currentBatch = { ...currentBatch, fileName: body.fileName ?? currentBatch.fileName, mode: body.mode ?? currentBatch.mode };
     return json(currentBatch, 201);
+  }
+  if (url === "/api/v1/order-files" && method === "POST") {
+    const body = JSON.parse(String(init?.body));
+    return json({ filePath: `inputs/uploads/${body.fileName}`, fileName: body.fileName }, 201);
   }
   if (url.includes("/review-lines") && method === "GET") return json(lines);
   if (url.includes("/actions/run-mock-review")) return json({ batch: currentBatch });

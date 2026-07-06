@@ -51,6 +51,27 @@ describe("api server", () => {
     await app.close();
   });
 
+  it("uploads an order file for browser imports", async () => {
+    const app = buildTestServer();
+    const cookie = await loginCookie(app);
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/order-files",
+      payload: {
+        fileName: "订货通知单.xlsx",
+        contentBase64: Buffer.from("test file").toString("base64"),
+      },
+      headers: { cookie },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({
+      fileName: "订货通知单.xlsx",
+    });
+    expect(response.json().filePath).toContain("inputs");
+    await app.close();
+  });
+
   it("logs in, returns current user, and logs out", async () => {
     const app = buildTestServer();
     const login = await app.inject({

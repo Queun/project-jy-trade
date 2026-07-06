@@ -118,6 +118,18 @@ export const CreateBatchRequestSchema = z.object({
 });
 export type CreateBatchRequest = z.infer<typeof CreateBatchRequestSchema>;
 
+export const UploadOrderFileRequestSchema = z.object({
+  fileName: z.string().min(1),
+  contentBase64: z.string().min(1),
+});
+export type UploadOrderFileRequest = z.infer<typeof UploadOrderFileRequestSchema>;
+
+export const UploadOrderFileResponseSchema = z.object({
+  filePath: z.string(),
+  fileName: z.string(),
+});
+export type UploadOrderFileResponse = z.infer<typeof UploadOrderFileResponseSchema>;
+
 export const RunMockReviewRequestSchema = z.object({
   mockDataFile: z.string().min(1).default("examples/mock_flow_data.json"),
 });
