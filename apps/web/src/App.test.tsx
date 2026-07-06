@@ -153,11 +153,13 @@ describe("App", () => {
     const importButton = await screen.findByRole("button", { name: "导入新订单" });
     expect(importButton).toBeDisabled();
     expect(screen.getByText("请先选择订货单文件，再开始导入。")).toBeInTheDocument();
+    expect(screen.queryByText("可用仓库范围")).not.toBeInTheDocument();
   });
 
   it("lets admins save warehouse usage settings", async () => {
     render(<App />);
 
+    fireEvent.click(await screen.findByRole("button", { name: "设置" }));
     expect(await screen.findByText("可用仓库范围")).toBeInTheDocument();
     const nearExpiry = screen.getByRole("checkbox", { name: "临期仓" });
     const other = screen.getByRole("checkbox", { name: "其他仓" });
@@ -193,6 +195,7 @@ describe("App", () => {
     render(<App />);
 
     expect(await screen.findByText("operator")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
     expect(screen.getByRole("checkbox", { name: "主仓" })).toBeDisabled();
     expect(screen.getByRole("checkbox", { name: "临期仓" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "保存" })).toBeDisabled();

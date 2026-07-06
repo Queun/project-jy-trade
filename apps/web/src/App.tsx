@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { CheckCheck, ChevronDown, ChevronUp, ClipboardList, Download, FileSpreadsheet, HelpCircle, LogOut, PackageCheck, RefreshCcw, Save, Send, Upload, Warehouse } from "lucide-react";
+import { CheckCheck, ChevronDown, ChevronUp, ClipboardList, Download, FileSpreadsheet, HelpCircle, LogOut, PackageCheck, RefreshCcw, Save, Send, Settings, Upload, Warehouse } from "lucide-react";
 import type { AuthUserDto, BatchSummary, ExportDto, ReviewDecision, ReviewLineDto, WarehouseUsageSettingsDto, WdtGoodsSyncRunDto } from "@jy-trade/shared";
 
 import { ProductMappingPanel } from "./components/ProductMappingPanel.js";
@@ -70,6 +70,7 @@ export function App() {
   const [selectedOrderFileName, setSelectedOrderFileName] = useState("");
   const [pendingOrderUpload, setPendingOrderUpload] = useState<File | null>(null);
   const [developerMode, setDeveloperMode] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [showHelp, setShowHelp] = useState(() => localStorage.getItem(helpDismissedStorageKey) !== "true");
 
   async function refreshBatches() {
@@ -517,6 +518,10 @@ export function App() {
               <HelpCircle className="h-4 w-4" />
               帮助
             </Button>
+            <Button className="h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80" onClick={() => setShowSettings((current) => !current)}>
+              <Settings className="h-4 w-4" />
+              设置
+            </Button>
             <label className="inline-flex h-8 items-center gap-2 rounded-md border border-border bg-card px-2 text-sm text-muted-foreground">
               <input
                 className="h-4 w-4"
@@ -533,6 +538,18 @@ export function App() {
             </Button>
           </div>
         </header>
+
+        {showSettings ? (
+          <SettingsPanel
+            canManageSettings={permissions.canManageSettings}
+            warehouseSettings={warehouseSettings}
+            warehouseSettingsDraft={warehouseSettingsDraft}
+            warehouseSettingsMessage={warehouseSettingsMessage}
+            onClose={() => setShowSettings(false)}
+            onSaveWarehouseSettings={() => void saveWarehouseSettings()}
+            onWarehouseSettingsDraftChange={setWarehouseSettingsDraft}
+          />
+        ) : null}
 
         <section className="grid gap-4 xl:grid-cols-[300px_minmax(0,1fr)]">
           <BatchList batches={batches} activeBatchId={activeBatch?.id} onSelect={(batch) => void loadBatch(batch)} />
@@ -572,12 +589,6 @@ export function App() {
                 orderFile={orderFile}
                 selectedOrderFileName={selectedOrderFileName}
                 canImport={permissions.canImport}
-                canManageSettings={permissions.canManageSettings}
-                warehouseSettings={warehouseSettings}
-                warehouseSettingsDraft={warehouseSettingsDraft}
-                warehouseSettingsMessage={warehouseSettingsMessage}
-                onSaveWarehouseSettings={() => void saveWarehouseSettings()}
-                onWarehouseSettingsDraftChange={setWarehouseSettingsDraft}
                 onOrderFileSelect={(file) => {
                   setPendingOrderUpload(file);
                   setSelectedOrderFileName(file.name);
@@ -752,6 +763,51 @@ function HelpPanel({ onDismiss }: { onDismiss: () => void }) {
   );
 }
 
+function SettingsPanel({
+  canManageSettings,
+  warehouseSettings,
+  warehouseSettingsDraft,
+  warehouseSettingsMessage,
+  onClose,
+  onSaveWarehouseSettings,
+  onWarehouseSettingsDraftChange,
+}: {
+  canManageSettings: boolean;
+  warehouseSettings: WarehouseUsageSettingsDto | null;
+  warehouseSettingsDraft: WarehouseUsageSettingsDto | null;
+  warehouseSettingsMessage: string;
+  onClose: () => void;
+  onSaveWarehouseSettings: () => void;
+  onWarehouseSettingsDraftChange: (settings: WarehouseUsageSettingsDto) => void;
+}) {
+  return (
+    <section className="rounded-md border border-border bg-card p-4 shadow-sm">
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2">
+            <Settings className="h-5 w-5 text-primary" />
+            <h2 className="text-base font-semibold">设置</h2>
+          </div>
+          <p className="mt-1 text-sm text-muted-foreground">调整会影响之后重新运行的初审结果。</p>
+        </div>
+        <Button className="h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80" onClick={onClose}>
+          收起
+        </Button>
+      </div>
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,420px)_1fr]">
+        <WarehouseUsageSettingsPanel
+          canManageSettings={canManageSettings}
+          draft={warehouseSettingsDraft}
+          message={warehouseSettingsMessage}
+          settings={warehouseSettings}
+          onDraftChange={onWarehouseSettingsDraftChange}
+          onSave={onSaveWarehouseSettings}
+        />
+      </div>
+    </section>
+  );
+}
+
 function ImportTab({
   goodsSyncError,
   goodsSyncRun,
@@ -760,12 +816,6 @@ function ImportTab({
   orderFile,
   selectedOrderFileName,
   canImport,
-  canManageSettings,
-  warehouseSettings,
-  warehouseSettingsDraft,
-  warehouseSettingsMessage,
-  onSaveWarehouseSettings,
-  onWarehouseSettingsDraftChange,
   onOrderFileSelect,
   onMockFileChange,
   onOrderFileChange,
@@ -780,12 +830,6 @@ function ImportTab({
   orderFile: string;
   selectedOrderFileName: string;
   canImport: boolean;
-  canManageSettings: boolean;
-  warehouseSettings: WarehouseUsageSettingsDto | null;
-  warehouseSettingsDraft: WarehouseUsageSettingsDto | null;
-  warehouseSettingsMessage: string;
-  onSaveWarehouseSettings: () => void;
-  onWarehouseSettingsDraftChange: (settings: WarehouseUsageSettingsDto) => void;
   onOrderFileSelect: (file: File) => void;
   onMockFileChange: (value: string) => void;
   onOrderFileChange: (value: string) => void;
@@ -860,17 +904,7 @@ function ImportTab({
           </div>
         ) : null}
       </div>
-      <div className="space-y-4">
-        <GoodsSyncStatusPanel error={goodsSyncError} run={goodsSyncRun} onRefresh={onRefreshGoodsSync} />
-        <WarehouseUsageSettingsPanel
-          canManageSettings={canManageSettings}
-          draft={warehouseSettingsDraft}
-          message={warehouseSettingsMessage}
-          settings={warehouseSettings}
-          onDraftChange={onWarehouseSettingsDraftChange}
-          onSave={onSaveWarehouseSettings}
-        />
-      </div>
+      <GoodsSyncStatusPanel error={goodsSyncError} run={goodsSyncRun} onRefresh={onRefreshGoodsSync} />
     </section>
   );
 }
