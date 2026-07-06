@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, rmSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
@@ -75,6 +75,65 @@ describe("api server", () => {
     });
     expect(response.json().filePath).toContain("inputs");
     await app.close();
+  });
+
+  it("uses configured runtime directories for uploads and exports", async () => {
+    const previousUploadDir = process.env.JY_TRADE_UPLOAD_DIR;
+    const previousExportsDir = process.env.JY_TRADE_EXPORTS_DIR;
+    const runtimeRoot = resolve(projectRoot, "outputs", `runtime-dirs-${randomUUID()}`);
+    const uploadDir = resolve(runtimeRoot, "uploads");
+    const exportsDir = resolve(runtimeRoot, "exports");
+    process.env.JY_TRADE_UPLOAD_DIR = uploadDir;
+    process.env.JY_TRADE_EXPORTS_DIR = exportsDir;
+
+    try {
+      const databaseUrl = testDatabaseUrl();
+      const app = buildTestServer(databaseUrl);
+      const cookie = await loginCookie(app);
+      const upload = await app.inject({
+        method: "POST",
+        url: "/api/v1/order-files",
+        payload: {
+          fileName: "订货通知单.xlsx",
+          contentBase64: Buffer.from("test file").toString("base64"),
+        },
+        headers: { cookie },
+      });
+
+      expect(upload.statusCode).toBe(201);
+      expect(upload.json().filePath).toContain(uploadDir);
+      expect(existsSync(upload.json().filePath)).toBe(true);
+
+      const { batch } = await createReviewedBatch(app);
+      const exportResponse = await app.inject({
+        method: "POST",
+        url: `/api/v1/batches/${batch.id}/exports`,
+        payload: { type: "review" },
+        headers: { cookie },
+      });
+      expect(exportResponse.statusCode).toBe(201);
+
+      const database = createDatabaseContext(databaseUrl);
+      await database.ready;
+      const [exportRow] = await database.db.select().from(exportsTable).where(eq(exportsTable.id, exportResponse.json().id)).limit(1);
+      await database.close();
+      expect(exportRow.filePath).toContain(exportsDir);
+      expect(existsSync(exportRow.filePath)).toBe(true);
+
+      await app.close();
+    } finally {
+      if (previousUploadDir === undefined) {
+        delete process.env.JY_TRADE_UPLOAD_DIR;
+      } else {
+        process.env.JY_TRADE_UPLOAD_DIR = previousUploadDir;
+      }
+      if (previousExportsDir === undefined) {
+        delete process.env.JY_TRADE_EXPORTS_DIR;
+      } else {
+        process.env.JY_TRADE_EXPORTS_DIR = previousExportsDir;
+      }
+      rmSync(runtimeRoot, { recursive: true, force: true });
+    }
   });
 
   it("logs in, returns current user, and logs out", async () => {

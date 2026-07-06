@@ -31,7 +31,7 @@ import {
   type WdtGoodsSyncRunDto,
 } from "@jy-trade/shared";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { extname, join } from "node:path";
+import { extname, isAbsolute, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 
 import { createSqliteStore, StoreValidationError, type StoreOptions } from "./store.js";
@@ -43,6 +43,7 @@ interface BuildApiServerOptions extends StoreOptions {
 export function buildApiServer(options: BuildApiServerOptions = {}) {
   const app = Fastify({ logger: options.logger ?? true });
   const store = createSqliteStore(options);
+  const projectRoot = options.projectRoot ?? resolve(process.cwd(), "../..");
 
   void app.register(cors, { origin: true });
   app.addHook("onClose", async () => store.close());
@@ -114,7 +115,7 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
       return reply.code(400).send({ message: "只支持上传 Excel 订货单文件" });
     }
 
-    const uploadDir = join(process.cwd(), "inputs", "uploads");
+    const uploadDir = resolveRuntimeDir(process.env.JY_TRADE_UPLOAD_DIR, join(process.cwd(), "inputs", "uploads"), projectRoot);
     await mkdir(uploadDir, { recursive: true });
     const storedName = `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID()}${extension}`;
     const filePath = join(uploadDir, storedName);
@@ -321,6 +322,12 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
 
 function getCurrentUser(request: unknown) {
   return (request as { currentUser?: AuthUserDto }).currentUser;
+}
+
+function resolveRuntimeDir(configuredPath: string | undefined, fallbackPath: string, basePath: string) {
+  const trimmed = configuredPath?.trim();
+  if (!trimmed) return fallbackPath;
+  return isAbsolute(trimmed) ? resolve(trimmed) : resolve(basePath, trimmed);
 }
 
 function requireRole(request: unknown, allowedRoles: UserRole[]) {

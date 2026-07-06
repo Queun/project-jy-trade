@@ -115,8 +115,14 @@ export class StoreValidationError extends Error {
 export function createSqliteStore(options: StoreOptions = {}) {
   const database = createDatabaseContext(options.databaseUrl);
   const projectRoot = options.projectRoot ?? resolve(process.cwd(), "../..");
-  const exportsDir = resolve(projectRoot, "outputs/exports");
-  const uploadDirs = [resolve(process.cwd(), "inputs/uploads"), resolve(projectRoot, "inputs/uploads"), resolve(projectRoot, "apps/api/inputs/uploads")];
+  const exportsDir = resolveRuntimeDir(process.env.JY_TRADE_EXPORTS_DIR, resolve(projectRoot, "outputs/exports"), projectRoot);
+  const configuredUploadDir = resolveRuntimeDir(process.env.JY_TRADE_UPLOAD_DIR, resolve(process.cwd(), "inputs/uploads"), projectRoot);
+  const uploadDirs = uniquePaths([
+    configuredUploadDir,
+    resolve(process.cwd(), "inputs/uploads"),
+    resolve(projectRoot, "inputs/uploads"),
+    resolve(projectRoot, "apps/api/inputs/uploads"),
+  ]);
   const wdtClients = options.wdtGoodsClient && options.stockClient ? undefined : createWdtReadClientsFromEnv();
   const wdtGoodsClient = options.wdtGoodsClient ?? wdtClients?.goodsClient;
   const stockClient = options.stockClient ?? wdtClients?.stockClient;
@@ -701,7 +707,7 @@ export function createSqliteStore(options: StoreOptions = {}) {
       const type = input?.type ?? "review";
       const exportId = `export-${randomUUID()}`;
       const fileName = buildExportFileName(batch.fileName, type, now);
-      const filePath = resolve(projectRoot, "outputs/exports", fileName);
+      const filePath = resolve(exportsDir, fileName);
       const exportRow: typeof exportsTable.$inferInsert = {
         id: exportId,
         batchId,
@@ -717,7 +723,7 @@ export function createSqliteStore(options: StoreOptions = {}) {
 
       await database.db.insert(exportsTable).values(exportRow);
       try {
-        await mkdir(resolve(projectRoot, "outputs/exports"), { recursive: true });
+        await mkdir(exportsDir, { recursive: true });
         const addressIndex = type === "wdt_import" ? await loadMakeOrderAddressIndex(database) : undefined;
         if (type === "wdt_import") {
           const readiness = buildMakeOrderReadiness(batchId, lines, addressIndex ?? emptyMakeOrderAddressIndex());
@@ -1819,6 +1825,16 @@ async function insertAuditLog(
 function resolveProjectPath(path: string, projectRoot: string): string {
   if (isAbsolute(path)) return path;
   return resolve(projectRoot, path);
+}
+
+function resolveRuntimeDir(configuredPath: string | undefined, fallbackPath: string, basePath: string) {
+  const trimmed = configuredPath?.trim();
+  if (!trimmed) return fallbackPath;
+  return isAbsolute(trimmed) ? resolve(trimmed) : resolve(basePath, trimmed);
+}
+
+function uniquePaths(paths: string[]) {
+  return [...new Set(paths.map((path) => resolve(path)))];
 }
 
 async function removeRuntimeFile(filePath: string, safeDirs: string[]): Promise<boolean> {
