@@ -516,6 +516,9 @@ describe("App", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "去地址维护" }));
     expect(await screen.findByText("门店地址维护")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("门店地址查询"), { target: { value: "不匹配的旧查询" } });
+    fireEvent.click(screen.getByRole("button", { name: "查询" }));
+    await waitFor(() => expect(screen.getByText("暂无门店地址")).toBeInTheDocument());
     fireEvent.change(screen.getByLabelText("导入地址 Excel"), {
       target: {
         files: [new File(["fake workbook"], "地址匹配表格.xlsx", { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" })],
@@ -529,6 +532,7 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "确认更新地址" }));
 
     expect(await screen.findByText("已确认导入 2 条来源记录，新增 1 个，更新 1 个")).toBeInTheDocument();
+    expect(screen.getByLabelText("门店地址查询")).toHaveValue("");
     expect(await screen.findByText("导入门店")).toBeInTheDocument();
     expect(screen.getByText("经理表")).toBeInTheDocument();
     expect(screen.getByText("第 3 行")).toBeInTheDocument();

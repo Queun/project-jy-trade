@@ -449,12 +449,17 @@ export function createSqliteStore(options: StoreOptions = {}) {
     async importStoreAddresses(input: ImportStoreAddressesRequest, actor?: AuthUserDto): Promise<ImportStoreAddressesResponse> {
       await ready;
       const parsed = parseStoreAddressImportInput(input);
+      const importGroups = groupStoreAddressImports(parsed.addresses);
       const now = new Date().toISOString();
       let importedAddressCount = 0;
 
-      for (const address of parsed.addresses) {
+      for (const group of importGroups) {
+        const address = group.address;
         const existing = await findStoreAddressRow(database, address.storeNo, normalizeStoreName(address.storeName));
-        const rawJson = mergeStoreAddressRawJson(existing?.rawJson, address);
+        const rawJson = group.rawAddresses.reduce(
+          (currentRawJson, rawAddress) => mergeStoreAddressRawJson(currentRawJson, rawAddress),
+          existing?.rawJson,
+        );
         const values = {
           storeNo: address.storeNo,
           storeName: address.storeName,
@@ -2393,14 +2398,8 @@ function parseStoreAddressImportInput(input: ImportStoreAddressesRequest) {
 }
 
 async function buildStoreAddressImportPreview(database: DatabaseContext, addresses: ParsedStoreAddress[]) {
-  const finalByKey = new Map<string, ParsedStoreAddress>();
-  for (const address of addresses) {
-    const key = storeAddressImportKey(address.storeNo, address.storeName);
-    if (key) finalByKey.set(key, address);
-  }
-
   const items: StoreAddressImportPreviewItem[] = [];
-  for (const address of finalByKey.values()) {
+  for (const { address } of groupStoreAddressImports(addresses)) {
     const existing = await findStoreAddressRow(database, address.storeNo, normalizeStoreName(address.storeName));
     const existingPreview = existing
       ? {
@@ -2435,6 +2434,22 @@ async function buildStoreAddressImportPreview(database: DatabaseContext, address
     updateCount: items.filter((item) => item.action === "update").length,
     unchangedCount: items.filter((item) => item.action === "unchanged").length,
   };
+}
+
+function groupStoreAddressImports(addresses: ParsedStoreAddress[]) {
+  const groups = new Map<string, { address: ParsedStoreAddress; rawAddresses: ParsedStoreAddress[] }>();
+  for (const address of addresses) {
+    const key = storeAddressImportKey(address.storeNo, address.storeName);
+    if (!key) continue;
+    const existing = groups.get(key);
+    if (existing) {
+      existing.address = address;
+      existing.rawAddresses.push(address);
+    } else {
+      groups.set(key, { address, rawAddresses: [address] });
+    }
+  }
+  return [...groups.values()];
 }
 
 function storeAddressImportKey(storeNo: string, storeName: string) {

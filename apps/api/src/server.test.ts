@@ -1072,6 +1072,95 @@ describe("api server", () => {
     await app.close();
   });
 
+  it("imports the same final store address shown in the preview when a workbook has duplicate stores", async () => {
+    const app = buildTestServer();
+    const cookie = await loginCookie(app);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(
+      workbook,
+      XLSX.utils.aoa_to_sheet([
+        ["门店编号", "门店名称", "地址", "收货人", "电话"],
+        ["D001", "重复门店", "第一次地址", "第一次收货人", "18800000001"],
+        ["D001", "重复门店", "最终地址", "最终收货人", "18800000002"],
+      ]),
+      "经理表",
+    );
+    const contentBase64 = (XLSX.write(workbook, { bookType: "xlsx", type: "buffer" }) as Buffer).toString("base64");
+
+    const existing = await app.inject({
+      method: "POST",
+      url: "/api/v1/store-addresses",
+      payload: {
+        storeNo: "D001",
+        storeName: "重复门店",
+        receiver: "旧收货人",
+        phone: "18800000999",
+        address: "旧地址",
+      },
+      headers: { cookie },
+    });
+    expect(existing.statusCode).toBe(201);
+
+    const preview = await app.inject({
+      method: "POST",
+      url: "/api/v1/store-addresses/import-preview",
+      payload: {
+        fileName: "重复地址.xlsx",
+        contentBase64,
+      },
+      headers: { cookie },
+    });
+    expect(preview.statusCode).toBe(200);
+    expect(preview.json()).toMatchObject({
+      parsedRowCount: 2,
+      affectedStoreCount: 1,
+      updateCount: 1,
+      items: [
+        {
+          action: "update",
+          storeNo: "D001",
+          receiver: "最终收货人",
+          phone: "18800000002",
+          address: "最终地址",
+        },
+      ],
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/store-addresses/import",
+      payload: {
+        fileName: "重复地址.xlsx",
+        contentBase64,
+      },
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({
+      parsedRowCount: 2,
+      importedAddressCount: 1,
+    });
+
+    const list = await app.inject({
+      method: "GET",
+      url: `/api/v1/store-addresses?query=${encodeURIComponent("重复门店")}`,
+      headers: { cookie },
+    });
+    expect(list.statusCode).toBe(200);
+    expect(list.json()).toHaveLength(1);
+    expect(list.json()[0]).toMatchObject({
+      storeNo: "D001",
+      storeName: "重复门店",
+      receiver: "最终收货人",
+      phone: "18800000002",
+      address: "最终地址",
+      sourceRow: 3,
+    });
+    expect(JSON.parse(list.json()[0].rawJson).records).toHaveLength(2);
+
+    await app.close();
+  });
+
   it("rejects store address writes from reviewer accounts", async () => {
     const app = buildTestServer();
     const reviewerCookie = await loginCookie(app, "reviewer", "reviewer123");

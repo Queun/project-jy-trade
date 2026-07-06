@@ -104,7 +104,8 @@ export function StoreAddressPanel({ canEdit, missingStores, onMessage, onSaved }
         return;
       }
       const result = (await response.json()) as ImportStoreAddressesResponse;
-      await refreshAddresses();
+      setQuery("");
+      await refreshAddresses("");
       setImportDraft(null);
       setImportPreview(null);
       onSaved();
