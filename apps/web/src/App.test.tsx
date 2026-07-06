@@ -39,6 +39,7 @@ let makeOrderReadiness: MakeOrderReadinessDto;
 let storeAddressRows: StoreAddressDto[];
 let currentUser: { id: string; username: string; role: "admin" | "operator" | "reviewer"; createdAt: string };
 let failReviewLines: boolean;
+let batchDeleted: boolean;
 
 describe("App", () => {
   beforeEach(() => {
@@ -77,7 +78,9 @@ describe("App", () => {
     };
     currentUser = { id: "user-1", username: "admin", role: "admin", createdAt: "2026-06-30T00:00:00.000Z" };
     failReviewLines = false;
+    batchDeleted = false;
     vi.stubGlobal("fetch", vi.fn(handleFetch));
+    vi.stubGlobal("confirm", vi.fn(() => true));
   });
 
   afterEach(() => {
@@ -91,8 +94,10 @@ describe("App", () => {
     expect(await screen.findByText("订货通知单 .xls")).toBeInTheDocument();
     expect(await screen.findByText(/上传/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "查看详情" }));
-    expect(screen.getByText("订单时间跨度")).toBeInTheDocument();
-    expect(screen.getByText("门店 / 订单")).toBeInTheDocument();
+    expect(screen.getByText("唯一条码")).toBeInTheDocument();
+    expect(screen.getByText("初审模式")).toBeInTheDocument();
+    expect(screen.queryByText("选择批次后查看")).not.toBeInTheDocument();
+    expect(screen.queryByText("选择批次后统计")).not.toBeInTheDocument();
     await clickBatch();
     switchToReviewTab();
     await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/v1/batches/batch-1/review-lines"));
@@ -103,6 +108,25 @@ describe("App", () => {
     expect(document.body.textContent).not.toContain("可发商品");
     expect(document.body.textContent).not.toContain("production_api");
     expect(document.body.textContent).not.toContain("Mock/API");
+  });
+
+  it("allows admins to delete a batch from history", async () => {
+    render(<App />);
+
+    expect(await screen.findByText("订货通知单 .xls")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /删除批次/ }));
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/v1/batches/batch-1", { method: "DELETE" }));
+    await waitFor(() => expect(screen.queryByText("订货通知单 .xls")).not.toBeInTheDocument());
+    expect(screen.getAllByText("批次已删除").length).toBeGreaterThan(0);
+  });
+
+  it("hides batch deletion from non-admin users", async () => {
+    currentUser = { id: "operator-1", username: "operator", role: "operator", createdAt: "2026-06-30T00:00:00.000Z" };
+    render(<App />);
+
+    expect(await screen.findByText("订货通知单 .xls")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /删除批次/ })).not.toBeInTheDocument();
   });
 
   it("shows match and review exception statistics", async () => {
@@ -232,7 +256,7 @@ describe("App", () => {
     switchToReviewTab();
     expect(screen.getByRole("button", { name: "提交审核完成" })).not.toBeDisabled();
     switchToExportTab();
-    expect(screen.getByRole("button", { name: "生成导出" })).toBeDisabled();
+    expect(screen.queryByTestId("create-export-review")).not.toBeInTheDocument();
     expect(screen.getByText("当前账号不能生成做单文件，请联系管理员或切换到运营账号。")).toBeInTheDocument();
   });
 
@@ -270,7 +294,7 @@ describe("App", () => {
 
     switchToExportTab();
     expect(screen.getByText("完成审核后，这里会生成初审单、确定发货单或做单 Excel。")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "生成导出" })).toBeDisabled();
+    expect(screen.queryByTestId("create-export-review")).not.toBeInTheDocument();
   });
 
   it("allows do-not-ship decisions without a reason", async () => {
@@ -383,6 +407,7 @@ describe("App", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "提交审核完成" }));
     expect(await screen.findByText(/审核已提交/)).toBeInTheDocument();
+    expect(screen.getByText("审核完成，当前批次可以进入做单")).toBeInTheDocument();
     expect(currentBatch.status).toBe("reviewed");
   });
 
@@ -412,6 +437,7 @@ describe("App", () => {
       ),
     );
     expect(await screen.findByText("真实初审已完成，已查询库存 1 个规格")).toBeInTheDocument();
+    expect(screen.getByText("订单导入成功，已生成初审结果")).toBeInTheDocument();
     expect(currentBatch.mode).toBe("production_api");
   });
 
@@ -440,10 +466,11 @@ describe("App", () => {
     await screen.findByText(/审核已提交/);
     switchToExportTab();
 
-    fireEvent.click(screen.getByRole("button", { name: "生成导出" }));
+    fireEvent.click(screen.getByTestId("create-export-review"));
 
     expect(await screen.findByText("导出文件已生成")).toBeInTheDocument();
-    expect(await screen.findByText("batch-1-review.xlsx")).toBeInTheDocument();
+    expect(screen.getByTestId("export-type-export-1")).toHaveTextContent("初审单");
+    expect(screen.getByTestId("export-file-export-1")).toHaveTextContent("batch-1-review.xlsx");
     expect(screen.getByText("已生成")).toBeInTheDocument();
   });
 
@@ -453,21 +480,22 @@ describe("App", () => {
     await clickBatch();
     switchToExportTab();
 
-    fireEvent.change(screen.getByRole("combobox"), { target: { value: "wdt_import" } });
-
     expect(await screen.findByText("做单预检查")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "生成做单表格" })).toBeDisabled();
     expect(screen.getByText("可做单 2 行 / 缺地址 1 个门店")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "测试门店" })).toBeInTheDocument();
+    expect(screen.getByText("测试门店")).toBeInTheDocument();
     expect(screen.getByText("2 行待做单")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "生成导出" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "去地址维护" })).toBeInTheDocument();
   });
 
-  it("saves store addresses from the export tab", async () => {
+  it("saves store addresses from the address maintenance tab opened by the export tab", async () => {
     currentBatch = { ...currentBatch, status: "reviewed" };
     render(<App />);
     await clickBatch();
     switchToExportTab();
 
+    fireEvent.click(await screen.findByRole("button", { name: "去地址维护" }));
+    expect(screen.getByTestId("work-tab-addresses")).toHaveTextContent("地址维护");
     expect(await screen.findByText("门店地址维护")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "测试门店" }));
     fireEvent.change(screen.getByLabelText("收件人"), { target: { value: "张三" } });
@@ -480,6 +508,32 @@ describe("App", () => {
     expect(screen.getByText("深圳市南山区测试地址")).toBeInTheDocument();
   });
 
+  it("imports store addresses from the address maintenance tab", async () => {
+    currentBatch = { ...currentBatch, status: "reviewed" };
+    render(<App />);
+    await clickBatch();
+    switchToExportTab();
+
+    fireEvent.click(await screen.findByRole("button", { name: "去地址维护" }));
+    expect(await screen.findByText("门店地址维护")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("导入地址 Excel"), {
+      target: {
+        files: [new File(["fake workbook"], "地址匹配表格.xlsx", { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" })],
+      },
+    });
+
+    expect(await screen.findByText("已解析 2 条地址，新增 1 个，更新 1 个")).toBeInTheDocument();
+    expect(screen.getByText("地址导入预览")).toBeInTheDocument();
+    expect(screen.getByText("新增 1")).toBeInTheDocument();
+    expect(screen.getByText("更新 1")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "确认更新地址" }));
+
+    expect(await screen.findByText("已确认导入 2 条来源记录，新增 1 个，更新 1 个")).toBeInTheDocument();
+    expect(await screen.findByText("导入门店")).toBeInTheDocument();
+    expect(screen.getByText("经理表")).toBeInTheDocument();
+    expect(screen.getByText("第 3 行")).toBeInTheDocument();
+  });
+
   it("keeps missing address repair read-only for reviewers", async () => {
     currentUser = { ...currentUser, username: "reviewer", role: "reviewer" };
     currentBatch = { ...currentBatch, status: "reviewed" };
@@ -487,6 +541,7 @@ describe("App", () => {
     await clickBatch();
     switchToExportTab();
 
+    fireEvent.click(await screen.findByRole("button", { name: "去地址维护" }));
     expect(await screen.findByText("门店地址维护")).toBeInTheDocument();
     expect(screen.getByText("当前账号只能查看门店地址。")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "保存地址" })).toBeDisabled();
@@ -500,7 +555,7 @@ describe("App", () => {
         batchId: "batch-1",
         type: "wdt_import",
         status: "failed",
-        fileName: "batch-1-wdt-import.xlsx",
+        fileName: "batch-1-wdt-import.xls",
         downloadUrl: undefined,
         errorMessage: "缺少发货地址：测试门店",
         createdByUserId: "user-1",
@@ -512,7 +567,8 @@ describe("App", () => {
     await clickBatch();
     switchToExportTab();
 
-    expect(await screen.findByText("batch-1-wdt-import.xlsx")).toBeInTheDocument();
+    expect(await screen.findByTestId("export-file-export-failed")).toHaveTextContent("batch-1-wdt-import.xls");
+    expect(screen.getByTestId("export-type-export-failed")).toHaveTextContent("做单 Excel");
     expect(screen.getByText("失败原因：缺少发货地址：测试门店")).toBeInTheDocument();
     expect(screen.getByText("失败")).toBeInTheDocument();
   });
@@ -524,7 +580,7 @@ describe("App", () => {
 
     expect(screen.getByText("等待审核完成")).toBeInTheDocument();
     expect(screen.getByText("当前批次还没有提交审核，确认发货数量后再生成做单文件。")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "生成导出" })).toBeDisabled();
+    expect(screen.queryByTestId("create-export-review")).not.toBeInTheDocument();
   });
 
   it("confirms product mappings from searched WDT specs", async () => {
@@ -627,11 +683,17 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
     };
     return json(warehouseSettings);
   }
-  if (url === "/api/v1/batches" && method === "GET") return json([currentBatch]);
+  if (url === "/api/v1/batches" && method === "GET") return json(batchDeleted ? [] : [currentBatch]);
   if (url === "/api/v1/batches" && method === "POST") {
     const body = JSON.parse(String(init?.body));
     currentBatch = { ...currentBatch, fileName: body.fileName ?? currentBatch.fileName, mode: body.mode ?? currentBatch.mode };
+    batchDeleted = false;
     return json(currentBatch, 201);
+  }
+  if (url === "/api/v1/batches/batch-1" && method === "DELETE") {
+    if (currentUser.role !== "admin") return json({ message: "Forbidden" }, 403);
+    batchDeleted = true;
+    return json({ batchId: "batch-1", deleted: true });
   }
   if (url === "/api/v1/order-files" && method === "POST") {
     const body = JSON.parse(String(init?.body));
@@ -648,6 +710,90 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
       : storeAddressRows;
     return json(rows);
   }
+  if (url === "/api/v1/store-addresses/import-preview" && method === "POST") {
+    if (!["admin", "operator"].includes(currentUser.role)) return json({ message: "Forbidden" }, 403);
+    return json({
+      fileName: "地址匹配表格.xlsx",
+      sheetCount: 2,
+      parsedRowCount: 2,
+      skippedRowCount: 0,
+      affectedStoreCount: 2,
+      createCount: 1,
+      updateCount: 1,
+      unchangedCount: 0,
+      items: [
+        {
+          action: "create",
+          storeNo: "IMPORT-1",
+          storeName: "导入门店",
+          receiver: "李四",
+          phone: "18800003333",
+          address: "广州市天河区导入地址",
+          sourceSheet: "经理表",
+          sourceRow: 3,
+          existing: null,
+        },
+        {
+          action: "update",
+          storeNo: "IMPORT-2",
+          storeName: "兼职门店",
+          receiver: "王五",
+          phone: "18800004444",
+          address: "佛山市禅城区导入地址",
+          sourceSheet: "兼职表",
+          sourceRow: 2,
+          existing: {
+            storeNo: "IMPORT-2",
+            storeName: "兼职门店",
+            receiver: "旧收件人",
+            phone: "18800000000",
+            address: "旧地址",
+          },
+        },
+      ],
+    });
+  }
+  if (url === "/api/v1/store-addresses/import" && method === "POST") {
+    if (!["admin", "operator"].includes(currentUser.role)) return json({ message: "Forbidden" }, 403);
+    storeAddressRows = [
+      {
+        id: "store-address-imported-1",
+        storeNo: "IMPORT-1",
+        storeName: "导入门店",
+        receiver: "李四",
+        phone: "18800003333",
+        address: "广州市天河区导入地址",
+        note: "",
+        sourceSheet: "经理表",
+        sourceRow: 3,
+        importedAt: "2026-07-07T00:00:00.000Z",
+        rawJson: "{}",
+        updatedByUserId: currentUser.id,
+        updatedByUsername: currentUser.username,
+        createdAt: "2026-07-07T00:00:00.000Z",
+        updatedAt: "2026-07-07T00:00:00.000Z",
+      },
+      {
+        id: "store-address-imported-2",
+        storeNo: "IMPORT-2",
+        storeName: "兼职门店",
+        receiver: "王五",
+        phone: "18800004444",
+        address: "佛山市禅城区导入地址",
+        note: "",
+        sourceSheet: "兼职表",
+        sourceRow: 2,
+        importedAt: "2026-07-07T00:00:00.000Z",
+        rawJson: "{}",
+        updatedByUserId: currentUser.id,
+        updatedByUsername: currentUser.username,
+        createdAt: "2026-07-07T00:00:00.000Z",
+        updatedAt: "2026-07-07T00:00:00.000Z",
+      },
+    ];
+    makeOrderReadiness = { ...makeOrderReadiness, canExport: true, missingAddressCount: 0, missingStores: [] };
+    return json({ fileName: "地址匹配表格.xlsx", sheetCount: 2, parsedRowCount: 2, importedAddressCount: 2, skippedRowCount: 0 }, 201);
+  }
   if (url === "/api/v1/store-addresses" && method === "POST") {
     if (!["admin", "operator"].includes(currentUser.role)) return json({ message: "Forbidden" }, 403);
     const body = JSON.parse(String(init?.body));
@@ -660,6 +806,10 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
       phone: body.phone,
       address: body.address,
       note: body.note ?? "",
+      sourceSheet: "手工维护",
+      sourceRow: 0,
+      importedAt: "",
+      rawJson: "{}",
       updatedByUserId: currentUser.id,
       updatedByUsername: currentUser.username,
       createdAt: existing?.createdAt ?? "2026-07-07T00:00:00.000Z",
@@ -686,12 +836,13 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
   if (url.endsWith("/exports") && method === "GET") return json(exportRows);
   if (url.endsWith("/exports") && method === "POST") {
     const body = JSON.parse(String(init?.body));
+    const type = (body.type ?? "review") as ExportDto["type"];
     const created: ExportDto = {
       id: "export-1",
       batchId: "batch-1",
-      type: body.type,
+      type,
       status: "ready",
-      fileName: "batch-1-review.xlsx",
+      fileName: `batch-1-${type}.${type === "wdt_import" ? "xls" : "xlsx"}`,
       downloadUrl: "/api/v1/exports/export-1/download",
       errorMessage: null,
       createdByUserId: "user-1",
@@ -860,8 +1011,37 @@ function reviewLine(patch: Partial<ReviewLineDto>): ReviewLineDto {
     storeNo: "STORE",
     storeName: "测试门店",
     uploadTime: "2026-06-30 10:00:00",
+    orderApprovalNo: "",
+    readingStatus: "",
+    deliveryMode: "",
+    orderStatus: "",
+    deliveryTarget: "",
+    category: "",
+    orderDate: "",
+    deadlineDate: "",
+    salesperson: "",
+    maker: "",
+    madeAt: "",
+    sourceReviewer: "",
+    externalGoodsCode: "",
     externalBarcode: "BARCODE",
     externalGoodsName: "商品",
+    originalSpec: "",
+    transportSpec: "",
+    orderBoxQty: "",
+    taxExcludedUnitPrice: "",
+    contractPrice: "",
+    taxIncludedUnitPrice: "",
+    discountRate: "",
+    shelfLifeDays: "",
+    receivedQty: "",
+    giftRate: "",
+    td: "",
+    da: "",
+    pd: "",
+    spd: "",
+    rebate: "",
+    orderRawJson: "{}",
     goodsName: "商品",
     specName: "规格",
     wdtSpecNo: "SPEC",

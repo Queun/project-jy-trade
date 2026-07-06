@@ -2,9 +2,10 @@ import { describe, expect, it } from "vitest";
 import { resolve } from "node:path";
 
 import { buildMockReview } from "./mockReview.js";
+import { createSampleOrderFile } from "./testFixtures.js";
 
 const root = resolve(process.cwd(), "../..");
-const orderFile = resolve(root, "ole案例文件——发货前/1订货单/订货通知单 .xls");
+const orderFile = createSampleOrderFile(resolve(root, "outputs/fixtures/sample-order.xlsx"));
 const fullMock = resolve(root, "examples/mock_flow_data.json");
 const mixedMock = resolve(root, "examples/mock_flow_mixed.json");
 

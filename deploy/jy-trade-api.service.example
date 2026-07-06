@@ -1,0 +1,18 @@
+[Unit]
+Description=JY Trade API
+After=network.target
+
+[Service]
+Type=simple
+User=jytrade
+Group=jytrade
+WorkingDirectory=/opt/jy-trade/current
+EnvironmentFile=/opt/jy-trade/shared/.env
+ExecStart=/usr/bin/npm run start:api
+Restart=always
+RestartSec=5
+StandardOutput=append:/opt/jy-trade/shared/logs/api.log
+StandardError=append:/opt/jy-trade/shared/logs/api-error.log
+
+[Install]
+WantedBy=multi-user.target

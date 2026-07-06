@@ -31,6 +31,7 @@ npm run node:wdt -- warehouse cjmy003-test
 
 - `docs/development.md`：开发者事实来源、目录结构、命令、工程约定。
 - `docs/technical-architecture.md`：技术栈、架构取舍、多用户协作预留。
+- `docs/deployment.md`：腾讯云部署、Nginx、systemd、备份和发布流程。
 - `docs/api-test-plan.md`：旺店通 API、测试环境、签名和探测记录。
 - `docs/excel-field-dictionary.md`：样例 Excel 字段字典。
 - `docs/flow-simulation.md`：mock/API 流程模拟记录。

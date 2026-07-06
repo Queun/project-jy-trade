@@ -1,16 +1,20 @@
 import { randomUUID } from "node:crypto";
+import { copyFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
+import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import * as XLSX from "xlsx";
+import { createSampleOrderFile } from "@jy-trade/workflow";
 
 import { createDatabaseContext } from "./db/client.js";
-import { batches, productMatchCandidates, wdtGoodsSpecs, wdtGoodsSyncRuns } from "./db/schema.js";
+import { auditLogs, batches, exportsTable, productMatchCandidates, reviewDecisions, reviewLines, storeAddresses, wdtGoodsSpecs, wdtGoodsSyncRuns } from "./db/schema.js";
 import { buildApiServer } from "./server.js";
 import type { StockLookupClient, StoreOptions } from "./store.js";
 import type { WdtGoodsWindowClient } from "./wdtGoodsSync.js";
 
-const orderFile = "ole案例文件——发货前/1订货单/订货通知单 .xls";
 const projectRoot = resolve(process.cwd(), "../..");
+const orderFile = createSampleOrderFile(resolve(projectRoot, "outputs/fixtures/sample-order.xlsx"));
+const mixedOrderFile = createSampleOrderFile(resolve(projectRoot, "outputs/fixtures/sample-order-mixed.xlsx"), 4);
 
 describe("api server", () => {
   it("responds to health checks", async () => {
@@ -78,7 +82,7 @@ describe("api server", () => {
     const login = await app.inject({
       method: "POST",
       url: "/api/v1/auth/login",
-      payload: { username: "admin", password: "admin123" },
+      payload: { username: "admin", password: "jymy" },
     });
     expect(login.statusCode).toBe(200);
     expect(login.json().user.username).toBe("admin");
@@ -106,6 +110,52 @@ describe("api server", () => {
       headers: { cookie: String(cookie) },
     });
     expect(afterLogout.json().user).toBeNull();
+    await app.close();
+  });
+
+  it("lets admins delete batches and cleans related runtime data", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const app = buildTestServer(databaseUrl);
+    const { batch, firstLine, cookie } = await createReviewedBatch(app);
+    await app.inject({
+      method: "PATCH",
+      url: `/api/v1/batches/${batch.id}/review-lines/${firstLine.id}/decision`,
+      payload: { decision: "do_not_ship", approvedShipQty: 0, reason: "测试不发" },
+      headers: { cookie },
+    });
+    const exportResponse = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${batch.id}/exports`,
+      payload: { type: "review" },
+      headers: { cookie },
+    });
+    expect(exportResponse.statusCode).toBe(201);
+
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    const [exportRow] = await database.db.select().from(exportsTable).where(eq(exportsTable.batchId, batch.id));
+    expect(exportRow).toBeTruthy();
+    expect(existsSync(exportRow.filePath)).toBe(true);
+    await database.close();
+
+    const deleted = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/batches/${batch.id}`,
+      headers: { cookie },
+    });
+    expect(deleted.statusCode).toBe(200);
+    expect(deleted.json()).toEqual({ batchId: batch.id, deleted: true });
+
+    const afterDatabase = createDatabaseContext(databaseUrl);
+    await afterDatabase.ready;
+    expect(await afterDatabase.db.select().from(batches).where(eq(batches.id, batch.id))).toHaveLength(0);
+    expect(await afterDatabase.db.select().from(reviewLines).where(eq(reviewLines.batchId, batch.id))).toHaveLength(0);
+    expect(await afterDatabase.db.select().from(reviewDecisions).where(eq(reviewDecisions.batchId, batch.id))).toHaveLength(0);
+    expect(await afterDatabase.db.select().from(exportsTable).where(eq(exportsTable.batchId, batch.id))).toHaveLength(0);
+    const logs = await afterDatabase.db.select().from(auditLogs).where(eq(auditLogs.action, "batch.delete"));
+    expect(logs.some((log) => log.entityId === batch.id)).toBe(true);
+    await afterDatabase.close();
+    expect(existsSync(exportRow.filePath)).toBe(false);
     await app.close();
   });
 
@@ -159,6 +209,20 @@ describe("api server", () => {
       headers: { cookie: operatorCookie },
     });
     expect(operatorSubmit.statusCode).toBe(403);
+
+    const operatorDelete = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/batches/${batch.id}`,
+      headers: { cookie: operatorCookie },
+    });
+    expect(operatorDelete.statusCode).toBe(403);
+
+    const reviewerDelete = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/batches/${batch.id}`,
+      headers: { cookie: reviewerCookie },
+    });
+    expect(reviewerDelete.statusCode).toBe(403);
 
     const reviewerSubmit = await app.inject({
       method: "POST",
@@ -496,7 +560,17 @@ describe("api server", () => {
 
   it("creates downloadable export files for a reviewed batch", async () => {
     const app = buildTestServer();
-    const { batch, cookie } = await createReviewedBatch(app);
+    mkdirSync(resolve(projectRoot, "outputs"), { recursive: true });
+    const tempOrderFile = resolve(projectRoot, "outputs", `review-export-source-${randomUUID()}.xls`);
+    copyFileSync(resolve(projectRoot, orderFile), tempOrderFile);
+    const { batch, lines, firstLine, cookie } = await createReviewedBatch(app, "examples/mock_flow_data.json", tempOrderFile);
+    unlinkSync(tempOrderFile);
+
+    expect(firstLine.contractPrice).not.toBe("");
+    expect(JSON.parse(firstLine.orderRawJson)).toMatchObject({
+      订货通知单号: firstLine.orderNoticeNo,
+      含税合同进价: firstLine.contractPrice,
+    });
 
     const exportResponse = await app.inject({
       method: "POST",
@@ -529,10 +603,146 @@ describe("api server", () => {
     expect(downloadResponse.statusCode).toBe(200);
     expect(downloadResponse.headers["content-type"]).toContain("spreadsheetml");
     expect(downloadResponse.body.length).toBeGreaterThan(100);
+
+    const workbook = XLSX.read(downloadResponse.rawPayload, { type: "buffer" });
+    expect(workbook.SheetNames).toEqual(["订货审批单明细"]);
+    const rows = XLSX.utils.sheet_to_json<Record<string, string | number>>(workbook.Sheets["订货审批单明细"], { defval: "" });
+    const header = XLSX.utils.sheet_to_json<string[]>(workbook.Sheets["订货审批单明细"], { header: 1 })[0];
+    expect(header).toEqual([
+      "审批单号",
+      "通知单号",
+      "收货地编码",
+      "收货地名称",
+      "要货地编码",
+      "要货地名称",
+      "业务员",
+      "物流模式",
+      "送货日期",
+      "截止日期",
+      "商品编码",
+      "商品条码",
+      "商品名称",
+      "规格",
+      "运输规格",
+      "订货数量",
+      "订货箱数",
+      "合同进价",
+      "主仓",
+      "临期仓",
+    ]);
+    expect(rows).toHaveLength(lines.length);
+    expect(rows[0]).toMatchObject({
+      审批单号: firstLine.orderApprovalNo,
+      通知单号: firstLine.orderNoticeNo,
+      收货地编码: "",
+      收货地名称: firstLine.storeName,
+      要货地编码: "",
+      要货地名称: firstLine.storeName,
+      业务员: firstLine.salesperson,
+      物流模式: firstLine.deliveryMode,
+      送货日期: "",
+      截止日期: firstLine.deadlineDate,
+      商品编码: firstLine.externalGoodsCode,
+      商品条码: firstLine.externalBarcode,
+      商品名称: firstLine.externalGoodsName,
+      规格: firstLine.originalSpec,
+      运输规格: firstLine.transportSpec,
+      订货数量: firstLine.orderQty,
+      订货箱数: firstLine.orderBoxQty,
+      合同进价: firstLine.contractPrice,
+      主仓: "",
+      临期仓: "",
+    });
     await app.close();
   });
 
-  it("reports make-order readiness from the address fallback workbook", async () => {
+  it("creates confirmed shipment exports with only approved shippable lines", async () => {
+    const app = buildTestServer();
+    const { batch, lines, cookie } = await createReviewedBatch(app, "examples/mock_flow_mixed.json");
+    const shipLine = lines.find((line: { decision: string; approvedShipQty: number }) => line.decision === "ship" && line.approvedShipQty > 0);
+    const pendingLine = lines.find((line: { decision: string }) => line.decision === "pending");
+    expect(shipLine).toBeTruthy();
+    expect(pendingLine).toBeTruthy();
+
+    await app.inject({
+      method: "PATCH",
+      url: `/api/v1/batches/${batch.id}/review-lines/${shipLine.id}/decision`,
+      payload: { decision: "ship", approvedShipQty: 3, reason: "" },
+      headers: { cookie },
+    });
+    await app.inject({
+      method: "PATCH",
+      url: `/api/v1/batches/${batch.id}/review-lines/${pendingLine.id}/decision`,
+      payload: { decision: "do_not_ship", approvedShipQty: 0, reason: "" },
+      headers: { cookie },
+    });
+
+    const exportResponse = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${batch.id}/exports`,
+      payload: { type: "confirmed" },
+      headers: { cookie },
+    });
+
+    expect(exportResponse.statusCode).toBe(201);
+    expect(exportResponse.json()).toMatchObject({ type: "confirmed", status: "ready" });
+    expect(exportResponse.json().fileName).toMatch(/\.xlsx$/);
+
+    const downloadResponse = await app.inject({
+      method: "GET",
+      url: exportResponse.json().downloadUrl,
+      headers: { cookie },
+    });
+    expect(downloadResponse.statusCode).toBe(200);
+    expect(downloadResponse.headers["content-type"]).toContain("spreadsheetml");
+
+    const workbook = XLSX.read(downloadResponse.rawPayload, { type: "buffer" });
+    expect(workbook.SheetNames).toEqual(["订货审批单明细"]);
+    const rows = XLSX.utils.sheet_to_json<Record<string, string | number>>(workbook.Sheets["订货审批单明细"], { defval: "" });
+    const header = XLSX.utils.sheet_to_json<string[]>(workbook.Sheets["订货审批单明细"], { header: 1 })[0];
+    expect(header).toEqual([
+      "审批单号",
+      "通知单号",
+      "收货地编码",
+      "收货地名称",
+      "业务员",
+      "截止日期",
+      "商品编码",
+      "商品条码",
+      "商品名称",
+      "规格",
+      "订货数量",
+      "发货数量",
+      "合同进价",
+      "主仓",
+      "临期仓",
+      "备注",
+    ]);
+
+    const exportedLine = rows.find((row) => row["通知单号"] === shipLine.orderNoticeNo && row["商品条码"] === shipLine.externalBarcode);
+    expect(exportedLine).toMatchObject({
+      审批单号: shipLine.orderApprovalNo,
+      通知单号: shipLine.orderNoticeNo,
+      收货地编码: "",
+      收货地名称: shipLine.storeName,
+      业务员: shipLine.salesperson,
+      截止日期: shipLine.deadlineDate,
+      商品编码: shipLine.externalGoodsCode,
+      商品条码: shipLine.externalBarcode,
+      商品名称: shipLine.externalGoodsName,
+      规格: shipLine.originalSpec,
+      订货数量: shipLine.orderQty,
+      发货数量: 3,
+      合同进价: shipLine.contractPrice,
+      主仓: "",
+      临期仓: "",
+      备注: "",
+    });
+    expect(rows.some((row) => row["通知单号"] === pendingLine.orderNoticeNo && row["商品条码"] === pendingLine.externalBarcode)).toBe(false);
+    await app.close();
+  });
+
+  it("reports make-order readiness from stored addresses", async () => {
     const app = buildTestServer();
     const { batch, lines, cookie } = await createReviewedBatch(app, "examples/mock_flow_mixed.json");
     const shippableLineCount = lines.filter((line: { decision: string; approvedShipQty: number }) => line.decision === "ship" && line.approvedShipQty > 0).length;
@@ -555,10 +765,8 @@ describe("api server", () => {
   });
 
   it("lists only shippable stores when make-order addresses are missing", async () => {
-    const app = buildTestServer(testDatabaseUrl(), undefined, undefined, {
-      makeOrderAddressBookPath: resolve(projectRoot, "missing-address-book.xlsx"),
-    });
-    const { batch, lines, cookie } = await createReviewedBatch(app, "examples/mock_flow_mixed.json");
+    const app = buildTestServer();
+    const { batch, lines, cookie } = await createReviewedBatch(app, "examples/mock_flow_mixed.json", undefined, { seedAddresses: false });
     const shipLines = lines.filter((line: { decision: string; approvedShipQty: number }) => line.decision === "ship" && line.approvedShipQty > 0);
     const pendingLine = lines.find((line: { decision: string }) => line.decision === "pending");
     expect(shipLines.length).toBeGreaterThan(0);
@@ -586,10 +794,8 @@ describe("api server", () => {
   });
 
   it("does not create a ready make-order export when addresses are missing", async () => {
-    const app = buildTestServer(testDatabaseUrl(), undefined, undefined, {
-      makeOrderAddressBookPath: resolve(projectRoot, "missing-address-book.xlsx"),
-    });
-    const { batch, cookie } = await createReviewedBatch(app, "examples/mock_flow_mixed.json");
+    const app = buildTestServer();
+    const { batch, cookie } = await createReviewedBatch(app, "examples/mock_flow_mixed.json", undefined, { seedAddresses: false });
 
     const response = await app.inject({
       method: "POST",
@@ -605,7 +811,48 @@ describe("api server", () => {
     await app.close();
   });
 
-  it("maintains store addresses and uses them before the fallback workbook", async () => {
+  it("treats stored addresses without receiver or phone as incomplete", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const app = buildTestServer(databaseUrl);
+    const { batch, lines, cookie } = await createReviewedBatch(app, "examples/mock_flow_mixed.json", undefined, { seedAddresses: false });
+    const shipLine = lines.find((line: { decision: string; approvedShipQty: number }) => line.decision === "ship" && line.approvedShipQty > 0);
+    expect(shipLine).toBeTruthy();
+
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    const now = new Date().toISOString();
+    await database.db.insert(storeAddresses).values({
+      id: "store-address-incomplete",
+      storeNo: shipLine.storeNo,
+      storeName: shipLine.storeName,
+      normalizedStoreName: shipLine.storeName.toLowerCase().replaceAll(" ", ""),
+      receiver: "",
+      phone: "",
+      address: "只有地址没有收件人",
+      note: "",
+      sourceSheet: "历史脏数据",
+      sourceRow: 1,
+      importedAt: now,
+      rawJson: "{}",
+      updatedByUserId: null,
+      updatedByUsername: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await database.close();
+
+    const readiness = await app.inject({
+      method: "GET",
+      url: `/api/v1/batches/${batch.id}/make-order-readiness`,
+      headers: { cookie },
+    });
+    expect(readiness.statusCode).toBe(200);
+    expect(readiness.json().canExport).toBe(false);
+    expect(readiness.json().missingStores.some((store: { storeNo: string }) => store.storeNo === shipLine.storeNo)).toBe(true);
+    await app.close();
+  });
+
+  it("maintains store addresses and uses them for make-order exports", async () => {
     const app = buildTestServer();
     const { batch, lines, cookie } = await createReviewedBatch(app, "examples/mock_flow_mixed.json");
     const shipLine = lines.find((line: { decision: string }) => line.decision === "ship");
@@ -677,7 +924,7 @@ describe("api server", () => {
       headers: { cookie },
     });
     const workbook = XLSX.read(downloadResponse.rawPayload, { type: "buffer" });
-    const rows = XLSX.utils.sheet_to_json<Record<string, string | number>>(workbook.Sheets["导入表"], { defval: "" });
+    const rows = XLSX.utils.sheet_to_json<Record<string, string | number>>(workbook.Sheets["Sheet1"], { defval: "" });
     const exportedLine = rows.find(
       (row) =>
         row["原始单号"] === shipLine.orderNoticeNo
@@ -689,6 +936,139 @@ describe("api server", () => {
       手机: "18800002222",
       地址: "系统维护地址二号",
     });
+    await app.close();
+  });
+
+  it("imports store addresses from multi-sheet workbooks and preserves raw source fields", async () => {
+    const app = buildTestServer();
+    const cookie = await loginCookie(app);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(
+      workbook,
+      XLSX.utils.aoa_to_sheet([
+        ["经理收货地址说明"],
+        ["门店编码/群组", "门店名称", "门店地址", "经理", "联系方式", "片区"],
+        ["A001", "经理门店", "深圳市南山区经理地址", "张经理", "18800000001", "南区"],
+      ]),
+      "2025.6.3经理新表（主要）",
+    );
+    XLSX.utils.book_append_sheet(
+      workbook,
+      XLSX.utils.aoa_to_sheet([
+        ["序号", "区域", "", "地址", "收货人", "电话"],
+        [1, "东区", "兼职门店", "广州市天河区兼职地址", "李兼职", "18800000002"],
+      ]),
+      "OLE门店兼职收货人（仓库发货主要用的）",
+    );
+    XLSX.utils.book_append_sheet(
+      workbook,
+      XLSX.utils.aoa_to_sheet([
+        ["门店编号", "门店名称", "地址", "非食经理", "联系电话"],
+        ["C003", "旧表门店", "佛山市禅城区旧表地址", "王经理", "18800000003"],
+      ]),
+      "2024.8.28前经理收货人",
+    );
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([]), "WpsReserved_CellImgList");
+    const contentBase64 = (XLSX.write(workbook, { bookType: "xlsx", type: "buffer" }) as Buffer).toString("base64");
+
+    const existing = await app.inject({
+      method: "POST",
+      url: "/api/v1/store-addresses",
+      payload: {
+        storeNo: "A001",
+        storeName: "经理门店",
+        receiver: "旧经理",
+        phone: "18800000999",
+        address: "旧地址",
+      },
+      headers: { cookie },
+    });
+    expect(existing.statusCode).toBe(201);
+
+    const preview = await app.inject({
+      method: "POST",
+      url: "/api/v1/store-addresses/import-preview",
+      payload: {
+        fileName: "地址匹配表格.xlsx",
+        contentBase64,
+      },
+      headers: { cookie },
+    });
+    expect(preview.statusCode).toBe(200);
+    expect(preview.json()).toMatchObject({
+      fileName: "地址匹配表格.xlsx",
+      sheetCount: 3,
+      parsedRowCount: 3,
+      affectedStoreCount: 3,
+      createCount: 2,
+      updateCount: 1,
+      unchangedCount: 0,
+    });
+    expect(preview.json().items.find((item: { storeNo: string }) => item.storeNo === "A001")).toMatchObject({
+      action: "update",
+      existing: { receiver: "旧经理", phone: "18800000999", address: "旧地址" },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/store-addresses/import",
+      payload: {
+        fileName: "地址匹配表格.xlsx",
+        contentBase64,
+      },
+      headers: { cookie },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({
+      fileName: "地址匹配表格.xlsx",
+      sheetCount: 3,
+      parsedRowCount: 3,
+      importedAddressCount: 3,
+      skippedRowCount: 0,
+    });
+
+    const list = await app.inject({
+      method: "GET",
+      url: `/api/v1/store-addresses?query=${encodeURIComponent("经理门店")}`,
+      headers: { cookie },
+    });
+    expect(list.statusCode).toBe(200);
+    expect(list.json()).toHaveLength(1);
+    expect(list.json()[0]).toMatchObject({
+      storeNo: "A001",
+      storeName: "经理门店",
+      receiver: "张经理",
+      phone: "18800000001",
+      address: "深圳市南山区经理地址",
+      sourceSheet: "2025.6.3经理新表（主要）",
+      sourceRow: 3,
+      updatedByUsername: "admin",
+    });
+    expect(JSON.parse(list.json()[0].rawJson).records[0].rawFields).toMatchObject({
+      "门店编码/群组": "A001",
+      片区: "南区",
+    });
+
+    const partTimeList = await app.inject({
+      method: "GET",
+      url: `/api/v1/store-addresses?query=${encodeURIComponent("兼职门店")}`,
+      headers: { cookie },
+    });
+    expect(partTimeList.statusCode).toBe(200);
+    expect(partTimeList.json()[0]).toMatchObject({
+      storeName: "兼职门店",
+      receiver: "李兼职",
+      phone: "18800000002",
+      address: "广州市天河区兼职地址",
+      sourceSheet: "OLE门店兼职收货人（仓库发货主要用的）",
+      sourceRow: 2,
+    });
+    expect(JSON.parse(partTimeList.json()[0].rawJson).records[0].rawFields).toMatchObject({
+      列3: "兼职门店",
+      区域: "东区",
+    });
+
     await app.close();
   });
 
@@ -704,6 +1084,38 @@ describe("api server", () => {
         receiver: "收货人",
         phone: "18800000000",
         address: "测试地址",
+      },
+      headers: { cookie: reviewerCookie },
+    });
+    expect(response.statusCode).toBe(403);
+    await app.close();
+  });
+
+  it("rejects store address imports from reviewer accounts", async () => {
+    const app = buildTestServer();
+    const reviewerCookie = await loginCookie(app, "reviewer", "reviewer123");
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(
+      workbook,
+      XLSX.utils.aoa_to_sheet([["门店名称", "地址"], ["测试门店", "测试地址"]]),
+      "地址表",
+    );
+    const preview = await app.inject({
+      method: "POST",
+      url: "/api/v1/store-addresses/import-preview",
+      payload: {
+        fileName: "地址匹配表格.xlsx",
+        contentBase64: (XLSX.write(workbook, { bookType: "xlsx", type: "buffer" }) as Buffer).toString("base64"),
+      },
+      headers: { cookie: reviewerCookie },
+    });
+    expect(preview.statusCode).toBe(403);
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/store-addresses/import",
+      payload: {
+        fileName: "地址匹配表格.xlsx",
+        contentBase64: (XLSX.write(workbook, { bookType: "xlsx", type: "buffer" }) as Buffer).toString("base64"),
       },
       headers: { cookie: reviewerCookie },
     });
@@ -740,6 +1152,7 @@ describe("api server", () => {
     });
     expect(exportResponse.statusCode).toBe(201);
     expect(exportResponse.json()).toMatchObject({ type: "wdt_import", status: "ready" });
+    expect(exportResponse.json().fileName).toMatch(/\.xls$/);
 
     const downloadResponse = await app.inject({
       method: "GET",
@@ -747,11 +1160,12 @@ describe("api server", () => {
       headers: { cookie },
     });
     expect(downloadResponse.statusCode).toBe(200);
+    expect(downloadResponse.headers["content-type"]).toContain("application/vnd.ms-excel");
 
     const workbook = XLSX.read(downloadResponse.rawPayload, { type: "buffer" });
-    expect(workbook.SheetNames).toEqual(["导入表"]);
-    const rows = XLSX.utils.sheet_to_json<Record<string, string | number>>(workbook.Sheets["导入表"], { defval: "" });
-    const header = XLSX.utils.sheet_to_json<string[]>(workbook.Sheets["导入表"], { header: 1 })[0];
+    expect(workbook.SheetNames).toEqual(["Sheet1"]);
+    const rows = XLSX.utils.sheet_to_json<Record<string, string | number>>(workbook.Sheets["Sheet1"], { defval: "" });
+    const header = XLSX.utils.sheet_to_json<string[]>(workbook.Sheets["Sheet1"], { header: 1 })[0];
     expect(header).toEqual([
       "店铺名称",
       "原始单号",
@@ -1121,7 +1535,7 @@ describe("api server", () => {
       matchStatus: "matched",
       mainAvailableBefore: 1,
       nearExpiryAvailableBefore: 40,
-      suggestedShipQty: 12,
+      suggestedShipQty: 4,
     });
     await app.close();
   });
@@ -1194,12 +1608,19 @@ function testDatabaseUrl() {
   return `file:../../outputs/api-test-${randomUUID()}.db`;
 }
 
-async function createReviewedBatch(app: ReturnType<typeof buildApiServer>, mockDataFile = "examples/mock_flow_data.json") {
+async function createReviewedBatch(
+  app: ReturnType<typeof buildApiServer>,
+  mockDataFile = "examples/mock_flow_data.json",
+  sourceOrderFile?: string,
+  options: { seedAddresses?: boolean } = {},
+) {
   const cookie = await loginCookie(app);
+  const seedAddresses = options.seedAddresses ?? true;
+  const resolvedOrderFile = sourceOrderFile ?? (mockDataFile.includes("mixed") ? mixedOrderFile : orderFile);
   const created = await app.inject({
     method: "POST",
     url: "/api/v1/batches",
-    payload: { filePath: orderFile, mode: "mock" },
+    payload: { filePath: resolvedOrderFile, mode: "mock" },
     headers: { cookie },
   });
   const batch = created.json();
@@ -1215,10 +1636,35 @@ async function createReviewedBatch(app: ReturnType<typeof buildApiServer>, mockD
     headers: { cookie },
   });
   const lines = linesResponse.json();
+  if (seedAddresses) {
+    await seedStoreAddresses(app, cookie, lines);
+  }
   return { batch, lines, firstLine: lines[0], cookie };
 }
 
-async function loginCookie(app: ReturnType<typeof buildApiServer>, username = "admin", password = "admin123") {
+async function seedStoreAddresses(app: ReturnType<typeof buildApiServer>, cookie: string, lines: Array<{ storeNo: string; storeName: string }>) {
+  const seen = new Set<string>();
+  for (const line of lines) {
+    const key = `${line.storeNo}\u0000${line.storeName}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/store-addresses",
+      payload: {
+        storeNo: line.storeNo,
+        storeName: line.storeName,
+        receiver: `测试收货人-${line.storeNo}`,
+        phone: "18800000000",
+        address: `测试地址-${line.storeName}`,
+        note: "测试地址",
+      },
+      headers: { cookie },
+    });
+  }
+}
+
+async function loginCookie(app: ReturnType<typeof buildApiServer>, username = "admin", password = "jymy") {
   const login = await app.inject({
     method: "POST",
     url: "/api/v1/auth/login",

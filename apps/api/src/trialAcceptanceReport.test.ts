@@ -3,12 +3,13 @@ import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import * as XLSX from "xlsx";
+import { createSampleOrderFile } from "@jy-trade/workflow";
 
 import { createSqliteStore } from "./store.js";
 import { generateTrialAcceptanceReport } from "./trialAcceptanceReport.js";
 
 const projectRoot = resolve(process.cwd(), "../..");
-const orderFile = "ole案例文件——发货前\\1订货单\\订货通知单 .xls";
+const orderFile = createSampleOrderFile(resolve(projectRoot, "outputs/fixtures/trial-sample-order.xlsx"));
 
 describe("trial acceptance report", () => {
   it("rejects mock batches when production API mode is required", async () => {
@@ -59,7 +60,6 @@ async function seedReviewedMockBatch() {
   const store = createSqliteStore({
     databaseUrl,
     projectRoot,
-    makeOrderAddressBookPath: resolve(projectRoot, "missing-address-book.xlsx"),
   });
   const batch = await store.createBatch({ filePath: orderFile, mode: "mock" });
   await store.runMockReview(batch.id, "examples/mock_flow_mixed.json");

@@ -122,7 +122,7 @@ npm run node:wdt -- warehouse cjmy003-test
 - `POST /api/v1/batches/:batchId/exports`
 - `GET /api/v1/exports/:exportId/download`
 
-API 宸蹭娇鐢?SQLite + Drizzle 鎸佷箙鍖栥€傞粯璁ゅ紑鍙戝簱涓?`data/jy-trade-dev.db`锛涙祴璇曚娇鐢?`outputs/api-test-*.db` 涓存椂搴撱€備袱绫绘枃浠堕兘宸茶 Git 蹇界暐銆?闄?`health`銆佺櫥褰曘€侀€€鍑哄拰 `me` 澶栵紝涓氬姟鎺ュ彛闇€瑕?session cookie銆傚紑鍙戦粯璁や細鍦ㄥ惎鍔ㄦ椂鎸?`JY_TRADE_BOOTSTRAP_USERNAME` 鍜?`JY_TRADE_BOOTSTRAP_PASSWORD` 鍒濆鍖栦竴涓鐞嗗憳璐﹀彿锛涙湭璁剧疆鏃堕粯璁ゆ槸 `admin` / `admin123`锛屾寮忚瘯鐢ㄥ墠蹇呴』鍦ㄦ湰鍦?`.env` 瑕嗙洊銆?
+API 宸蹭娇鐢?SQLite + Drizzle 鎸佷箙鍖栥€傞粯璁ゅ紑鍙戝簱涓?`data/jy-trade-dev.db`锛涙祴璇曚娇鐢?`outputs/api-test-*.db` 涓存椂搴撱€備袱绫绘枃浠堕兘宸茶 Git 蹇界暐銆?闄?`health`銆佺櫥褰曘€侀€€鍑哄拰 `me` 澶栵紝涓氬姟鎺ュ彛闇€瑕?session cookie銆傚紑鍙戦粯璁や細鍦ㄥ惎鍔ㄦ椂鎸?`JY_TRADE_BOOTSTRAP_USERNAME` 鍜?`JY_TRADE_BOOTSTRAP_PASSWORD` 鍒濆鍖栦竴涓鐞嗗憳璐﹀彿锛涙湭璁剧疆鏃堕粯璁ゆ槸 `admin` / `jymy`锛屾寮忚瘯鐢ㄥ墠蹇呴』鍦ㄦ湰鍦?`.env` 瑕嗙洊銆?
 瀹℃牳瑙勫垯锛?
 - 鍙戣揣鏁伴噺鍏佽瓒呰繃绯荤粺寤鸿鏁帮紝涓嶈纭笂闄愶紝浣嗕笉鑳藉皬浜?0銆?- 涓嶅彂璐у繀椤诲～鍐欏師鍥犮€?- 鍙戣揣鏁伴噺瓒呰繃寤鸿鍙戣揣鏁版椂蹇呴』濉啓鍘熷洜銆?- 鎵归噺閫氳繃鍙鐞?`matchStatus=matched` 涓旂姸鎬佷负 `搴撳瓨鍏呰冻` 鎴?`閮ㄥ垎婊¤冻` 鐨勮銆?- 鎻愪氦瀹℃牳瀹屾垚鍏佽浠嶆湁 `pending` 鏄庣粏锛屾壒娆＄姸鎬佹洿鏂颁负 `reviewed`銆?
 宸插垵濮嬪寲琛細

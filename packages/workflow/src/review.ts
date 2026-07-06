@@ -18,9 +18,38 @@ export interface ReviewLine {
   storeNo: string;
   storeName: string;
   uploadTime: string;
+  orderApprovalNo: string;
+  readingStatus: string;
+  deliveryMode: string;
+  orderStatus: string;
+  deliveryTarget: string;
+  category: string;
+  orderDate: string;
+  deadlineDate: string;
+  salesperson: string;
+  maker: string;
+  madeAt: string;
+  sourceReviewer: string;
+  externalGoodsCode: string;
   externalBarcode: string;
   externalGoodsName: string;
+  originalSpec: string;
+  transportSpec: string;
+  orderBoxQty: string;
   orderQty: number;
+  taxExcludedUnitPrice: string;
+  contractPrice: string;
+  taxIncludedUnitPrice: string;
+  discountRate: string;
+  shelfLifeDays: string;
+  receivedQty: string;
+  giftRate: string;
+  td: string;
+  da: string;
+  pd: string;
+  spd: string;
+  rebate: string;
+  orderRawJson: string;
   wdtSpecNo: string;
   mainAvailableBefore: number;
   nearExpiryAvailableBefore: number;
@@ -52,9 +81,38 @@ export function buildReviewLines(orderLines: OrderLine[], inventoryByBarcode: Ma
         storeNo: line.storeNo,
         storeName: line.storeName,
         uploadTime: line.uploadTime,
+        orderApprovalNo: line.orderApprovalNo,
+        readingStatus: line.readingStatus,
+        deliveryMode: line.deliveryMode,
+        orderStatus: line.orderStatus,
+        deliveryTarget: line.deliveryTarget,
+        category: line.category,
+        orderDate: line.orderDate,
+        deadlineDate: line.deadlineDate,
+        salesperson: line.salesperson,
+        maker: line.maker,
+        madeAt: line.madeAt,
+        sourceReviewer: line.sourceReviewer,
+        externalGoodsCode: line.externalGoodsCode,
         externalBarcode: line.externalBarcode,
         externalGoodsName: line.externalGoodsName,
+        originalSpec: line.spec,
+        transportSpec: line.transportSpec,
+        orderBoxQty: line.orderBoxQty,
         orderQty: line.orderQty,
+        taxExcludedUnitPrice: line.taxExcludedUnitPrice,
+        contractPrice: line.contractPrice,
+        taxIncludedUnitPrice: line.unitPriceTaxIncluded,
+        discountRate: line.discountRate,
+        shelfLifeDays: line.shelfLifeDays,
+        receivedQty: line.receivedQty,
+        giftRate: line.giftRate,
+        td: line.td,
+        da: line.da,
+        pd: line.pd,
+        spd: line.spd,
+        rebate: line.rebate,
+        orderRawJson: JSON.stringify(line.raw),
         wdtSpecNo: "",
         mainAvailableBefore: 0,
         nearExpiryAvailableBefore: 0,
@@ -91,9 +149,38 @@ export function buildReviewLines(orderLines: OrderLine[], inventoryByBarcode: Ma
       storeNo: line.storeNo,
       storeName: line.storeName,
       uploadTime: line.uploadTime,
+      orderApprovalNo: line.orderApprovalNo,
+      readingStatus: line.readingStatus,
+      deliveryMode: line.deliveryMode,
+      orderStatus: line.orderStatus,
+      deliveryTarget: line.deliveryTarget,
+      category: line.category,
+      orderDate: line.orderDate,
+      deadlineDate: line.deadlineDate,
+      salesperson: line.salesperson,
+      maker: line.maker,
+      madeAt: line.madeAt,
+      sourceReviewer: line.sourceReviewer,
+      externalGoodsCode: line.externalGoodsCode,
       externalBarcode: line.externalBarcode,
       externalGoodsName: line.externalGoodsName,
+      originalSpec: line.spec,
+      transportSpec: line.transportSpec,
+      orderBoxQty: line.orderBoxQty,
       orderQty: line.orderQty,
+      taxExcludedUnitPrice: line.taxExcludedUnitPrice,
+      contractPrice: line.contractPrice,
+      taxIncludedUnitPrice: line.unitPriceTaxIncluded,
+      discountRate: line.discountRate,
+      shelfLifeDays: line.shelfLifeDays,
+      receivedQty: line.receivedQty,
+      giftRate: line.giftRate,
+      td: line.td,
+      da: line.da,
+      pd: line.pd,
+      spd: line.spd,
+      rebate: line.rebate,
+      orderRawJson: JSON.stringify(line.raw),
       wdtSpecNo: snapshot.wdtSpecNo,
       mainAvailableBefore: mainBefore,
       nearExpiryAvailableBefore: nearBefore,

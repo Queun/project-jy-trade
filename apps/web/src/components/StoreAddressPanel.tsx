@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { MapPin, Search, Save } from "lucide-react";
-import type { MissingMakeOrderStoreDto, StoreAddressDto, UpsertStoreAddressRequest } from "@jy-trade/shared";
+import { Check, MapPin, Plus, Search, Save, Upload, X } from "lucide-react";
+import type { ImportStoreAddressesPreviewResponse, ImportStoreAddressesResponse, MissingMakeOrderStoreDto, StoreAddressDto, UpsertStoreAddressRequest } from "@jy-trade/shared";
 
 import { Badge } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
@@ -25,7 +25,11 @@ export function StoreAddressPanel({ canEdit, missingStores, onMessage, onSaved }
   const [query, setQuery] = useState("");
   const [addresses, setAddresses] = useState<StoreAddressDto[]>([]);
   const [draft, setDraft] = useState<UpsertStoreAddressRequest>(emptyDraft);
+  const [editingAddressId, setEditingAddressId] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [importDraft, setImportDraft] = useState<{ fileName: string; contentBase64: string } | null>(null);
+  const [importPreview, setImportPreview] = useState<ImportStoreAddressesPreviewResponse | null>(null);
 
   async function refreshAddresses(nextQuery = query) {
     const response = await fetch(`/api/v1/store-addresses?query=${encodeURIComponent(nextQuery)}`);
@@ -51,17 +55,75 @@ export function StoreAddressPanel({ canEdit, missingStores, onMessage, onSaved }
     const saved = (await response.json()) as StoreAddressDto;
     setQuery(saved.storeNo || saved.storeName);
     setDraft({ ...emptyDraft, storeNo: saved.storeNo, storeName: saved.storeName });
+    setEditingAddressId(saved.id);
     await refreshAddresses(saved.storeNo || saved.storeName);
     onSaved();
     onMessage("门店地址已保存");
   }
 
+  async function importWorkbook(file: File) {
+    setError("");
+    setImporting(true);
+    try {
+      const contentBase64 = await fileToBase64(file);
+      const nextImportDraft = { fileName: file.name, contentBase64 };
+      const response = await fetch("/api/v1/store-addresses/import-preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(nextImportDraft),
+      });
+      if (!response.ok) {
+        const body = await response.json();
+        setError(body.message ?? "地址 Excel 解析失败");
+        return;
+      }
+      const preview = (await response.json()) as ImportStoreAddressesPreviewResponse;
+      setImportDraft(nextImportDraft);
+      setImportPreview(preview);
+      onMessage(`已解析 ${preview.parsedRowCount} 条地址，新增 ${preview.createCount} 个，更新 ${preview.updateCount} 个`);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "地址 Excel 解析失败");
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  async function confirmImportWorkbook() {
+    if (!importDraft || !importPreview) return;
+    setError("");
+    setImporting(true);
+    try {
+      const response = await fetch("/api/v1/store-addresses/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(importDraft),
+      });
+      if (!response.ok) {
+        const body = await response.json();
+        setError(body.message ?? "地址 Excel 导入失败");
+        return;
+      }
+      const result = (await response.json()) as ImportStoreAddressesResponse;
+      await refreshAddresses();
+      setImportDraft(null);
+      setImportPreview(null);
+      onSaved();
+      onMessage(`已确认导入 ${result.importedAddressCount} 条来源记录，新增 ${importPreview.createCount} 个，更新 ${importPreview.updateCount} 个`);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "地址 Excel 导入失败");
+    } finally {
+      setImporting(false);
+    }
+  }
+
   function useMissingStore(store: MissingMakeOrderStoreDto) {
     setDraft((current) => ({ ...current, storeNo: store.storeNo, storeName: store.storeName }));
+    setEditingAddressId(null);
     setQuery(store.storeNo || store.storeName);
   }
 
   function editAddress(address: StoreAddressDto) {
+    setEditingAddressId(address.id);
     setDraft({
       storeNo: address.storeNo,
       storeName: address.storeName,
@@ -72,11 +134,18 @@ export function StoreAddressPanel({ canEdit, missingStores, onMessage, onSaved }
     });
   }
 
+  function startNewAddress() {
+    setDraft(emptyDraft);
+    setEditingAddressId(null);
+    setError("");
+  }
+
   useEffect(() => {
     void refreshAddresses();
   }, []);
 
   const canSave = canEdit && draft.storeName.trim() && draft.receiver.trim() && draft.phone.trim() && draft.address.trim();
+  const hasImportChanges = Boolean(importPreview && (importPreview.createCount > 0 || importPreview.updateCount > 0));
 
   return (
     <section className="mt-4 rounded-md border border-border bg-card p-4">
@@ -88,7 +157,24 @@ export function StoreAddressPanel({ canEdit, missingStores, onMessage, onSaved }
           </div>
           <p className="mt-1 text-sm text-muted-foreground">系统维护地址会优先用于做单，未维护时再读取地址匹配表。</p>
         </div>
-        <Badge tone={canEdit ? "info" : "neutral"}>{canEdit ? "可编辑" : "只读"}</Badge>
+        <div className="flex flex-wrap items-center gap-2">
+          <label className={`inline-flex h-8 items-center justify-center gap-2 rounded-md border border-border px-2 text-sm ${canEdit ? "cursor-pointer bg-background hover:bg-muted" : "cursor-not-allowed bg-muted text-muted-foreground"}`}>
+            <Upload className="h-4 w-4" />
+            {importing ? "处理中" : "导入地址 Excel"}
+            <input
+              className="sr-only"
+              disabled={!canEdit || importing}
+              type="file"
+              accept=".xls,.xlsx"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.target.value = "";
+                if (file) void importWorkbook(file);
+              }}
+            />
+          </label>
+          <Badge tone={canEdit ? "info" : "neutral"}>{canEdit ? "可编辑" : "只读"}</Badge>
+        </div>
       </div>
 
       {missingStores.length > 0 ? (
@@ -105,6 +191,55 @@ export function StoreAddressPanel({ canEdit, missingStores, onMessage, onSaved }
                 {store.storeName || store.storeNo}
               </button>
             ))}
+          </div>
+        </div>
+      ) : null}
+
+      {importPreview ? (
+        <div className="mt-4 rounded-md border border-border bg-muted/30 p-3">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div className="text-sm font-medium">地址导入预览</div>
+              <div className="mt-1 text-sm text-muted-foreground">
+                {importPreview.fileName} / {importPreview.sheetCount} 个工作表 / {importPreview.parsedRowCount} 条来源记录
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge tone="good">新增 {importPreview.createCount}</Badge>
+              <Badge tone="info">更新 {importPreview.updateCount}</Badge>
+              <Badge tone="neutral">不变 {importPreview.unchangedCount}</Badge>
+            </div>
+          </div>
+          <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+            {importPreview.items.filter((item) => item.action !== "unchanged").slice(0, 6).map((item) => (
+              <div key={`${item.action}-${item.storeNo}-${item.storeName}-${item.sourceSheet}-${item.sourceRow}`} className="rounded-md border border-border bg-background px-3 py-2 text-sm">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-medium">{item.storeName || item.storeNo}</span>
+                  <Badge tone={item.action === "create" ? "good" : "info"}>{item.action === "create" ? "新增" : "更新"}</Badge>
+                </div>
+                <div className="mt-1 text-muted-foreground">{item.receiver || "-"} / {item.phone || "-"}</div>
+                <div className="mt-1 line-clamp-2 text-muted-foreground">{item.address}</div>
+                {item.action === "update" && item.existing ? (
+                  <div className="mt-2 rounded bg-muted px-2 py-1 text-xs text-muted-foreground">
+                    原：{item.existing.receiver || "-"} / {item.existing.phone || "-"}
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+          {importPreview.items.filter((item) => item.action !== "unchanged").length > 6 ? (
+            <div className="mt-2 text-sm text-muted-foreground">还有 {importPreview.items.filter((item) => item.action !== "unchanged").length - 6} 个变更未展示</div>
+          ) : null}
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <Button disabled={!canEdit || importing || !hasImportChanges} onClick={() => void confirmImportWorkbook()}>
+              <Check className="h-4 w-4" />
+              确认更新地址
+            </Button>
+            <Button className="bg-muted text-muted-foreground hover:bg-muted/80" disabled={importing} onClick={() => { setImportDraft(null); setImportPreview(null); }}>
+              <X className="h-4 w-4" />
+              取消
+            </Button>
+            {!hasImportChanges ? <span className="text-sm text-muted-foreground">没有需要更新的地址。</span> : null}
           </div>
         </div>
       ) : null}
@@ -130,13 +265,16 @@ export function StoreAddressPanel({ canEdit, missingStores, onMessage, onSaved }
                 <tr>
                   <th className="px-3 py-2 text-left font-medium">门店</th>
                   <th className="px-3 py-2 text-left font-medium">收货信息</th>
-                  <th className="px-3 py-2 text-left font-medium">更新时间</th>
-                  <th className="px-3 py-2 text-left font-medium">操作</th>
+                  <th className="px-3 py-2 text-left font-medium">来源</th>
+                  <th className="w-28 px-3 py-2 text-left font-medium">操作</th>
                 </tr>
               </thead>
               <tbody>
                 {addresses.map((address) => (
-                  <tr key={address.id} className="border-t border-border">
+                  <tr
+                    key={address.id}
+                    className={address.id === editingAddressId ? "border-t border-primary/30 bg-emerald-50/70" : "border-t border-border"}
+                  >
                     <td className="px-3 py-3 align-top">
                       <div className="font-medium">{address.storeName}</div>
                       <div className="mt-1 text-muted-foreground">{address.storeNo || "无门店编码"}</div>
@@ -145,11 +283,18 @@ export function StoreAddressPanel({ canEdit, missingStores, onMessage, onSaved }
                       <div>{address.receiver} / {address.phone}</div>
                       <div className="mt-1 text-muted-foreground">{address.address}</div>
                     </td>
-                    <td className="px-3 py-3 align-top text-muted-foreground">{formatShortDate(address.updatedAt)}</td>
-                    <td className="px-3 py-3 align-top">
-                      <Button className="h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80" disabled={!canEdit} onClick={() => editAddress(address)}>
-                        编辑
-                      </Button>
+                    <td className="px-3 py-3 align-top text-muted-foreground">
+                      <div>{address.sourceSheet || "手工维护"}</div>
+                      {address.sourceRow ? <div className="mt-1">第 {address.sourceRow} 行</div> : null}
+                      <div className="mt-1">{formatShortDate(address.updatedAt)}</div>
+                    </td>
+                    <td className="w-28 px-3 py-3 align-top">
+                      <div className="flex flex-row flex-nowrap items-center gap-2 whitespace-nowrap">
+                        <Button className="h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80" disabled={!canEdit} onClick={() => editAddress(address)}>
+                          编辑
+                        </Button>
+                        {address.id === editingAddressId ? <Badge tone="info">编辑中</Badge> : null}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -166,7 +311,13 @@ export function StoreAddressPanel({ canEdit, missingStores, onMessage, onSaved }
         </div>
 
         <div className="min-w-0 rounded-md border border-border p-3">
-          <h4 className="text-sm font-semibold">保存地址</h4>
+          <div className="flex items-center justify-between gap-2">
+            <h4 className="text-sm font-semibold">{editingAddressId ? "编辑地址" : "新建地址"}</h4>
+            <Button className="h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80" disabled={!canEdit} onClick={startNewAddress}>
+              <Plus className="h-4 w-4" />
+              新建地址
+            </Button>
+          </div>
           <div className="mt-3 grid gap-2">
             <Field label="门店编码" value={draft.storeNo} onChange={(value) => setDraft((current) => ({ ...current, storeNo: value }))} />
             <Field label="门店名称" value={draft.storeName} onChange={(value) => setDraft((current) => ({ ...current, storeName: value }))} />
@@ -214,4 +365,13 @@ function formatShortDate(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString();
+}
+
+function fileToBase64(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(",")[1] ?? "");
+    reader.onerror = () => reject(reader.error ?? new Error("文件读取失败"));
+    reader.readAsDataURL(file);
+  });
 }

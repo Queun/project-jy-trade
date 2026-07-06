@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { CheckCheck, ChevronDown, ChevronUp, ClipboardList, Download, FileSpreadsheet, HelpCircle, LogOut, PackageCheck, RefreshCcw, Save, Send, Settings, Upload, Warehouse, X } from "lucide-react";
+import { CheckCheck, ChevronDown, ChevronUp, ClipboardList, Download, FileSpreadsheet, HelpCircle, LogOut, MapPin, PackageCheck, RefreshCcw, Save, Send, Settings, Trash2, Upload, Warehouse, X } from "lucide-react";
 import type {
   AuthUserDto,
   BatchSummary,
@@ -17,11 +17,11 @@ import { StoreAddressPanel } from "./components/StoreAddressPanel.js";
 import { Badge } from "./components/ui/badge.js";
 import { Button } from "./components/ui/button.js";
 
-const defaultOrderFile = "ole案例文件——发货前\\1订货单\\订货通知单 .xls";
+const defaultOrderFile = "outputs\\fixtures\\sample-order.xlsx";
 const defaultMockFile = "examples/mock_flow_data.json";
 const helpDismissedStorageKey = "jy-trade-help-dismissed-v1";
 
-type WorkTab = "import" | "review" | "export";
+type WorkTab = "import" | "review" | "export" | "addresses";
 type FilterKey =
   | "all"
   | "ready"
@@ -51,13 +51,14 @@ const workTabs: Array<{ key: WorkTab; label: string; icon: typeof FileSpreadshee
   { key: "import", label: "导入订单", icon: FileSpreadsheet },
   { key: "review", label: "审核发货", icon: ClipboardList },
   { key: "export", label: "做单", icon: PackageCheck },
+  { key: "addresses", label: "地址维护", icon: MapPin },
 ];
 
 export function App() {
   const [user, setUser] = useState<AuthUserDto | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [loginName, setLoginName] = useState("admin");
-  const [loginPassword, setLoginPassword] = useState("admin123");
+  const [loginPassword, setLoginPassword] = useState("jymy");
   const [loginError, setLoginError] = useState("");
   const [batches, setBatches] = useState<BatchSummary[]>([]);
   const [activeBatch, setActiveBatch] = useState<BatchSummary | null>(null);
@@ -65,10 +66,10 @@ export function App() {
   const [reviewLines, setReviewLines] = useState<ReviewLineDto[]>([]);
   const [exports, setExports] = useState<ExportDto[]>([]);
   const [makeOrderReadiness, setMakeOrderReadiness] = useState<MakeOrderReadinessDto | null>(null);
-  const [exportType, setExportType] = useState<ExportDto["type"]>("review");
   const [orderFile, setOrderFile] = useState(defaultOrderFile);
   const [mockFile, setMockFile] = useState(defaultMockFile);
   const [message, setMessage] = useState("请选择订单文件并开始初审");
+  const [successNotice, setSuccessNotice] = useState("");
   const [activeFilter, setActiveFilter] = useState<FilterKey>("all");
   const [draftById, setDraftById] = useState<Record<string, ReviewDraft>>({});
   const [errorsById, setErrorsById] = useState<Record<string, string>>({});
@@ -90,6 +91,27 @@ export function App() {
   async function refreshBatches() {
     const response = await fetch("/api/v1/batches");
     setBatches(await response.json());
+  }
+
+  async function deleteBatch(batch: BatchSummary) {
+    if (!window.confirm(`确定删除批次“${batch.fileName}”吗？相关审核明细和导出文件会一并删除。`)) return;
+    const response = await fetch(`/api/v1/batches/${batch.id}`, { method: "DELETE" });
+    if (!response.ok) {
+      const error = await response.json();
+      setMessage(error.message ?? "批次删除失败");
+      return;
+    }
+    if (activeBatch?.id === batch.id) {
+      setActiveBatch(null);
+      setReviewLines([]);
+      setDraftById({});
+      setErrorsById({});
+      setExports([]);
+      setMakeOrderReadiness(null);
+    }
+    await refreshBatches();
+    setMessage("批次已删除");
+    setSuccessNotice("批次已删除");
   }
 
   async function refreshGoodsSyncStatus() {
@@ -259,6 +281,7 @@ export function App() {
     await refreshExports(created.id);
     await refreshMakeOrderReadiness(created.id);
     setMessage("初审已完成，请进入审核发货");
+    setSuccessNotice("订单导入成功，已生成初审结果");
     await refreshBatches();
   }
 
@@ -313,6 +336,7 @@ export function App() {
     await refreshExports(created.id);
     await refreshMakeOrderReadiness(created.id);
     setMessage(`真实初审已完成，已查询库存 ${review.stockQueriedCount ?? 0} 个规格`);
+    setSuccessNotice("订单导入成功，已生成初审结果");
     await refreshBatches();
   }
 
@@ -476,15 +500,16 @@ export function App() {
     await refreshMakeOrderReadiness(result.batch.id);
     await refreshBatches();
     setMessage(`审核已提交：待审核 ${result.pendingCount}，发货 ${result.shipCount}，不发 ${result.doNotShipCount}`);
+    setSuccessNotice("审核完成，当前批次可以进入做单");
   }
 
-  async function createExport() {
+  async function createExport(type: ExportDto["type"]) {
     if (!activeBatch) return;
     setMessage("正在生成导出文件...");
     const response = await fetch(`/api/v1/batches/${activeBatch.id}/exports`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ type: exportType }),
+      body: JSON.stringify({ type }),
     });
     if (!response.ok) {
       setMessage("导出失败");
@@ -521,6 +546,12 @@ export function App() {
   useEffect(() => {
     void checkMe();
   }, []);
+
+  useEffect(() => {
+    if (!successNotice) return;
+    const timer = window.setTimeout(() => setSuccessNotice(""), 5000);
+    return () => window.clearTimeout(timer);
+  }, [successNotice]);
 
   const stats = useMemo(() => buildStats(reviewLines), [reviewLines]);
   const filteredLines = useMemo(() => reviewLines.filter((line) => matchesFilter(line, activeFilter)), [reviewLines, activeFilter]);
@@ -602,6 +633,11 @@ export function App() {
             </Button>
           </div>
         </header>
+        {successNotice ? (
+          <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-800">
+            {successNotice}
+          </div>
+        ) : null}
 
         {showSettings ? (
           <SettingsPanel
@@ -621,14 +657,14 @@ export function App() {
           />
         ) : null}
 
-        <section className="grid gap-4 xl:grid-cols-[300px_minmax(0,1fr)]">
-          <BatchList batches={batches} activeBatchId={activeBatch?.id} onSelect={(batch) => void loadBatch(batch)} />
+        <section className={activeTab === "addresses" ? "grid gap-4" : "grid gap-4 xl:grid-cols-[300px_minmax(0,1fr)]"}>
+          {activeTab === "addresses" ? null : <BatchList batches={batches} activeBatchId={activeBatch?.id} canDelete={permissions.canDeleteBatch} onDelete={(batch) => void deleteBatch(batch)} onSelect={(batch) => void loadBatch(batch)} />}
 
           <section className="min-w-0">
             {showHelp ? <HelpPanel onDismiss={dismissHelp} /> : null}
-            <CurrentBatchPanel batch={activeBatch} message={message} reviewLines={reviewLines} />
+            {activeTab === "addresses" ? null : <CurrentBatchPanel batch={activeBatch} message={message} reviewLines={reviewLines} />}
 
-            <nav className="mt-4 grid gap-2 rounded-md border border-border bg-card p-1 sm:grid-cols-3" aria-label="业务步骤">
+            <nav className={activeTab === "addresses" ? "grid gap-2 rounded-md border border-border bg-card p-1 sm:grid-cols-4" : "mt-4 grid gap-2 rounded-md border border-border bg-card p-1 sm:grid-cols-4"} aria-label="业务步骤">
               {workTabs.map((tab) => {
                 const Icon = tab.icon;
                 const active = tab.key === activeTab;
@@ -700,13 +736,20 @@ export function App() {
               <ExportTab
                 activeBatch={activeBatch}
                 canExport={permissions.canExport}
-                exportType={exportType}
                 exports={exports}
                 makeOrderReadiness={makeOrderReadiness}
-                onCreateExport={() => void createExport()}
-                onExportTypeChange={setExportType}
+                onCreateExport={(type) => void createExport(type)}
+                onOpenAddressTab={() => setActiveTab("addresses")}
+              />
+            ) : null}
+
+            {activeTab === "addresses" ? (
+              <AddressTab
+                canEdit={permissions.canExport}
+                message={message}
+                missingStores={makeOrderReadiness?.missingStores ?? []}
                 onMessage={setMessage}
-                onStoreAddressSaved={() => {
+                onSaved={() => {
                   if (activeBatch) void refreshMakeOrderReadiness(activeBatch.id);
                 }}
               />
@@ -721,10 +764,14 @@ export function App() {
 function BatchList({
   activeBatchId,
   batches,
+  canDelete,
+  onDelete,
   onSelect,
 }: {
   activeBatchId?: string;
   batches: BatchSummary[];
+  canDelete: boolean;
+  onDelete: (batch: BatchSummary) => void;
   onSelect: (batch: BatchSummary) => void;
 }) {
   const [expandedBatchId, setExpandedBatchId] = useState<string | null>(null);
@@ -765,21 +812,33 @@ function BatchList({
                   <span>{batch.matchedBarcodeCount}/{batch.uniqueBarcodeCount} 已匹配</span>
                 </div>
               </button>
-              <button
-                className="flex w-full items-center justify-center gap-1 border-t border-border/70 px-3 py-1.5 text-xs text-muted-foreground hover:bg-background/50"
-                onClick={() => setExpandedBatchId(expanded ? null : batch.id)}
-              >
-                {expanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-                {expanded ? "收起详情" : "查看详情"}
-              </button>
+              <div className="flex border-t border-border/70">
+                <button
+                  className="flex min-w-0 flex-1 items-center justify-center gap-1 px-3 py-1.5 text-xs text-muted-foreground hover:bg-background/50"
+                  onClick={() => setExpandedBatchId(expanded ? null : batch.id)}
+                >
+                  {expanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                  {expanded ? "收起详情" : "查看详情"}
+                </button>
+                {canDelete ? (
+                  <button
+                    aria-label={`删除批次 ${batch.fileName}`}
+                    className="flex items-center justify-center gap-1 border-l border-border/70 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-50"
+                    onClick={() => onDelete(batch)}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    删除
+                  </button>
+                ) : null}
+              </div>
               {expanded ? (
                 <dl className="grid gap-2 border-t border-border/70 px-3 py-2 text-xs">
                   <MetaItem label="上传时间" value={formatShortDate(batch.createdAt)} />
                   <MetaItem label="更新时间" value={formatShortDate(batch.updatedAt)} />
                   <MetaItem label="订单行数" value={`${batch.orderLineCount}`} />
+                  <MetaItem label="唯一条码" value={`${batch.uniqueBarcodeCount}`} />
                   <MetaItem label="匹配情况" value={`${batch.matchedBarcodeCount}/${batch.uniqueBarcodeCount}`} />
-                  <MetaItem label="订单时间跨度" value="选择批次后查看" />
-                  <MetaItem label="门店 / 订单" value="选择批次后统计" />
+                  <MetaItem label="初审模式" value={batch.mode === "production_api" ? "真实初审" : "模拟初审"} />
                 </dl>
               ) : null}
             </div>
@@ -904,6 +963,27 @@ function SettingsPanel({
         </div>
       </section>
     </div>
+  );
+}
+
+function AddressTab({
+  canEdit,
+  message,
+  missingStores,
+  onMessage,
+  onSaved,
+}: {
+  canEdit: boolean;
+  message: string;
+  missingStores: MakeOrderReadinessDto["missingStores"];
+  onMessage: (message: string) => void;
+  onSaved: () => void;
+}) {
+  return (
+    <section className="mt-4">
+      {message ? <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">{message}</div> : null}
+      <StoreAddressPanel canEdit={canEdit} missingStores={missingStores} onMessage={onMessage} onSaved={onSaved} />
+    </section>
   );
 }
 
@@ -1130,29 +1210,33 @@ function ReviewTab({
 function ExportTab({
   activeBatch,
   canExport,
-  exportType,
   exports,
   makeOrderReadiness,
   onCreateExport,
-  onExportTypeChange,
-  onMessage,
-  onStoreAddressSaved,
+  onOpenAddressTab,
 }: {
   activeBatch: BatchSummary | null;
   canExport: boolean;
-  exportType: ExportDto["type"];
   exports: ExportDto[];
   makeOrderReadiness: MakeOrderReadinessDto | null;
-  onCreateExport: () => void;
-  onExportTypeChange: (type: ExportDto["type"]) => void;
-  onMessage: (message: string) => void;
-  onStoreAddressSaved: () => void;
+  onCreateExport: (type: ExportDto["type"]) => void;
+  onOpenAddressTab: () => void;
 }) {
   const batchReadyForExport = activeBatch?.status === "reviewed" || activeBatch?.status === "exported";
-  const makeOrderReady = exportType !== "wdt_import" || makeOrderReadiness?.canExport === true;
-  const canCreateExport = canExport && batchReadyForExport && makeOrderReady;
+  const makeOrderReady = makeOrderReadiness?.canExport === true;
+  const canCreateBasicExport = canExport && batchReadyForExport;
   const readinessBadgeTone = !makeOrderReadiness ? "neutral" : makeOrderReadiness.canExport ? "good" : "bad";
   const readinessBadgeText = !makeOrderReadiness ? "检查中" : makeOrderReadiness.canExport ? "可生成" : "需补地址";
+  const exportActions: Array<{ type: ExportDto["type"]; title: string; description: string; disabledReason?: string }> = [
+    { type: "review", title: "初审单", description: "导出当前批次的初审明细，便于内部复核。" },
+    { type: "confirmed", title: "确定发货单", description: "导出最终确认的发货数量和处理结果。" },
+    {
+      type: "wdt_import",
+      title: "做单表格",
+      description: "按批量导入模板生成给系统导入的做单 Excel。",
+      disabledReason: makeOrderReady ? undefined : "需先补齐发货地址",
+    },
+  ];
 
   return (
     <section className="mt-4 rounded-md border border-border bg-card p-4">
@@ -1160,22 +1244,6 @@ function ExportTab({
         <div>
           <h2 className="text-lg font-semibold">做单</h2>
           <p className="text-sm text-muted-foreground">{activeBatch ? "生成并下载当前批次的 Excel 文件" : "选择批次后可生成 Excel"}</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <select
-            className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-            value={exportType}
-            onChange={(event) => onExportTypeChange(event.target.value as ExportDto["type"])}
-            disabled={!canCreateExport}
-          >
-            <option value="review">初审单</option>
-            <option value="confirmed">确定发货单</option>
-            <option value="wdt_import">做单 Excel</option>
-          </select>
-          <Button data-testid="create-export" disabled={!canCreateExport} onClick={onCreateExport}>
-            <Download className="h-4 w-4" />
-            生成导出
-          </Button>
         </div>
       </div>
       {!canExport ? (
@@ -1185,7 +1253,30 @@ function ExportTab({
       ) : !batchReadyForExport ? (
         <EmptyState className="mt-4" title="等待审核完成" description="当前批次还没有提交审核，确认发货数量后再生成做单文件。" />
       ) : null}
-      {activeBatch && batchReadyForExport && exportType === "wdt_import" ? (
+      {activeBatch && batchReadyForExport ? (
+        <div className="mt-4 grid gap-3 lg:grid-cols-3">
+          {exportActions.map((action) => {
+            const disabled = !canCreateBasicExport || (action.type === "wdt_import" && !makeOrderReady);
+            return (
+              <div key={action.type} className={action.type === "wdt_import" ? "rounded-md border border-primary/30 bg-emerald-50/40 p-3" : "rounded-md border border-border bg-background p-3"}>
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <div className="text-sm font-semibold">{action.title}</div>
+                    <div className="mt-1 text-sm text-muted-foreground">{action.description}</div>
+                  </div>
+                  {action.type === "wdt_import" ? <Badge tone={readinessBadgeTone}>{readinessBadgeText}</Badge> : null}
+                </div>
+                <Button className="mt-3 h-8 px-2" data-testid={`create-export-${action.type}`} disabled={disabled} onClick={() => onCreateExport(action.type)}>
+                  <Download className="h-4 w-4" />
+                  生成{action.title}
+                </Button>
+                {disabled && action.disabledReason ? <div className="mt-2 text-xs text-muted-foreground">{action.disabledReason}</div> : null}
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+      {activeBatch && batchReadyForExport ? (
         <div className="mt-4 rounded-md border border-border bg-muted/30 p-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
@@ -1210,20 +1301,16 @@ function ExportTab({
               {makeOrderReadiness.missingStores.length > 5 ? (
                 <div className="text-sm text-muted-foreground">还有 {makeOrderReadiness.missingStores.length - 5} 个缺地址门店</div>
               ) : null}
+              <Button className="h-8 px-2" onClick={onOpenAddressTab}>
+                <MapPin className="h-4 w-4" />
+                去地址维护
+              </Button>
             </div>
           ) : null}
         </div>
       ) : null}
-      {activeBatch ? (
-        <StoreAddressPanel
-          canEdit={canExport}
-          missingStores={makeOrderReadiness?.missingStores ?? []}
-          onMessage={onMessage}
-          onSaved={onStoreAddressSaved}
-        />
-      ) : null}
       <div className="mt-4 space-y-2">
-        {exports.length === 0 && canCreateExport ? (
+        {exports.length === 0 && canCreateBasicExport ? (
           <div className="text-sm text-muted-foreground">暂无导出记录</div>
         ) : (
           exports.map((item) => (
@@ -1236,9 +1323,11 @@ function ExportTab({
               }
             >
               <div className="min-w-0">
-                <div className="font-medium">{item.fileName}</div>
-                <div className="mt-1 text-muted-foreground">
-                  {exportTypeText(item.type)} / {item.createdByUsername ?? "系统"} / {formatShortDate(item.createdAt)}
+                <div data-testid={`export-type-${item.id}`} className="font-semibold">
+                  {exportTypeText(item.type)}
+                </div>
+                <div data-testid={`export-file-${item.id}`} className="mt-1 break-all text-muted-foreground">
+                  {item.fileName} / {item.createdByUsername ?? "系统"} / {formatShortDate(item.createdAt)}
                 </div>
                 {item.errorMessage ? (
                   <div className="mt-2 rounded-md border border-rose-200 bg-rose-50 px-2 py-1.5 text-rose-800">
@@ -1507,6 +1596,7 @@ function buildUserPermissions(user: AuthUserDto | null) {
     canExport: role === "admin" || role === "operator",
     canSyncGoods: role === "admin" || role === "operator",
     canManageSettings: role === "admin",
+    canDeleteBatch: role === "admin",
   };
 }
 

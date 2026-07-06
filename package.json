@@ -10,6 +10,10 @@
   "scripts": {
     "dev:api": "npm run dev -w @jy-trade/api",
     "dev:web": "npm run dev -w @jy-trade/web",
+    "start:api": "npm run start -w @jy-trade/api",
+    "build:web": "npm run build -w @jy-trade/web",
+    "release:check": "node tools/check-release.mjs",
+    "deploy:check": "npm run release:check && npm run typecheck && npm run test -w @jy-trade/api && npm run test -w @jy-trade/web && npm run build:web",
     "build": "npm run build --workspaces --if-present",
     "db:generate": "npm run db:generate -w @jy-trade/api",
     "db:migrate": "npm run db:migrate -w @jy-trade/api",

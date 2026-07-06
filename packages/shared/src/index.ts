@@ -67,8 +67,37 @@ export const ReviewLineDtoSchema = z.object({
   storeNo: z.string(),
   storeName: z.string(),
   uploadTime: z.string(),
+  orderApprovalNo: z.string(),
+  readingStatus: z.string(),
+  deliveryMode: z.string(),
+  orderStatus: z.string(),
+  deliveryTarget: z.string(),
+  category: z.string(),
+  orderDate: z.string(),
+  deadlineDate: z.string(),
+  salesperson: z.string(),
+  maker: z.string(),
+  madeAt: z.string(),
+  sourceReviewer: z.string(),
+  externalGoodsCode: z.string(),
   externalBarcode: z.string(),
   externalGoodsName: z.string(),
+  originalSpec: z.string(),
+  transportSpec: z.string(),
+  orderBoxQty: z.string(),
+  taxExcludedUnitPrice: z.string(),
+  contractPrice: z.string(),
+  taxIncludedUnitPrice: z.string(),
+  discountRate: z.string(),
+  shelfLifeDays: z.string(),
+  receivedQty: z.string(),
+  giftRate: z.string(),
+  td: z.string(),
+  da: z.string(),
+  pd: z.string(),
+  spd: z.string(),
+  rebate: z.string(),
+  orderRawJson: z.string(),
   goodsName: z.string(),
   specName: z.string(),
   wdtSpecNo: z.string(),
@@ -144,6 +173,10 @@ export const StoreAddressDtoSchema = z.object({
   phone: z.string(),
   address: z.string(),
   note: z.string(),
+  sourceSheet: z.string(),
+  sourceRow: z.number(),
+  importedAt: z.string(),
+  rawJson: z.string(),
   updatedByUserId: z.string().nullable().optional(),
   updatedByUsername: z.string().nullable().optional(),
   createdAt: z.string(),
@@ -160,6 +193,55 @@ export const UpsertStoreAddressRequestSchema = z.object({
   note: z.string().max(500).default(""),
 });
 export type UpsertStoreAddressRequest = z.infer<typeof UpsertStoreAddressRequestSchema>;
+
+export const ImportStoreAddressesRequestSchema = z.object({
+  fileName: z.string().min(1),
+  contentBase64: z.string().min(1),
+});
+export type ImportStoreAddressesRequest = z.infer<typeof ImportStoreAddressesRequestSchema>;
+
+export const StoreAddressImportPreviewItemSchema = z.object({
+  action: z.enum(["create", "update", "unchanged"]),
+  storeNo: z.string(),
+  storeName: z.string(),
+  receiver: z.string(),
+  phone: z.string(),
+  address: z.string(),
+  sourceSheet: z.string(),
+  sourceRow: z.number(),
+  existing: z
+    .object({
+      storeNo: z.string(),
+      storeName: z.string(),
+      receiver: z.string(),
+      phone: z.string(),
+      address: z.string(),
+    })
+    .nullable(),
+});
+export type StoreAddressImportPreviewItem = z.infer<typeof StoreAddressImportPreviewItemSchema>;
+
+export const ImportStoreAddressesPreviewResponseSchema = z.object({
+  fileName: z.string(),
+  sheetCount: z.number(),
+  parsedRowCount: z.number(),
+  skippedRowCount: z.number(),
+  affectedStoreCount: z.number(),
+  createCount: z.number(),
+  updateCount: z.number(),
+  unchangedCount: z.number(),
+  items: z.array(StoreAddressImportPreviewItemSchema),
+});
+export type ImportStoreAddressesPreviewResponse = z.infer<typeof ImportStoreAddressesPreviewResponseSchema>;
+
+export const ImportStoreAddressesResponseSchema = z.object({
+  fileName: z.string(),
+  sheetCount: z.number(),
+  parsedRowCount: z.number(),
+  importedAddressCount: z.number(),
+  skippedRowCount: z.number(),
+});
+export type ImportStoreAddressesResponse = z.infer<typeof ImportStoreAddressesResponseSchema>;
 
 export const CreateBatchRequestSchema = z.object({
   filePath: z.string().min(1),

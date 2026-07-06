@@ -489,8 +489,8 @@ git commit -m "feat(addresses): maintain store shipping addresses"
 目标：
 
 - 系统内维护“门店 -> 发货地址”。
-- 系统维护地址优先于地址匹配 Excel。
-- 地址匹配 Excel 作为 fallback，读取多个 sheet。
+- 系统维护地址是做单地址的唯一生产来源。
+- 地址 Excel 仅通过页面导入并写入数据库，不作为运行时 fallback 文件读取。
 - 地址异常可以通过系统修复，不需要直接改 Excel。
 
 后端：
@@ -512,7 +512,7 @@ git commit -m "feat(addresses): maintain store shipping addresses"
 
 验证：
 
-- API 测试：保存地址、更新地址、查询地址、权限、系统地址覆盖 Excel fallback。
+- API 测试：保存地址、更新地址、查询地址、权限、做单只读取数据库地址。
 - 做单导出使用系统维护地址。
 - `npm run typecheck`
 - `npm run test`

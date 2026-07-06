@@ -10,6 +10,7 @@ import {
   UpdateProductMappingStatusRequestSchema,
   ReviewDecisionDtoSchema,
   UpdateReviewLinePriorityRequestSchema,
+  ImportStoreAddressesRequestSchema,
   RunMockReviewRequestSchema,
   RunRealReviewRequestSchema,
   UpsertStoreAddressRequestSchema,
@@ -19,6 +20,8 @@ import {
   type BatchSummary,
   type ExportDto,
   type MakeOrderReadinessDto,
+  type ImportStoreAddressesPreviewResponse,
+  type ImportStoreAddressesResponse,
   type ProductMatchCandidateDto,
   type ProductMappingDto,
   type StoreAddressDto,
@@ -131,6 +134,14 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     return batch;
   });
 
+  app.delete("/api/v1/batches/:batchId", async (request, reply) => {
+    requireRole(request, ["admin"]);
+    const { batchId } = request.params as { batchId: string };
+    const result = await store.deleteBatch(batchId, getCurrentUser(request));
+    if (!result) return reply.code(404).send({ message: "Batch not found" });
+    return result;
+  });
+
   app.post("/api/v1/batches/:batchId/actions/run-mock-review", async (request, reply) => {
     requireRole(request, ["admin", "operator"]);
     const { batchId } = request.params as { batchId: string };
@@ -228,7 +239,7 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     }
     const bytes = await readFile(exportFile.filePath);
     reply
-      .header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+      .header("Content-Type", exportFile.fileName.endsWith(".xls") ? "application/vnd.ms-excel" : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
       .header("Content-Disposition", contentDisposition(exportFile.fileName));
     return reply.send(bytes);
   });
@@ -280,6 +291,20 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     const body = UpsertStoreAddressRequestSchema.parse(request.body ?? {});
     const address = await store.upsertStoreAddress(body, getCurrentUser(request));
     return reply.code(201).send(address);
+  });
+
+  app.post("/api/v1/store-addresses/import-preview", async (request, reply): Promise<ImportStoreAddressesPreviewResponse> => {
+    requireRole(request, ["admin", "operator"]);
+    const body = ImportStoreAddressesRequestSchema.parse(request.body ?? {});
+    const result = await store.previewStoreAddressImport(body);
+    return reply.code(200).send(result);
+  });
+
+  app.post("/api/v1/store-addresses/import", async (request, reply): Promise<ImportStoreAddressesResponse> => {
+    requireRole(request, ["admin", "operator"]);
+    const body = ImportStoreAddressesRequestSchema.parse(request.body ?? {});
+    const result = await store.importStoreAddresses(body, getCurrentUser(request));
+    return reply.code(201).send(result);
   });
 
   app.patch("/api/v1/product-mappings/:mappingId/status", async (request, reply): Promise<ProductMappingDto | unknown> => {

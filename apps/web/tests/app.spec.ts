@@ -5,7 +5,7 @@ test("logs in, runs review workflow, exports, and logs out", async ({ page }) =>
 
   await expect(page.getByRole("heading", { name: "登录工作台" })).toBeVisible();
   await page.getByLabel("用户名").fill("admin");
-  await page.getByLabel("密码").fill("admin123");
+  await page.getByLabel("密码").fill("jymy");
   await page.getByRole("button", { name: "登录" }).click();
 
   await expect(page.getByRole("heading", { name: "批次审核工作台" })).toBeVisible();
