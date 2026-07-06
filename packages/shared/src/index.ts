@@ -82,6 +82,8 @@ export const ReviewLineDtoSchema = z.object({
   decision: ReviewDecisionSchema,
   approvedShipQty: z.number(),
   reason: z.string(),
+  priority: z.boolean(),
+  priorityReason: z.string(),
 });
 export type ReviewLineDto = z.infer<typeof ReviewLineDtoSchema>;
 
@@ -91,6 +93,12 @@ export const ReviewDecisionDtoSchema = z.object({
   reason: z.string().max(500).default(""),
 });
 export type ReviewDecisionDto = z.infer<typeof ReviewDecisionDtoSchema>;
+
+export const UpdateReviewLinePriorityRequestSchema = z.object({
+  priority: z.boolean(),
+  reason: z.string().max(500).default(""),
+});
+export type UpdateReviewLinePriorityRequest = z.infer<typeof UpdateReviewLinePriorityRequestSchema>;
 
 export const ExportDtoSchema = z.object({
   id: z.string(),

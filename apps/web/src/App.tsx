@@ -21,6 +21,7 @@ type FilterKey =
   | "pending"
   | "ship"
   | "do_not_ship"
+  | "priority"
   | "over_suggested";
 
 const filters: Array<{ key: FilterKey; label: string }> = [
@@ -32,6 +33,7 @@ const filters: Array<{ key: FilterKey; label: string }> = [
   { key: "pending", label: "待审核" },
   { key: "ship", label: "已发货" },
   { key: "do_not_ship", label: "不发货" },
+  { key: "priority", label: "优先处理" },
   { key: "over_suggested", label: "超建议数" },
 ];
 
@@ -132,7 +134,7 @@ export function App() {
     if (nextTab) setActiveTab(nextTab);
     const response = await fetch(`/api/v1/batches/${batch.id}/review-lines`);
     const lines = (await response.json()) as ReviewLineDto[];
-    setReviewLines(lines);
+    setReviewLines(sortReviewLines(lines));
     setDraftById(buildDrafts(lines));
     setErrorsById({});
     await refreshExports(batch.id);
@@ -166,7 +168,7 @@ export function App() {
     setActiveTab("review");
     const linesResponse = await fetch(`/api/v1/batches/${created.id}/review-lines`);
     const lines = (await linesResponse.json()) as ReviewLineDto[];
-    setReviewLines(lines);
+    setReviewLines(sortReviewLines(lines));
     setDraftById(buildDrafts(lines));
     setErrorsById({});
     await refreshExports(created.id);
@@ -218,7 +220,7 @@ export function App() {
     setActiveTab("review");
     const linesResponse = await fetch(`/api/v1/batches/${created.id}/review-lines`);
     const lines = (await linesResponse.json()) as ReviewLineDto[];
-    setReviewLines(lines);
+    setReviewLines(sortReviewLines(lines));
     setDraftById(buildDrafts(lines));
     setErrorsById({});
     await refreshExports(created.id);
@@ -283,7 +285,7 @@ export function App() {
       return;
     }
     const updated = (await response.json()) as ReviewLineDto;
-    setReviewLines((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+    setReviewLines((current) => sortReviewLines(current.map((item) => (item.id === updated.id ? updated : item))));
     setDraftById((current) => ({ ...current, [updated.id]: toDraft(updated) }));
     setErrorsById((current) => {
       const next = { ...current };
@@ -300,6 +302,33 @@ export function App() {
         : { decision, approvedShipQty: "0", reason: draftById[line.id]?.reason ?? "" };
     setDraftById((current) => ({ ...current, [line.id]: nextDraft }));
     await saveDecision(line, nextDraft);
+  }
+
+  async function togglePriority(line: ReviewLineDto, priority: boolean) {
+    const reason = (draftById[line.id]?.reason ?? line.reason ?? line.priorityReason ?? "").trim();
+    if (priority && !reason) {
+      setErrorsById((current) => ({ ...current, [line.id]: "优先处理必须填写原因" }));
+      return;
+    }
+
+    const response = await fetch(`/api/v1/batches/${line.batchId}/review-lines/${line.id}/priority`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ priority, reason }),
+    });
+    if (!response.ok) {
+      const error = await response.json();
+      setErrorsById((current) => ({ ...current, [line.id]: error.message ?? "优先处理更新失败" }));
+      return;
+    }
+    const updated = (await response.json()) as ReviewLineDto;
+    setReviewLines((current) => sortReviewLines(current.map((item) => (item.id === updated.id ? updated : item))));
+    setErrorsById((current) => {
+      const next = { ...current };
+      delete next[updated.id];
+      return next;
+    });
+    setMessage(priority ? "已标记为优先处理" : "已取消优先处理");
   }
 
   async function bulkApprove() {
@@ -505,6 +534,7 @@ export function App() {
                 onDraftChange={updateDraft}
                 onFilterChange={setActiveFilter}
                 onMessage={setMessage}
+                onPriorityChange={togglePriority}
                 onQuickDecision={quickDecision}
                 onSave={saveDecision}
                 onSubmitReview={() => void submitReview()}
@@ -763,6 +793,7 @@ function ReviewTab({
   onDraftChange,
   onFilterChange,
   onMessage,
+  onPriorityChange,
   onQuickDecision,
   onSave,
   onSubmitReview,
@@ -779,6 +810,7 @@ function ReviewTab({
   onDraftChange: (lineId: string, patch: Partial<ReviewDraft>) => void;
   onFilterChange: (filter: FilterKey) => void;
   onMessage: (message: string) => void;
+  onPriorityChange: (line: ReviewLineDto, priority: boolean) => void;
   onQuickDecision: (line: ReviewLineDto, decision: ReviewDecision) => void;
   onSave: (line: ReviewLineDto) => void;
   onSubmitReview: () => void;
@@ -792,7 +824,7 @@ function ReviewTab({
         <Stat label="待审核" value={stats.pending} />
         <Stat label="发货" value={stats.ship} />
         <Stat label="不发货" value={stats.doNotShip} />
-        <Stat label="超建议数" value={stats.overSuggested} />
+        <Stat label="优先处理" value={stats.priority} />
       </div>
       <section className="rounded-md border border-border bg-card p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
@@ -836,6 +868,7 @@ function ReviewTab({
                 rows={filteredLines}
                 readOnly={!canReview}
                 onDraftChange={onDraftChange}
+                onPriorityChange={onPriorityChange}
                 onQuickDecision={onQuickDecision}
                 onSave={onSave}
               />
@@ -1012,8 +1045,16 @@ function buildStats(lines: ReviewLineDto[]) {
     pending: lines.filter((line) => line.decision === "pending").length,
     ship: lines.filter((line) => line.decision === "ship").length,
     doNotShip: lines.filter((line) => line.decision === "do_not_ship").length,
+    priority: lines.filter((line) => line.priority).length,
     overSuggested: lines.filter((line) => line.decision === "ship" && line.approvedShipQty > line.suggestedShipQty).length,
   };
+}
+
+function sortReviewLines(lines: ReviewLineDto[]) {
+  return [...lines].sort((left, right) => {
+    if (left.priority !== right.priority) return left.priority ? -1 : 1;
+    return left.excelRow - right.excelRow;
+  });
 }
 
 function buildBatchDetail(lines: ReviewLineDto[]) {
@@ -1115,6 +1156,7 @@ function matchesFilter(line: ReviewLineDto, filter: FilterKey) {
   if (filter === "pending") return line.decision === "pending";
   if (filter === "ship") return line.decision === "ship";
   if (filter === "do_not_ship") return line.decision === "do_not_ship";
+  if (filter === "priority") return line.priority;
   if (filter === "over_suggested") return line.decision === "ship" && line.approvedShipQty > line.suggestedShipQty;
   return true;
 }

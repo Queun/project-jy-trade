@@ -80,6 +80,8 @@ export function buildMockReview(orderFile: string, mockDataFile: string, batchId
       decision,
       approvedShipQty: decision === "ship" ? line.suggestedShipQty : 0,
       reason: "",
+      priority: false,
+      priorityReason: "",
     };
   });
 

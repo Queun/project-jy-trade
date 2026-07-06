@@ -57,6 +57,8 @@ export const reviewLines = sqliteTable(
     mainAvailableBefore: real("main_available_before").notNull().default(0),
     nearExpiryAvailableBefore: real("near_expiry_available_before").notNull().default(0),
     suggestedShipQty: real("suggested_ship_qty").notNull(),
+    priority: integer("priority").notNull().default(0),
+    priorityReason: text("priority_reason").notNull().default(""),
     status: text("status", { enum: ["库存充足", "部分满足", "库存不足", "未匹配"] }).notNull(),
   },
   (table) => [

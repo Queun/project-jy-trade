@@ -9,6 +9,7 @@ import {
   LoginRequestSchema,
   UpdateProductMappingStatusRequestSchema,
   ReviewDecisionDtoSchema,
+  UpdateReviewLinePriorityRequestSchema,
   RunMockReviewRequestSchema,
   RunRealReviewRequestSchema,
   UploadOrderFileRequestSchema,
@@ -171,6 +172,15 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     const { batchId, lineId } = request.params as { batchId: string; lineId: string };
     const body = ReviewDecisionDtoSchema.parse(request.body ?? {});
     const line = await store.updateReviewDecision(batchId, lineId, body, getCurrentUser(request));
+    if (!line) return reply.code(404).send({ message: "Review line not found" });
+    return line;
+  });
+
+  app.patch("/api/v1/batches/:batchId/review-lines/:lineId/priority", async (request, reply) => {
+    requireRole(request, ["admin", "reviewer"]);
+    const { batchId, lineId } = request.params as { batchId: string; lineId: string };
+    const body = UpdateReviewLinePriorityRequestSchema.parse(request.body ?? {});
+    const line = await store.updateReviewLinePriority(batchId, lineId, body, getCurrentUser(request));
     if (!line) return reply.code(404).send({ message: "Review line not found" });
     return line;
   });

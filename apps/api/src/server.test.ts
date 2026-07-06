@@ -275,6 +275,54 @@ describe("api server", () => {
     await app.close();
   });
 
+  it("updates priority lines with review permissions and sorts them first", async () => {
+    const app = buildTestServer();
+    const { batch, lines, cookie } = await createReviewedBatch(app);
+    const targetLine = lines[1];
+
+    const missingReason = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/batches/${batch.id}/review-lines/${targetLine.id}/priority`,
+      payload: { priority: true, reason: "" },
+      headers: { cookie },
+    });
+    expect(missingReason.statusCode).toBe(400);
+
+    const updated = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/batches/${batch.id}/review-lines/${targetLine.id}/priority`,
+      payload: { priority: true, reason: "门店急用" },
+      headers: { cookie },
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json()).toMatchObject({ id: targetLine.id, priority: true, priorityReason: "门店急用" });
+
+    const sorted = await app.inject({
+      method: "GET",
+      url: `/api/v1/batches/${batch.id}/review-lines`,
+      headers: { cookie },
+    });
+    expect(sorted.statusCode).toBe(200);
+    expect(sorted.json()[0]).toMatchObject({ id: targetLine.id, priority: true });
+    await app.close();
+  });
+
+  it("rejects priority updates from operator accounts", async () => {
+    const app = buildTestServer();
+    const { batch, firstLine } = await createReviewedBatch(app);
+    const operatorCookie = await loginCookie(app, "operator", "operator123");
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/batches/${batch.id}/review-lines/${firstLine.id}/priority`,
+      payload: { priority: true, reason: "门店急用" },
+      headers: { cookie: operatorCookie },
+    });
+
+    expect(response.statusCode).toBe(403);
+    await app.close();
+  });
+
   it("bulk approves matched ready and partial lines only", async () => {
     const app = buildTestServer();
     const { batch, cookie } = await createReviewedBatch(app, "examples/mock_flow_mixed.json");

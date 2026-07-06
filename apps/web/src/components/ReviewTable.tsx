@@ -10,6 +10,7 @@ interface ReviewTableProps {
   errorsById: Record<string, string>;
   readOnly?: boolean;
   onDraftChange: (lineId: string, patch: Partial<ReviewDraft>) => void;
+  onPriorityChange: (line: ReviewLineDto, priority: boolean) => void;
   onSave: (line: ReviewLineDto) => void;
   onQuickDecision: (line: ReviewLineDto, decision: ReviewDecision) => void;
 }
@@ -45,6 +46,7 @@ export function ReviewTable({
   errorsById,
   readOnly = false,
   onDraftChange,
+  onPriorityChange,
   onSave,
   onQuickDecision,
 }: ReviewTableProps) {
@@ -106,6 +108,7 @@ export function ReviewTable({
           <div className="min-w-80 space-y-2">
             <div className="flex flex-wrap items-center gap-2">
               <Badge tone={decisionTone(draft.decision)}>{decisionText(draft.decision)}</Badge>
+              {line.priority ? <Badge tone="info">优先</Badge> : null}
               {isOverSuggested ? <Badge tone="warn">超建议数</Badge> : null}
               <Button className="h-8 px-2" disabled={readOnly} onClick={() => onQuickDecision(line, "ship")}>
                 发货
@@ -117,6 +120,17 @@ export function ReviewTable({
               >
                 不发
               </Button>
+              <label className="inline-flex h-8 items-center gap-2 rounded-md border border-border px-2 text-sm text-muted-foreground">
+                <input
+                  aria-label={`优先处理 ${line.id}`}
+                  className="h-4 w-4"
+                  checked={line.priority}
+                  disabled={readOnly}
+                  type="checkbox"
+                  onChange={(event) => onPriorityChange(line, event.target.checked)}
+                />
+                优先处理
+              </label>
             </div>
             <div className="grid gap-2 sm:grid-cols-[120px_1fr_auto]">
               <input

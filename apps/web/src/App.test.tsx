@@ -179,6 +179,7 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "提交审核完成" })).toBeDisabled();
     const row = await rowFor("可发商品");
     expect(within(row).getByRole("button", { name: "发货" })).toBeDisabled();
+    expect(within(row).getByRole("checkbox", { name: "优先处理 line-1" })).toBeDisabled();
     switchToExportTab();
     expect(screen.getByText("等待审核完成")).toBeInTheDocument();
   });
@@ -225,6 +226,33 @@ describe("App", () => {
       approvedShipQty: 8,
       reason: "人工确认额外库存",
     });
+  });
+
+  it("requires a reason before marking a line as priority", async () => {
+    render(<App />);
+    await clickBatch();
+    switchToReviewTab();
+
+    const row = await rowFor("部分满足商品");
+    fireEvent.click(within(row).getByRole("checkbox", { name: "优先处理 line-2" }));
+
+    expect(await within(row).findByText("优先处理必须填写原因")).toBeInTheDocument();
+    expect(lines.find((line) => line.id === "line-2")?.priority).toBe(false);
+  });
+
+  it("marks priority lines and moves them to the top", async () => {
+    render(<App />);
+    await clickBatch();
+    switchToReviewTab();
+
+    const row = await rowFor("部分满足商品");
+    fireEvent.change(within(row).getByLabelText("审核原因 line-2"), { target: { value: "门店急用" } });
+    fireEvent.click(within(row).getByRole("checkbox", { name: "优先处理 line-2" }));
+
+    await waitFor(() => expect(lines.find((line) => line.id === "line-2")?.priority).toBe(true));
+    const bodyRows = [...document.querySelectorAll<HTMLElement>("tbody tr")];
+    expect(bodyRows[0].textContent).toContain("部分满足商品");
+    expect(within(bodyRows[0]).getByText("优先")).toBeInTheDocument();
   });
 
   it("bulk approves matched ready and partial lines, then submits review", async () => {
@@ -470,6 +498,19 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
     lines = lines.map((item) => (item.id === lineId ? updated : item));
     return json(updated);
   }
+  if (url.includes("/priority") && method === "PATCH") {
+    const lineId = url.split("/review-lines/")[1]?.split("/")[0];
+    const body = JSON.parse(String(init?.body));
+    const line = lines.find((item) => item.id === lineId);
+    if (!line) return json({ message: "Review line not found" }, 404);
+    if (body.priority && !body.reason) return json({ message: "优先处理必须填写原因" }, 400);
+    const updated = { ...line, priority: body.priority, priorityReason: body.priority ? body.reason : "" };
+    lines = lines.map((item) => (item.id === lineId ? updated : item)).sort((left, right) => {
+      if (left.priority !== right.priority) return left.priority ? -1 : 1;
+      return left.excelRow - right.excelRow;
+    });
+    return json(updated);
+  }
   return json({ message: `Unhandled ${method} ${url}` }, 500);
 }
 
@@ -583,6 +624,8 @@ function reviewLine(patch: Partial<ReviewLineDto>): ReviewLineDto {
     decision: "pending",
     approvedShipQty: 0,
     reason: "",
+    priority: false,
+    priorityReason: "",
     ...patch,
   };
 }

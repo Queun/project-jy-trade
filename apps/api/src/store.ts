@@ -16,6 +16,7 @@
   ReviewLineDto,
   SubmitReviewResponseDto,
   CreateWdtGoodsSyncRunRequest,
+  UpdateReviewLinePriorityRequest,
   UpdateProductMappingStatusRequest,
   WdtGoodsSpecSearchResultDto,
   WdtGoodsSyncRunDto,
@@ -348,6 +349,44 @@ export function createSqliteStore(options: StoreOptions = {}) {
       });
 
       return toReviewLineDto(line, nextDecision);
+    },
+
+    async updateReviewLinePriority(
+      batchId: string,
+      lineId: string,
+      input: UpdateReviewLinePriorityRequest,
+      actor?: AuthUserDto,
+    ): Promise<ReviewLineDto | undefined> {
+      await ready;
+      const [line] = await database.db
+        .select()
+        .from(reviewLines)
+        .where(and(eq(reviewLines.batchId, batchId), eq(reviewLines.id, lineId)))
+        .limit(1);
+      if (!line) return undefined;
+
+      const reason = input.reason.trim();
+      if (input.priority && !reason) {
+        throw new StoreValidationError("优先处理必须填写原因");
+      }
+
+      await database.db
+        .update(reviewLines)
+        .set({
+          priority: input.priority ? 1 : 0,
+          priorityReason: input.priority ? reason : "",
+        })
+        .where(eq(reviewLines.id, lineId));
+
+      const [updatedLine] = await database.db.select().from(reviewLines).where(eq(reviewLines.id, lineId)).limit(1);
+      const [decision] = await database.db.select().from(reviewDecisions).where(eq(reviewDecisions.reviewLineId, lineId)).limit(1);
+
+      await insertAuditLog(database, actor?.id ?? null, "review_line.update_priority", "review_line", lineId, {
+        previous: { priority: Boolean(line.priority), reason: line.priorityReason },
+        next: { priority: input.priority, reason: input.priority ? reason : "" },
+      });
+
+      return toReviewLineDto(updatedLine, decision);
     },
 
     async bulkApprove(batchId: string, actor?: AuthUserDto): Promise<BulkApproveResponseDto | undefined> {
@@ -829,6 +868,8 @@ function buildRealReviewLine(input: {
     decision,
     approvedShipQty: decision === "ship" ? suggestedShipQty : 0,
     reason: "",
+    priority: false,
+    priorityReason: "",
   };
 }
 
@@ -887,6 +928,8 @@ async function replaceBatchReviewLines(database: DatabaseContext, batchId: strin
       mainAvailableBefore: line.mainAvailableBefore,
       nearExpiryAvailableBefore: line.nearExpiryAvailableBefore,
       suggestedShipQty: line.suggestedShipQty,
+      priority: line.priority ? 1 : 0,
+      priorityReason: line.priorityReason ?? "",
       status: line.status,
     })),
   );
@@ -1025,7 +1068,7 @@ async function getReviewLineDtos(database: DatabaseContext, batchId: string): Pr
     .select()
     .from(reviewLines)
     .where(eq(reviewLines.batchId, batchId))
-    .orderBy(reviewLines.sortOrder);
+    .orderBy(desc(reviewLines.priority), reviewLines.sortOrder);
   if (lineRows.length === 0) return [];
 
   const decisionRows = await database.db.select().from(reviewDecisions).where(eq(reviewDecisions.batchId, batchId));
@@ -1109,6 +1152,8 @@ function toReviewLineDto(line: ReviewLineRow, decision?: ReviewDecisionRow): Rev
     decision: decision?.decision ?? "pending",
     approvedShipQty: decision?.approvedShipQty ?? 0,
     reason: decision?.reason ?? "",
+    priority: Boolean(line.priority),
+    priorityReason: line.priorityReason ?? "",
   };
 }
 
