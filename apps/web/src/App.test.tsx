@@ -5,6 +5,7 @@ import { App } from "./App.js";
 import type {
   BatchSummary,
   ExportDto,
+  MakeOrderReadinessDto,
   ProductMappingDto,
   ProductMatchCandidateDto,
   ReviewLineDto,
@@ -33,6 +34,7 @@ let candidateRows: ProductMatchCandidateDto[];
 let specRows: WdtGoodsSpecSearchResultDto[];
 let latestGoodsSyncRun: WdtGoodsSyncRunDto | null;
 let warehouseSettings: WarehouseUsageSettingsDto;
+let makeOrderReadiness: MakeOrderReadinessDto;
 let currentUser: { id: string; username: string; role: "admin" | "operator" | "reviewer"; createdAt: string };
 let failReviewLines: boolean;
 
@@ -63,6 +65,13 @@ describe("App", () => {
     specRows = [wdtSpec()];
     latestGoodsSyncRun = goodsSyncRun();
     warehouseSettings = warehouseUsageSettings();
+    makeOrderReadiness = {
+      batchId: "batch-1",
+      canExport: false,
+      shippableLineCount: 2,
+      missingAddressCount: 1,
+      missingStores: [{ storeNo: "STORE", storeName: "测试门店", shippableLineCount: 2, orderNoticeNos: ["ORDER-1"] }],
+    };
     currentUser = { id: "user-1", username: "admin", role: "admin", createdAt: "2026-06-30T00:00:00.000Z" };
     failReviewLines = false;
     vi.stubGlobal("fetch", vi.fn(handleFetch));
@@ -394,6 +403,21 @@ describe("App", () => {
     expect(screen.getByText("已生成")).toBeInTheDocument();
   });
 
+  it("shows make-order readiness before creating WDT import exports", async () => {
+    currentBatch = { ...currentBatch, status: "reviewed" };
+    render(<App />);
+    await clickBatch();
+    switchToExportTab();
+
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "wdt_import" } });
+
+    expect(await screen.findByText("做单预检查")).toBeInTheDocument();
+    expect(screen.getByText("可做单 2 行 / 缺地址 1 个门店")).toBeInTheDocument();
+    expect(screen.getByText("测试门店")).toBeInTheDocument();
+    expect(screen.getByText("2 行待做单")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "生成导出" })).toBeDisabled();
+  });
+
   it("keeps exports disabled until review is submitted", async () => {
     render(<App />);
     await clickBatch();
@@ -510,6 +534,7 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
   if (url.includes("/review-lines") && method === "GET") {
     return failReviewLines ? json({ message: "审核明细读取失败" }, 500) : json(lines);
   }
+  if (url.includes("/make-order-readiness") && method === "GET") return json(makeOrderReadiness);
   if (url.includes("/actions/run-mock-review")) return json({ batch: currentBatch });
   if (url.includes("/actions/run-real-review")) return json({ batch: currentBatch, stockQueriedCount: 1 });
   if (url.includes("/actions/bulk-approve")) {

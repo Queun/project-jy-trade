@@ -119,6 +119,23 @@ export const CreateExportRequestSchema = z.object({
 });
 export type CreateExportRequest = z.infer<typeof CreateExportRequestSchema>;
 
+export const MissingMakeOrderStoreDtoSchema = z.object({
+  storeNo: z.string(),
+  storeName: z.string(),
+  shippableLineCount: z.number(),
+  orderNoticeNos: z.array(z.string()),
+});
+export type MissingMakeOrderStoreDto = z.infer<typeof MissingMakeOrderStoreDtoSchema>;
+
+export const MakeOrderReadinessDtoSchema = z.object({
+  batchId: z.string(),
+  canExport: z.boolean(),
+  shippableLineCount: z.number(),
+  missingAddressCount: z.number(),
+  missingStores: z.array(MissingMakeOrderStoreDtoSchema),
+});
+export type MakeOrderReadinessDto = z.infer<typeof MakeOrderReadinessDtoSchema>;
+
 export const CreateBatchRequestSchema = z.object({
   filePath: z.string().min(1),
   fileName: z.string().optional(),

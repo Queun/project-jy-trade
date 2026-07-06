@@ -8,6 +8,8 @@
   ExportDto,
   LoginRequest,
   LoginResponse,
+  MakeOrderReadinessDto,
+  MissingMakeOrderStoreDto,
   MeResponse,
   ProductMatchCandidateDto,
   ProductMappingDto,
@@ -27,6 +29,7 @@ import { buildMockReview } from "@jy-trade/workflow";
 import { and, desc, eq, like, or } from "drizzle-orm";
 import * as XLSX from "xlsx";
 import { randomBytes, randomUUID, scrypt as scryptCallback } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -91,6 +94,7 @@ interface WarehouseStockSummary {
 export interface StoreOptions {
   databaseUrl?: string;
   projectRoot?: string;
+  makeOrderAddressBookPath?: string;
   wdtGoodsClient?: WdtGoodsWindowClient;
   stockClient?: StockLookupClient;
 }
@@ -106,6 +110,8 @@ export function createSqliteStore(options: StoreOptions = {}) {
   const database = createDatabaseContext(options.databaseUrl);
   const projectRoot = options.projectRoot ?? resolve(process.cwd(), "../..");
   const exportsDir = resolve(projectRoot, "outputs/exports");
+  const makeOrderAddressBookPath =
+    options.makeOrderAddressBookPath ?? resolve(projectRoot, "ole案例文件——发货前", "4批量做单表格", "地址匹配表格.xlsx");
   const wdtClients = options.wdtGoodsClient && options.stockClient ? undefined : createWdtReadClientsFromEnv();
   const wdtGoodsClient = options.wdtGoodsClient ?? wdtClients?.goodsClient;
   const stockClient = options.stockClient ?? wdtClients?.stockClient;
@@ -321,6 +327,15 @@ export function createSqliteStore(options: StoreOptions = {}) {
       return getReviewLineDtos(database, batchId);
     },
 
+    async getMakeOrderReadiness(batchId: string): Promise<MakeOrderReadinessDto | undefined> {
+      await ready;
+      const batch = await getBatchRow(database, batchId);
+      if (!batch) return undefined;
+      const lines = await getReviewLineDtos(database, batchId);
+      const addressIndex = loadMakeOrderAddressIndex(makeOrderAddressBookPath);
+      return buildMakeOrderReadiness(batchId, lines, addressIndex);
+    },
+
     async getWarehouseUsageSettings(): Promise<WarehouseUsageSettingsDto> {
       await ready;
       const row = await getWarehouseUsageSettingsRow(database);
@@ -534,7 +549,14 @@ export function createSqliteStore(options: StoreOptions = {}) {
       await database.db.insert(exportsTable).values(exportRow);
       try {
         await mkdir(resolve(projectRoot, "outputs/exports"), { recursive: true });
-        const buffer = renderExportWorkbook(batch, type, lines);
+        const addressIndex = type === "wdt_import" ? loadMakeOrderAddressIndex(makeOrderAddressBookPath) : undefined;
+        if (type === "wdt_import") {
+          const readiness = buildMakeOrderReadiness(batchId, lines, addressIndex ?? emptyMakeOrderAddressIndex());
+          if (!readiness.canExport) {
+            throw new StoreValidationError(makeOrderReadinessError(readiness));
+          }
+        }
+        const buffer = renderExportWorkbook(batch, type, lines, addressIndex);
         await writeFile(filePath, buffer);
         await database.db
           .update(exportsTable)
@@ -1746,9 +1768,22 @@ const WDT_IMPORT_DEFAULTS = {
   invoiceTitle: "润家商业(深圳)有限公司",
 } as const;
 
-function renderExportWorkbook(batch: BatchRow, type: ExportDto["type"], lines: ReviewLineDto[]) {
+interface MakeOrderAddress {
+  storeNo: string;
+  storeName: string;
+  receiver: string;
+  phone: string;
+  address: string;
+}
+
+interface MakeOrderAddressIndex {
+  byStoreNo: Map<string, MakeOrderAddress>;
+  byStoreName: Map<string, MakeOrderAddress>;
+}
+
+function renderExportWorkbook(batch: BatchRow, type: ExportDto["type"], lines: ReviewLineDto[], addressIndex?: MakeOrderAddressIndex) {
   if (type === "wdt_import") {
-    return renderWdtImportWorkbook(lines);
+    return renderWdtImportWorkbook(lines, addressIndex ?? emptyMakeOrderAddressIndex());
   }
 
   const worksheetRows = [
@@ -1776,11 +1811,11 @@ function renderExportWorkbook(batch: BatchRow, type: ExportDto["type"], lines: R
   return XLSX.write(workbook, { bookType: "xlsx", type: "buffer" }) as Buffer;
 }
 
-function renderWdtImportWorkbook(lines: ReviewLineDto[]) {
+function renderWdtImportWorkbook(lines: ReviewLineDto[], addressIndex: MakeOrderAddressIndex) {
   const exportLines = lines.filter((line) => line.decision === "ship" && line.approvedShipQty > 0);
   const worksheetRows = [
     [...WDT_IMPORT_HEADERS],
-    ...exportLines.map((line) => renderWdtImportRow(line)),
+    ...exportLines.map((line) => renderWdtImportRow(line, addressIndex)),
   ];
 
   const workbook = XLSX.utils.book_new();
@@ -1789,11 +1824,15 @@ function renderWdtImportWorkbook(lines: ReviewLineDto[]) {
   return XLSX.write(workbook, { bookType: "xlsx", type: "buffer" }) as Buffer;
 }
 
-function renderWdtImportRow(line: ReviewLineDto) {
+function renderWdtImportRow(line: ReviewLineDto, addressIndex: MakeOrderAddressIndex) {
+  const makeOrderAddress = findMakeOrderAddress(addressIndex, line);
   const values: Partial<Record<(typeof WDT_IMPORT_HEADERS)[number], string | number>> = {
     店铺名称: WDT_IMPORT_DEFAULTS.shopName,
     原始单号: line.orderNoticeNo,
+    收件人: makeOrderAddress?.receiver ?? "",
     网名: WDT_IMPORT_DEFAULTS.customerName,
+    地址: makeOrderAddress?.address ?? "",
+    手机: makeOrderAddress?.phone ?? "",
     发货条件: WDT_IMPORT_DEFAULTS.deliveryCondition,
     仓库名称: WDT_IMPORT_DEFAULTS.warehouseName,
     物流公司: WDT_IMPORT_DEFAULTS.logisticsCompany,
@@ -1808,6 +1847,131 @@ function renderWdtImportRow(line: ReviewLineDto) {
   };
 
   return WDT_IMPORT_HEADERS.map((header) => values[header] ?? "");
+}
+
+function buildMakeOrderReadiness(batchId: string, lines: ReviewLineDto[], addressIndex: MakeOrderAddressIndex): MakeOrderReadinessDto {
+  const shippableLines = lines.filter((line) => line.decision === "ship" && line.approvedShipQty > 0);
+  const missingByStore = new Map<string, MissingMakeOrderStoreDto>();
+
+  for (const line of shippableLines) {
+    if (findMakeOrderAddress(addressIndex, line)) continue;
+    const key = line.storeNo || line.storeName;
+    const current = missingByStore.get(key) ?? {
+      storeNo: line.storeNo,
+      storeName: line.storeName,
+      shippableLineCount: 0,
+      orderNoticeNos: [],
+    };
+    current.shippableLineCount += 1;
+    if (line.orderNoticeNo && !current.orderNoticeNos.includes(line.orderNoticeNo)) {
+      current.orderNoticeNos.push(line.orderNoticeNo);
+    }
+    missingByStore.set(key, current);
+  }
+
+  const missingStores = [...missingByStore.values()].sort((a, b) => [a.storeNo, a.storeName].join("|").localeCompare([b.storeNo, b.storeName].join("|")));
+  return {
+    batchId,
+    canExport: shippableLines.length > 0 && missingStores.length === 0,
+    shippableLineCount: shippableLines.length,
+    missingAddressCount: missingStores.length,
+    missingStores,
+  };
+}
+
+function makeOrderReadinessError(readiness: MakeOrderReadinessDto) {
+  if (readiness.shippableLineCount === 0) return "没有可做单的发货明细";
+  if (readiness.missingAddressCount === 0) return "做单预检查未通过";
+  const names = readiness.missingStores
+    .slice(0, 3)
+    .map((store) => store.storeName || store.storeNo)
+    .filter(Boolean)
+    .join("、");
+  const suffix = readiness.missingAddressCount > 3 ? `等 ${readiness.missingAddressCount} 个门店` : "";
+  return `缺少发货地址：${names}${suffix}`;
+}
+
+function loadMakeOrderAddressIndex(filePath: string): MakeOrderAddressIndex {
+  const index = emptyMakeOrderAddressIndex();
+  if (!existsSync(filePath)) return index;
+
+  const workbook = XLSX.readFile(filePath, { cellDates: false });
+  for (const sheetName of workbook.SheetNames) {
+    const rows = XLSX.utils.sheet_to_json<Array<string | number>>(workbook.Sheets[sheetName], { header: 1, defval: "" });
+    if (rows.length < 2) continue;
+    const headers = rows[0].map((value) => normalizeHeader(value));
+    const storeNoIndex = findHeaderIndex(headers, ["门店编码/群组", "门店编号"]);
+    let storeNameIndex = findHeaderIndex(headers, ["门店名称"]);
+    let addressIndex = findHeaderIndex(headers, ["门店地址", "地址"]);
+    const receiverIndex = findHeaderIndex(headers, ["收货人", "经理", "非食经理"]);
+    const phoneIndex = findHeaderIndex(headers, ["电话", "联系方式", "联系电话"]);
+
+    if (storeNameIndex < 0 && sheetName.includes("兼职")) storeNameIndex = 2;
+    if (addressIndex < 0 && sheetName.includes("兼职")) addressIndex = 3;
+    if (storeNameIndex < 0 || addressIndex < 0) continue;
+
+    for (const row of rows.slice(1)) {
+      const address = cellText(row[addressIndex]);
+      if (!address) continue;
+      const entry: MakeOrderAddress = {
+        storeNo: storeNoIndex >= 0 ? cellText(row[storeNoIndex]) : "",
+        storeName: cellText(row[storeNameIndex]),
+        receiver: receiverIndex >= 0 ? cellText(row[receiverIndex]) : "",
+        phone: phoneIndex >= 0 ? cellText(row[phoneIndex]) : "",
+        address,
+      };
+      addMakeOrderAddress(index, entry);
+    }
+  }
+
+  return index;
+}
+
+function emptyMakeOrderAddressIndex(): MakeOrderAddressIndex {
+  return { byStoreNo: new Map(), byStoreName: new Map() };
+}
+
+function addMakeOrderAddress(index: MakeOrderAddressIndex, address: MakeOrderAddress) {
+  if (address.storeNo) {
+    const key = normalizeStoreNo(address.storeNo);
+    if (key && !index.byStoreNo.has(key)) index.byStoreNo.set(key, address);
+  }
+  if (address.storeName) {
+    const key = normalizeStoreName(address.storeName);
+    if (key && !index.byStoreName.has(key)) index.byStoreName.set(key, address);
+  }
+}
+
+function findMakeOrderAddress(index: MakeOrderAddressIndex, line: ReviewLineDto) {
+  const byNo = index.byStoreNo.get(normalizeStoreNo(line.storeNo));
+  if (byNo) return byNo;
+  return index.byStoreName.get(normalizeStoreName(line.storeName));
+}
+
+function findHeaderIndex(headers: string[], candidates: string[]) {
+  return headers.findIndex((header) => candidates.includes(header));
+}
+
+function normalizeHeader(value: unknown) {
+  return cellText(value).replace(/\s+/g, "");
+}
+
+function normalizeStoreNo(value: unknown) {
+  return cellText(value).toUpperCase();
+}
+
+function normalizeStoreName(value: unknown) {
+  return cellText(value)
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/[()（）]/g, "")
+    .replace(/精品超市/g, "")
+    .replace(/超市/g, "")
+    .replace(/店$/g, "");
+}
+
+function cellText(value: unknown) {
+  return value === undefined || value === null ? "" : String(value).trim();
 }
 
 function sheetNameFor(type: ExportDto["type"]) {

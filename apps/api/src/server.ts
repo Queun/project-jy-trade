@@ -17,6 +17,7 @@ import {
   type AuthUserDto,
   type BatchSummary,
   type ExportDto,
+  type MakeOrderReadinessDto,
   type ProductMatchCandidateDto,
   type ProductMappingDto,
   type UserRole,
@@ -167,6 +168,13 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     const lines = await store.getReviewLines(batchId);
     if (!lines) return reply.code(404).send({ message: "Batch not found" });
     return lines;
+  });
+
+  app.get("/api/v1/batches/:batchId/make-order-readiness", async (request, reply): Promise<MakeOrderReadinessDto | unknown> => {
+    const { batchId } = request.params as { batchId: string };
+    const readiness = await store.getMakeOrderReadiness(batchId);
+    if (!readiness) return reply.code(404).send({ message: "Batch not found" });
+    return readiness;
   });
 
   app.get("/api/v1/settings/warehouse-usage", async (): Promise<WarehouseUsageSettingsDto> => store.getWarehouseUsageSettings());

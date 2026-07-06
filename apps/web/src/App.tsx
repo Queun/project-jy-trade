@@ -1,6 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { CheckCheck, ChevronDown, ChevronUp, ClipboardList, Download, FileSpreadsheet, HelpCircle, LogOut, PackageCheck, RefreshCcw, Save, Send, Settings, Upload, Warehouse, X } from "lucide-react";
-import type { AuthUserDto, BatchSummary, ExportDto, ReviewDecision, ReviewLineDto, WarehouseUsageSettingsDto, WdtGoodsSyncRunDto } from "@jy-trade/shared";
+import type {
+  AuthUserDto,
+  BatchSummary,
+  ExportDto,
+  MakeOrderReadinessDto,
+  ReviewDecision,
+  ReviewLineDto,
+  WarehouseUsageSettingsDto,
+  WdtGoodsSyncRunDto,
+} from "@jy-trade/shared";
 
 import { ProductMappingPanel } from "./components/ProductMappingPanel.js";
 import { ReviewTable, type ReviewDraft } from "./components/ReviewTable.js";
@@ -54,6 +63,7 @@ export function App() {
   const [activeTab, setActiveTab] = useState<WorkTab>("import");
   const [reviewLines, setReviewLines] = useState<ReviewLineDto[]>([]);
   const [exports, setExports] = useState<ExportDto[]>([]);
+  const [makeOrderReadiness, setMakeOrderReadiness] = useState<MakeOrderReadinessDto | null>(null);
   const [exportType, setExportType] = useState<ExportDto["type"]>("review");
   const [orderFile, setOrderFile] = useState(defaultOrderFile);
   const [mockFile, setMockFile] = useState(defaultMockFile);
@@ -168,6 +178,7 @@ export function App() {
     setActiveBatch(null);
     setReviewLines([]);
     setExports([]);
+    setMakeOrderReadiness(null);
     setGoodsSyncRun(null);
     setGoodsSyncError("正在读取商品同步状态");
     setGoodsSyncMessage("");
@@ -179,6 +190,7 @@ export function App() {
 
   async function loadBatch(batch: BatchSummary, nextTab?: WorkTab) {
     setActiveBatch(batch);
+    setMakeOrderReadiness(null);
     if (nextTab) setActiveTab(nextTab);
     const lines = await fetchReviewLines(batch.id);
     if (!lines) return;
@@ -186,6 +198,7 @@ export function App() {
     setDraftById(buildDrafts(lines));
     setErrorsById({});
     await refreshExports(batch.id);
+    await refreshMakeOrderReadiness(batch.id);
   }
 
   async function refreshExports(batchId: string) {
@@ -195,6 +208,15 @@ export function App() {
       return;
     }
     setExports((await response.json()) as ExportDto[]);
+  }
+
+  async function refreshMakeOrderReadiness(batchId: string) {
+    const response = await fetch(`/api/v1/batches/${batchId}/make-order-readiness`);
+    if (!response.ok) {
+      setMakeOrderReadiness(null);
+      return;
+    }
+    setMakeOrderReadiness((await response.json()) as MakeOrderReadinessDto);
   }
 
   async function fetchReviewLines(batchId: string) {
@@ -233,6 +255,7 @@ export function App() {
     setDraftById(buildDrafts(lines));
     setErrorsById({});
     await refreshExports(created.id);
+    await refreshMakeOrderReadiness(created.id);
     setMessage("初审已完成，请进入审核发货");
     await refreshBatches();
   }
@@ -271,6 +294,7 @@ export function App() {
       setDraftById({});
       setErrorsById({});
       await refreshExports(created.id);
+      await refreshMakeOrderReadiness(created.id);
       await refreshBatches();
       setMessage(error.message ?? "真实初审失败");
       return;
@@ -285,6 +309,7 @@ export function App() {
     setDraftById(buildDrafts(lines));
     setErrorsById({});
     await refreshExports(created.id);
+    await refreshMakeOrderReadiness(created.id);
     setMessage(`真实初审已完成，已查询库存 ${review.stockQueriedCount ?? 0} 个规格`);
     await refreshBatches();
   }
@@ -354,6 +379,7 @@ export function App() {
       return next;
     });
     if (!options.silent) setMessage("审核决定已保存");
+    await refreshMakeOrderReadiness(line.batchId);
   }
 
   async function quickDecision(line: ReviewLineDto, decision: ReviewDecision) {
@@ -445,6 +471,7 @@ export function App() {
     }
     const result = await response.json();
     setActiveBatch(result.batch);
+    await refreshMakeOrderReadiness(result.batch.id);
     await refreshBatches();
     setMessage(`审核已提交：待审核 ${result.pendingCount}，发货 ${result.shipCount}，不发 ${result.doNotShipCount}`);
   }
@@ -463,6 +490,7 @@ export function App() {
     }
     const created = (await response.json()) as ExportDto;
     await refreshExports(activeBatch.id);
+    await refreshMakeOrderReadiness(activeBatch.id);
     setMessage(created.status === "ready" ? "导出文件已生成" : "导出失败");
   }
 
@@ -662,6 +690,7 @@ export function App() {
                 canExport={permissions.canExport}
                 exportType={exportType}
                 exports={exports}
+                makeOrderReadiness={makeOrderReadiness}
                 onCreateExport={() => void createExport()}
                 onExportTypeChange={setExportType}
               />
@@ -1076,6 +1105,7 @@ function ExportTab({
   canExport,
   exportType,
   exports,
+  makeOrderReadiness,
   onCreateExport,
   onExportTypeChange,
 }: {
@@ -1083,11 +1113,15 @@ function ExportTab({
   canExport: boolean;
   exportType: ExportDto["type"];
   exports: ExportDto[];
+  makeOrderReadiness: MakeOrderReadinessDto | null;
   onCreateExport: () => void;
   onExportTypeChange: (type: ExportDto["type"]) => void;
 }) {
   const batchReadyForExport = activeBatch?.status === "reviewed" || activeBatch?.status === "exported";
-  const canCreateExport = canExport && batchReadyForExport;
+  const makeOrderReady = exportType !== "wdt_import" || makeOrderReadiness?.canExport === true;
+  const canCreateExport = canExport && batchReadyForExport && makeOrderReady;
+  const readinessBadgeTone = !makeOrderReadiness ? "neutral" : makeOrderReadiness.canExport ? "good" : "bad";
+  const readinessBadgeText = !makeOrderReadiness ? "检查中" : makeOrderReadiness.canExport ? "可生成" : "需补地址";
 
   return (
     <section className="mt-4 rounded-md border border-border bg-card p-4">
@@ -1119,6 +1153,35 @@ function ExportTab({
         <EmptyState className="mt-4" title="先选择一个批次" description="完成审核后，这里会生成初审单、确定发货单或做单 Excel。" />
       ) : !batchReadyForExport ? (
         <EmptyState className="mt-4" title="等待审核完成" description="当前批次还没有提交审核，确认发货数量后再生成做单文件。" />
+      ) : null}
+      {activeBatch && batchReadyForExport && exportType === "wdt_import" ? (
+        <div className="mt-4 rounded-md border border-border bg-muted/30 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <div className="text-sm font-medium">做单预检查</div>
+              <div className="mt-1 text-sm text-muted-foreground">
+                可做单 {makeOrderReadiness?.shippableLineCount ?? "-"} 行 / 缺地址 {makeOrderReadiness?.missingAddressCount ?? "-"} 个门店
+              </div>
+            </div>
+            <Badge tone={readinessBadgeTone}>{readinessBadgeText}</Badge>
+          </div>
+          {makeOrderReadiness && makeOrderReadiness.missingStores.length > 0 ? (
+            <div className="mt-3 space-y-2">
+              {makeOrderReadiness.missingStores.slice(0, 5).map((store) => (
+                <div key={`${store.storeNo}-${store.storeName}`} className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm">
+                  <div>
+                    <span className="font-medium">{store.storeName || store.storeNo}</span>
+                    {store.storeNo ? <span className="ml-2 text-muted-foreground">{store.storeNo}</span> : null}
+                  </div>
+                  <span className="text-muted-foreground">{store.shippableLineCount} 行待做单</span>
+                </div>
+              ))}
+              {makeOrderReadiness.missingStores.length > 5 ? (
+                <div className="text-sm text-muted-foreground">还有 {makeOrderReadiness.missingStores.length - 5} 个缺地址门店</div>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
       ) : null}
       <div className="mt-4 space-y-2">
         {exports.length === 0 && canCreateExport ? (

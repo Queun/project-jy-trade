@@ -6,7 +6,7 @@ import * as XLSX from "xlsx";
 import { createDatabaseContext } from "./db/client.js";
 import { batches, productMatchCandidates, wdtGoodsSpecs, wdtGoodsSyncRuns } from "./db/schema.js";
 import { buildApiServer } from "./server.js";
-import type { StockLookupClient } from "./store.js";
+import type { StockLookupClient, StoreOptions } from "./store.js";
 import type { WdtGoodsWindowClient } from "./wdtGoodsSync.js";
 
 const orderFile = "ole案例文件——发货前/1订货单/订货通知单 .xls";
@@ -532,6 +532,79 @@ describe("api server", () => {
     await app.close();
   });
 
+  it("reports make-order readiness from the address fallback workbook", async () => {
+    const app = buildTestServer();
+    const { batch, lines, cookie } = await createReviewedBatch(app, "examples/mock_flow_mixed.json");
+    const shippableLineCount = lines.filter((line: { decision: string; approvedShipQty: number }) => line.decision === "ship" && line.approvedShipQty > 0).length;
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/v1/batches/${batch.id}/make-order-readiness`,
+      headers: { cookie },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      batchId: batch.id,
+      canExport: true,
+      shippableLineCount,
+      missingAddressCount: 0,
+      missingStores: [],
+    });
+    await app.close();
+  });
+
+  it("lists only shippable stores when make-order addresses are missing", async () => {
+    const app = buildTestServer(testDatabaseUrl(), undefined, undefined, {
+      makeOrderAddressBookPath: resolve(projectRoot, "missing-address-book.xlsx"),
+    });
+    const { batch, lines, cookie } = await createReviewedBatch(app, "examples/mock_flow_mixed.json");
+    const shipLines = lines.filter((line: { decision: string; approvedShipQty: number }) => line.decision === "ship" && line.approvedShipQty > 0);
+    const pendingLine = lines.find((line: { decision: string }) => line.decision === "pending");
+    expect(shipLines.length).toBeGreaterThan(0);
+    expect(pendingLine).toBeTruthy();
+
+    await app.inject({
+      method: "PATCH",
+      url: `/api/v1/batches/${batch.id}/review-lines/${pendingLine.id}/decision`,
+      payload: { decision: "ship", approvedShipQty: 0, reason: "" },
+      headers: { cookie },
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/v1/batches/${batch.id}/make-order-readiness`,
+      headers: { cookie },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().canExport).toBe(false);
+    expect(response.json().shippableLineCount).toBe(shipLines.length);
+    expect(response.json().missingStores.length).toBeGreaterThan(0);
+    expect(response.json().missingStores.every((store: { shippableLineCount: number }) => store.shippableLineCount > 0)).toBe(true);
+    await app.close();
+  });
+
+  it("does not create a ready make-order export when addresses are missing", async () => {
+    const app = buildTestServer(testDatabaseUrl(), undefined, undefined, {
+      makeOrderAddressBookPath: resolve(projectRoot, "missing-address-book.xlsx"),
+    });
+    const { batch, cookie } = await createReviewedBatch(app, "examples/mock_flow_mixed.json");
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${batch.id}/exports`,
+      payload: { type: "wdt_import" },
+      headers: { cookie },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({ type: "wdt_import", status: "failed" });
+    expect(response.json().downloadUrl).toBeUndefined();
+    expect(response.json().errorMessage).toContain("缺少发货地址");
+    await app.close();
+  });
+
   it("exports WDT make-order Excel with the client import template", async () => {
     const app = buildTestServer();
     const { batch, lines, cookie } = await createReviewedBatch(app, "examples/mock_flow_mixed.json");
@@ -648,6 +721,9 @@ describe("api server", () => {
       平台货品名称: shipLine.externalGoodsName,
       平台规格名称: shipLine.specName,
     });
+    expect(exportedLine?.["收件人"]).not.toBe("");
+    expect(exportedLine?.["手机"]).not.toBe("");
+    expect(exportedLine?.["地址"]).not.toBe("");
     expect(
       rows.some(
         (row) =>
@@ -999,8 +1075,13 @@ describe("api server", () => {
   });
 });
 
-function buildTestServer(databaseUrl = testDatabaseUrl(), wdtGoodsClient?: WdtGoodsWindowClient, stockClient?: StockLookupClient) {
-  return buildApiServer({ databaseUrl, projectRoot, logger: false, wdtGoodsClient, stockClient });
+function buildTestServer(
+  databaseUrl = testDatabaseUrl(),
+  wdtGoodsClient?: WdtGoodsWindowClient,
+  stockClient?: StockLookupClient,
+  options: Partial<StoreOptions> = {},
+) {
+  return buildApiServer({ ...options, databaseUrl, projectRoot, logger: false, wdtGoodsClient, stockClient });
 }
 
 function testDatabaseUrl() {
