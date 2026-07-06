@@ -11,6 +11,7 @@ import { Badge } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
 
 interface ProductMappingPanelProps {
+  focusQuery?: string;
   onMessage: (message: string) => void;
 }
 
@@ -30,7 +31,7 @@ const emptyDraft: MappingDraft = {
   note: "",
 };
 
-export function ProductMappingPanel({ onMessage }: ProductMappingPanelProps) {
+export function ProductMappingPanel({ focusQuery = "", onMessage }: ProductMappingPanelProps) {
   const [query, setQuery] = useState("2153722460015");
   const [specQuery, setSpecQuery] = useState("雅漾");
   const [draft, setDraft] = useState<MappingDraft>(emptyDraft);
@@ -84,7 +85,7 @@ export function ProductMappingPanel({ onMessage }: ProductMappingPanelProps) {
     setQuery(mapping.externalBarcode || mapping.externalGoodsCode || mapping.externalGoodsName);
     setDraft(emptyDraft);
     await refreshMappings(mapping.externalBarcode || mapping.externalGoodsCode || mapping.externalGoodsName);
-    onMessage("商品映射已确认");
+    onMessage("商品映射已确认，重新运行真实初审后生效");
   }
 
   async function updateStatus(mapping: ProductMappingDto, status: Exclude<ProductMappingStatus, "confirmed">) {
@@ -126,10 +127,18 @@ export function ProductMappingPanel({ onMessage }: ProductMappingPanelProps) {
     void refreshCandidates();
   }, []);
 
+  useEffect(() => {
+    if (!focusQuery) return;
+    setQuery(focusQuery);
+    setSpecQuery(focusQuery);
+    void refreshMappings(focusQuery);
+    void refreshCandidates(focusQuery);
+  }, [focusQuery]);
+
   const selectedSpec = useMemo(() => specs.find((spec) => spec.specNo === draft.wdtSpecNo), [draft.wdtSpecNo, specs]);
 
   return (
-    <section className="mt-4 rounded-md border border-border bg-card p-4">
+    <section className="mt-4 rounded-md border border-border bg-card p-4" id="product-mapping-panel">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold">商品映射确认</h2>

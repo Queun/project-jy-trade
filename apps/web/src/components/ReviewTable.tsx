@@ -1,5 +1,6 @@
 import { flexRender, getCoreRowModel, useReactTable, type ColumnDef } from "@tanstack/react-table";
 import type { ReviewDecision, ReviewLineDto } from "@jy-trade/shared";
+import { Search } from "lucide-react";
 
 import { Badge } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
@@ -12,6 +13,7 @@ interface ReviewTableProps {
   savingReasonById: Record<string, boolean>;
   readOnly?: boolean;
   onDraftChange: (lineId: string, patch: Partial<ReviewDraft>) => void;
+  onLocateMapping: (line: ReviewLineDto) => void;
   onPriorityChange: (line: ReviewLineDto, priority: boolean) => void;
   onSave: (line: ReviewLineDto) => void;
   onReasonSave: (line: ReviewLineDto, reason: string) => void;
@@ -107,6 +109,7 @@ export function ReviewTable({
   savingReasonById,
   readOnly = false,
   onDraftChange,
+  onLocateMapping,
   onPriorityChange,
   onReasonSave,
   onSave,
@@ -124,13 +127,24 @@ export function ReviewTable({
     },
     {
       header: "商品",
-      cell: ({ row }) => (
-        <div className="min-w-60">
-          <div className="font-medium">{row.original.externalGoodsName}</div>
-          <div className="mt-1 text-xs text-muted-foreground">{row.original.externalBarcode}</div>
-          {row.original.wdtSpecNo ? <div className="mt-1 text-xs text-muted-foreground">{row.original.wdtSpecNo}</div> : null}
-        </div>
-      ),
+      cell: ({ row }) => {
+        const line = row.original;
+        const needsMapping = line.matchStatus !== "matched";
+
+        return (
+          <div className="min-w-60">
+            <div className="font-medium">{line.externalGoodsName}</div>
+            <div className="mt-1 text-xs text-muted-foreground">{line.externalBarcode}</div>
+            {line.wdtSpecNo ? <div className="mt-1 text-xs text-muted-foreground">{line.wdtSpecNo}</div> : null}
+            {needsMapping ? (
+              <Button className="mt-2 h-7 bg-muted px-2 text-xs text-muted-foreground hover:bg-muted/80" onClick={() => onLocateMapping(line)}>
+                <Search className="h-3.5 w-3.5" />
+                定位映射
+              </Button>
+            ) : null}
+          </div>
+        );
+      },
     },
     {
       header: "数量",

@@ -38,7 +38,7 @@ const filters: Array<{ key: FilterKey; label: string }> = [
   { key: "all", label: "全部" },
   { key: "ready", label: "可发货" },
   { key: "partial", label: "部分满足" },
-  { key: "blocked", label: "库存不足" },
+  { key: "blocked", label: "缺货" },
   { key: "unmatched", label: "商品异常" },
   { key: "pending", label: "待审核" },
   { key: "ship", label: "已发货" },
@@ -83,6 +83,7 @@ export function App() {
   const [selectedOrderFileName, setSelectedOrderFileName] = useState("");
   const [pendingOrderUpload, setPendingOrderUpload] = useState<File | null>(null);
   const [developerMode, setDeveloperMode] = useState(false);
+  const [mappingFocusQuery, setMappingFocusQuery] = useState("");
   const [showSettings, setShowSettings] = useState(false);
   const [showHelp, setShowHelp] = useState(() => localStorage.getItem(helpDismissedStorageKey) !== "true");
 
@@ -495,6 +496,14 @@ export function App() {
     setMessage(created.status === "ready" ? "导出文件已生成" : "导出失败");
   }
 
+  function locateProductMapping(line: ReviewLineDto) {
+    const query = line.externalBarcode || line.externalGoodsName || line.wdtSpecNo;
+    setDeveloperMode(true);
+    setMappingFocusQuery(query);
+    setMessage("已定位到商品映射面板，确认映射后请重新运行真实初审");
+    window.setTimeout(() => document.getElementById("product-mapping-panel")?.scrollIntoView?.({ behavior: "smooth", block: "start" }), 0);
+  }
+
   function updateDraft(lineId: string, patch: Partial<ReviewDraft>) {
     setDraftById((current) => ({ ...current, [lineId]: { ...current[lineId], ...patch } }));
   }
@@ -673,9 +682,11 @@ export function App() {
                 savingReasonById={savingReasonById}
                 canReview={permissions.canReview}
                 stats={stats}
+                mappingFocusQuery={mappingFocusQuery}
                 onBulkApprove={() => void bulkApprove()}
                 onDraftChange={updateDraft}
                 onFilterChange={setActiveFilter}
+                onLocateMapping={locateProductMapping}
                 onMessage={setMessage}
                 onPriorityChange={togglePriority}
                 onQuickDecision={quickDecision}
@@ -1001,12 +1012,14 @@ function ReviewTab({
   errorsById,
   filteredLines,
   isDeveloperMode,
+  mappingFocusQuery,
   savingReasonById,
   canReview,
   stats,
   onBulkApprove,
   onDraftChange,
   onFilterChange,
+  onLocateMapping,
   onMessage,
   onPriorityChange,
   onQuickDecision,
@@ -1020,12 +1033,14 @@ function ReviewTab({
   errorsById: Record<string, string>;
   filteredLines: ReviewLineDto[];
   isDeveloperMode: boolean;
+  mappingFocusQuery: string;
   savingReasonById: Record<string, boolean>;
   canReview: boolean;
   stats: ReturnType<typeof buildStats>;
   onBulkApprove: () => void;
   onDraftChange: (lineId: string, patch: Partial<ReviewDraft>) => void;
   onFilterChange: (filter: FilterKey) => void;
+  onLocateMapping: (line: ReviewLineDto) => void;
   onMessage: (message: string) => void;
   onPriorityChange: (line: ReviewLineDto, priority: boolean) => void;
   onQuickDecision: (line: ReviewLineDto, decision: ReviewDecision) => void;
@@ -1043,6 +1058,12 @@ function ReviewTab({
         <Stat label="发货" value={stats.ship} />
         <Stat label="不发货" value={stats.doNotShip} />
         <Stat label="优先处理" value={stats.priority} />
+      </div>
+      <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+        <Stat label="已匹配" value={stats.matched} />
+        <Stat label="需确认" value={stats.ambiguous} />
+        <Stat label="未找到" value={stats.notFound} />
+        <Stat label="库存异常" value={stats.inventoryException} />
       </div>
       <section className="rounded-md border border-border bg-card p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
@@ -1087,6 +1108,7 @@ function ReviewTab({
                 rows={filteredLines}
                 readOnly={!canReview}
                 onDraftChange={onDraftChange}
+                onLocateMapping={onLocateMapping}
                 onPriorityChange={onPriorityChange}
                 onQuickDecision={onQuickDecision}
                 onReasonSave={onReasonSave}
@@ -1100,7 +1122,7 @@ function ReviewTab({
           <EmptyState title="先选择一个批次" description="从左侧历史批次选择订单，或回到导入订单创建新批次。" />
         )}
       </section>
-      {isDeveloperMode ? <ProductMappingPanel onMessage={onMessage} /> : null}
+      {isDeveloperMode ? <ProductMappingPanel focusQuery={mappingFocusQuery} onMessage={onMessage} /> : null}
     </section>
   );
 }
@@ -1444,6 +1466,10 @@ function buildDrafts(lines: ReviewLineDto[]): Record<string, ReviewDraft> {
 function buildStats(lines: ReviewLineDto[]) {
   return {
     total: lines.length,
+    matched: lines.filter((line) => line.matchStatus === "matched").length,
+    ambiguous: lines.filter((line) => line.matchStatus === "ambiguous").length,
+    notFound: lines.filter((line) => line.matchStatus === "not_found").length,
+    inventoryException: lines.filter((line) => line.matchStatus === "api_error" || line.status === "库存不足").length,
     pending: lines.filter((line) => line.decision === "pending").length,
     ship: lines.filter((line) => line.decision === "ship").length,
     doNotShip: lines.filter((line) => line.decision === "do_not_ship").length,

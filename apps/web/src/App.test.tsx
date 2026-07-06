@@ -105,6 +105,30 @@ describe("App", () => {
     expect(document.body.textContent).not.toContain("Mock/API");
   });
 
+  it("shows match and review exception statistics", async () => {
+    render(<App />);
+    await clickBatch();
+    switchToReviewTab();
+
+    expect(await statCardText("已匹配")).toContain("2");
+    expect(await statCardText("需确认")).toContain("0");
+    expect(await statCardText("未找到")).toContain("1");
+    expect(await statCardText("库存异常")).toContain("0");
+  });
+
+  it("locates product mapping from an exception row", async () => {
+    render(<App />);
+    await clickBatch();
+    switchToReviewTab();
+
+    const unmatchedRow = await rowFor("未匹配商品");
+    fireEvent.click(within(unmatchedRow).getByRole("button", { name: "定位映射" }));
+
+    expect(await screen.findByText("商品映射确认")).toBeInTheDocument();
+    expect(screen.getByText("已定位到商品映射面板，确认映射后请重新运行真实初审")).toBeInTheDocument();
+    expect(screen.getByLabelText("映射搜索")).toHaveValue("BARCODE");
+  });
+
   it("shows dismissible first-run help and can reopen it", async () => {
     const { unmount } = render(<App />);
 
@@ -521,7 +545,7 @@ describe("App", () => {
     fireEvent.change(screen.getByLabelText("外部商品名"), { target: { value: "雅漾专研保湿修护面膜25ml*5片" } });
     fireEvent.click(screen.getByRole("button", { name: "确认映射" }));
 
-    expect(await screen.findByText("商品映射已确认")).toBeInTheDocument();
+    expect(await screen.findByText("商品映射已确认，重新运行真实初审后生效")).toBeInTheDocument();
     expect(mappingRows[0]).toMatchObject({
       externalBarcode: "2153722460015",
       externalGoodsCode: "5372246",
@@ -536,6 +560,13 @@ async function rowFor(productName: string) {
   const row = [...document.querySelectorAll("tr")].find((item) => item.textContent?.includes(productName));
   if (!row) throw new Error(`No row found for ${productName}`);
   return row;
+}
+
+async function statCardText(label: string) {
+  const labelElement = await screen.findByText(label);
+  const card = labelElement.parentElement;
+  if (!card) throw new Error(`No stat card found for ${label}`);
+  return card.textContent ?? "";
 }
 
 async function clickBatch() {
