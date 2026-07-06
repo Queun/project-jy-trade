@@ -1161,6 +1161,149 @@ describe("api server", () => {
     await app.close();
   });
 
+  it("prefers earlier address sheets and makes repeated imports idempotent", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const app = buildTestServer(databaseUrl);
+    const cookie = await loginCookie(app);
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    const now = new Date().toISOString();
+    await database.db.insert(storeAddresses).values({
+      id: "store-address-guiyang-dirty",
+      storeNo: "",
+      storeName: "Ole贵阳万象城",
+      normalizedStoreName: "ole贵阳万象城",
+      receiver: "",
+      phone: "",
+      address: "贵阳市南明区遵义社区体育路一号",
+      note: "",
+      sourceSheet: "2024.8.28后经理收货人电话",
+      sourceRow: 61,
+      importedAt: now,
+      rawJson: "{}",
+      updatedByUserId: null,
+      updatedByUsername: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await database.close();
+
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(
+      workbook,
+      XLSX.utils.aoa_to_sheet([
+        ["区域", "", "门店编码/群组", "门店名称", "门店地址", "经理", "联系方式"],
+        ["西区采购区", "OLE", "207752", "Ole贵阳万象城", "贵阳市南明区遵义社区体育路一号", "唐林燕", "13043551369"],
+      ]),
+      "2025.6.3经理新表（主要）",
+    );
+    XLSX.utils.book_append_sheet(
+      workbook,
+      XLSX.utils.aoa_to_sheet([
+        ["序号", "区域", "", "地址", "收货人", "电话"],
+        [85, "西区", "Ole贵阳万象城店", "贵州省贵阳市南明区遵义路328号贵阳万象城LG101、LG102号商铺", "王如芳", "18286145293"],
+      ]),
+      "OLE门店兼职收货人（仓库发货主要用的）",
+    );
+    XLSX.utils.book_append_sheet(
+      workbook,
+      XLSX.utils.aoa_to_sheet([
+        ["区域", "区域", "业态", "门店编码/群组", "门店名称", "门店地址", "经理", "联系方式"],
+        ["", "西区采购区", "OLE", "", "Ole贵阳万象城", "贵阳市南明区遵义社区体育路一号", "", ""],
+      ]),
+      "2024.8.28后经理收货人电话",
+    );
+    const contentBase64 = (XLSX.write(workbook, { bookType: "xlsx", type: "buffer" }) as Buffer).toString("base64");
+
+    const preview = await app.inject({
+      method: "POST",
+      url: "/api/v1/store-addresses/import-preview",
+      payload: {
+        fileName: "地址匹配表格.xlsx",
+        contentBase64,
+      },
+      headers: { cookie },
+    });
+    expect(preview.statusCode).toBe(200);
+    expect(preview.json()).toMatchObject({
+      parsedRowCount: 3,
+      affectedStoreCount: 1,
+      updateCount: 1,
+      unchangedCount: 0,
+      items: [
+        {
+          action: "update",
+          storeNo: "207752",
+          storeName: "Ole贵阳万象城",
+          receiver: "唐林燕",
+          phone: "13043551369",
+          address: "贵阳市南明区遵义社区体育路一号",
+          sourceSheet: "2025.6.3经理新表（主要）",
+          sourceRow: 2,
+          existing: {
+            storeNo: "",
+            storeName: "Ole贵阳万象城",
+            receiver: "",
+            phone: "",
+            address: "贵阳市南明区遵义社区体育路一号",
+          },
+        },
+      ],
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/store-addresses/import",
+      payload: {
+        fileName: "地址匹配表格.xlsx",
+        contentBase64,
+      },
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({
+      parsedRowCount: 3,
+      importedAddressCount: 1,
+    });
+
+    const list = await app.inject({
+      method: "GET",
+      url: `/api/v1/store-addresses?query=${encodeURIComponent("207752")}`,
+      headers: { cookie },
+    });
+    expect(list.statusCode).toBe(200);
+    expect(list.json()).toHaveLength(1);
+    expect(list.json()[0]).toMatchObject({
+      storeNo: "207752",
+      storeName: "Ole贵阳万象城",
+      receiver: "唐林燕",
+      phone: "13043551369",
+      address: "贵阳市南明区遵义社区体育路一号",
+      sourceSheet: "2025.6.3经理新表（主要）",
+      sourceRow: 2,
+    });
+    expect(JSON.parse(list.json()[0].rawJson).records).toHaveLength(3);
+
+    const secondPreview = await app.inject({
+      method: "POST",
+      url: "/api/v1/store-addresses/import-preview",
+      payload: {
+        fileName: "地址匹配表格.xlsx",
+        contentBase64,
+      },
+      headers: { cookie },
+    });
+    expect(secondPreview.statusCode).toBe(200);
+    expect(secondPreview.json()).toMatchObject({
+      affectedStoreCount: 1,
+      createCount: 0,
+      updateCount: 0,
+      unchangedCount: 1,
+    });
+
+    await app.close();
+  });
+
   it("rejects store address writes from reviewer accounts", async () => {
     const app = buildTestServer();
     const reviewerCookie = await loginCookie(app, "reviewer", "reviewer123");

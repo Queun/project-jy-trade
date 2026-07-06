@@ -2206,8 +2206,15 @@ interface MakeOrderAddress {
 interface ParsedStoreAddress extends MakeOrderAddress {
   note: string;
   sourceSheet: string;
+  sourceSheetIndex: number;
+  sourceOrder: number;
   sourceRow: number;
   rawFields: Record<string, string>;
+}
+
+interface StoreAddressImportGroup {
+  address: ParsedStoreAddress;
+  rawAddresses: ParsedStoreAddress[];
 }
 
 interface MakeOrderAddressIndex {
@@ -2436,27 +2443,71 @@ async function buildStoreAddressImportPreview(database: DatabaseContext, address
   };
 }
 
-function groupStoreAddressImports(addresses: ParsedStoreAddress[]) {
-  const groups = new Map<string, { address: ParsedStoreAddress; rawAddresses: ParsedStoreAddress[] }>();
+function groupStoreAddressImports(addresses: ParsedStoreAddress[]): StoreAddressImportGroup[] {
+  const groups: StoreAddressImportGroup[] = [];
+  const groupsByKey = new Map<string, StoreAddressImportGroup>();
   for (const address of addresses) {
-    const key = storeAddressImportKey(address.storeNo, address.storeName);
-    if (!key) continue;
-    const existing = groups.get(key);
-    if (existing) {
-      existing.address = address;
-      existing.rawAddresses.push(address);
+    const keys = storeAddressImportKeys(address.storeNo, address.storeName);
+    if (keys.length === 0) continue;
+    const matchedGroups = [...new Set(keys.map((key) => groupsByKey.get(key)).filter((group): group is StoreAddressImportGroup => Boolean(group)))];
+    const group = matchedGroups[0] ?? { address, rawAddresses: [] };
+    if (matchedGroups.length > 1) {
+      for (const duplicateGroup of matchedGroups.slice(1)) {
+        mergeStoreAddressImportGroups(group, duplicateGroup);
+        const duplicateIndex = groups.indexOf(duplicateGroup);
+        if (duplicateIndex >= 0) groups.splice(duplicateIndex, 1);
+      }
+    }
+
+    if (group.rawAddresses.length > 0) {
+      group.address = mergeStoreAddressImportAddress(group.address, address);
+      group.rawAddresses.push(address);
     } else {
-      groups.set(key, { address, rawAddresses: [address] });
+      group.rawAddresses.push(address);
+      groups.push(group);
+    }
+
+    for (const groupAddress of group.rawAddresses) {
+      for (const key of storeAddressImportKeys(groupAddress.storeNo, groupAddress.storeName)) {
+        groupsByKey.set(key, group);
+      }
     }
   }
-  return [...groups.values()];
+  return groups;
 }
 
-function storeAddressImportKey(storeNo: string, storeName: string) {
+function mergeStoreAddressImportGroups(target: StoreAddressImportGroup, source: StoreAddressImportGroup) {
+  for (const address of source.rawAddresses) {
+    target.address = mergeStoreAddressImportAddress(target.address, address);
+    target.rawAddresses.push(address);
+  }
+}
+
+function mergeStoreAddressImportAddress(current: ParsedStoreAddress, next: ParsedStoreAddress): ParsedStoreAddress {
+  if (next.sourceSheetIndex < current.sourceSheetIndex || (next.sourceSheetIndex === current.sourceSheetIndex && next.sourceOrder > current.sourceOrder)) {
+    return fillMissingStoreAddressFields(next, current);
+  }
+  return fillMissingStoreAddressFields(current, next);
+}
+
+function fillMissingStoreAddressFields(primary: ParsedStoreAddress, fallback: ParsedStoreAddress): ParsedStoreAddress {
+  return {
+    ...primary,
+    storeNo: primary.storeNo || fallback.storeNo,
+    storeName: primary.storeName || fallback.storeName,
+    receiver: primary.receiver || fallback.receiver,
+    phone: primary.phone || fallback.phone,
+    address: primary.address || fallback.address,
+  };
+}
+
+function storeAddressImportKeys(storeNo: string, storeName: string) {
+  const keys: string[] = [];
   const normalizedStoreNo = normalizeStoreNo(storeNo);
-  if (normalizedStoreNo) return `no:${normalizedStoreNo}`;
+  if (normalizedStoreNo) keys.push(`no:${normalizedStoreNo}`);
   const normalizedStoreName = normalizeStoreName(storeName);
-  return normalizedStoreName ? `name:${normalizedStoreName}` : "";
+  if (normalizedStoreName) keys.push(`name:${normalizedStoreName}`);
+  return keys;
 }
 
 function storeAddressChanged(existing: StoreAddressRow, address: ParsedStoreAddress) {
@@ -2474,7 +2525,9 @@ function parseStoreAddressWorkbook(workbook: XLSX.WorkBook): { addresses: Parsed
   const parsedSheetNames = new Set<string>();
   let skippedRowCount = 0;
 
-  for (const sheetName of workbook.SheetNames) {
+  let sourceOrder = 0;
+  for (let sheetIndex = 0; sheetIndex < workbook.SheetNames.length; sheetIndex += 1) {
+    const sheetName = workbook.SheetNames[sheetIndex];
     const rows = XLSX.utils.sheet_to_json<Array<string | number>>(workbook.Sheets[sheetName], { header: 1, defval: "" });
     if (rows.length < 2) continue;
     const headerRowIndex = findAddressHeaderRow(rows, sheetName);
@@ -2513,6 +2566,8 @@ function parseStoreAddressWorkbook(workbook: XLSX.WorkBook): { addresses: Parsed
         address,
         note: "",
         sourceSheet: sheetName,
+        sourceSheetIndex: sheetIndex,
+        sourceOrder: sourceOrder += 1,
         sourceRow: rowIndex + 1,
         rawFields: rawFieldsForRow(headerLabels, row),
       });
