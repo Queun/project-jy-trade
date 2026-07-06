@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { CheckCheck, ChevronDown, ChevronUp, ClipboardList, Download, FileSpreadsheet, HelpCircle, LogOut, PackageCheck, RefreshCcw, Save, Send, Settings, Upload, Warehouse } from "lucide-react";
+import { CheckCheck, ChevronDown, ChevronUp, ClipboardList, Download, FileSpreadsheet, HelpCircle, LogOut, PackageCheck, RefreshCcw, Save, Send, Settings, Upload, Warehouse, X } from "lucide-react";
 import type { AuthUserDto, BatchSummary, ExportDto, ReviewDecision, ReviewLineDto, WarehouseUsageSettingsDto, WdtGoodsSyncRunDto } from "@jy-trade/shared";
 
 import { ProductMappingPanel } from "./components/ProductMappingPanel.js";
@@ -64,6 +64,8 @@ export function App() {
   const [savingReasonById, setSavingReasonById] = useState<Record<string, boolean>>({});
   const [goodsSyncRun, setGoodsSyncRun] = useState<WdtGoodsSyncRunDto | null>(null);
   const [goodsSyncError, setGoodsSyncError] = useState("正在读取商品同步状态");
+  const [goodsSyncMessage, setGoodsSyncMessage] = useState("");
+  const [goodsSyncing, setGoodsSyncing] = useState(false);
   const [warehouseSettings, setWarehouseSettings] = useState<WarehouseUsageSettingsDto | null>(null);
   const [warehouseSettingsDraft, setWarehouseSettingsDraft] = useState<WarehouseUsageSettingsDto | null>(null);
   const [warehouseSettingsMessage, setWarehouseSettingsMessage] = useState("");
@@ -109,6 +111,27 @@ export function App() {
     return settings;
   }
 
+  async function runGoodsSync() {
+    setGoodsSyncing(true);
+    setGoodsSyncMessage("正在同步商品档案...");
+    const response = await fetch("/api/v1/wdt/goods-sync-runs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "incremental" }),
+    });
+    if (!response.ok) {
+      const error = await response.json();
+      setGoodsSyncMessage(error.message ?? "商品档案同步失败");
+      setGoodsSyncing(false);
+      return;
+    }
+    const run = (await response.json()) as WdtGoodsSyncRunDto;
+    setGoodsSyncRun(run);
+    setGoodsSyncError("");
+    setGoodsSyncMessage(run.status === "success" ? "商品档案同步完成" : "商品档案同步已提交");
+    setGoodsSyncing(false);
+  }
+
   async function checkMe() {
     const response = await fetch("/api/v1/me");
     const body = await response.json();
@@ -147,6 +170,8 @@ export function App() {
     setExports([]);
     setGoodsSyncRun(null);
     setGoodsSyncError("正在读取商品同步状态");
+    setGoodsSyncMessage("");
+    setGoodsSyncing(false);
     setWarehouseSettings(null);
     setWarehouseSettingsDraft(null);
     setWarehouseSettingsMessage("");
@@ -542,14 +567,17 @@ export function App() {
 
         {showSettings ? (
           <SettingsPanel
+            canSyncGoods={permissions.canSyncGoods}
             canManageSettings={permissions.canManageSettings}
             goodsSyncError={goodsSyncError}
+            goodsSyncing={goodsSyncing}
+            goodsSyncMessage={goodsSyncMessage}
             goodsSyncRun={goodsSyncRun}
             warehouseSettings={warehouseSettings}
             warehouseSettingsDraft={warehouseSettingsDraft}
             warehouseSettingsMessage={warehouseSettingsMessage}
             onClose={() => setShowSettings(false)}
-            onRefreshGoodsSync={() => void refreshGoodsSyncStatus()}
+            onRunGoodsSync={() => void runGoodsSync()}
             onSaveWarehouseSettings={() => void saveWarehouseSettings()}
             onWarehouseSettingsDraftChange={setWarehouseSettingsDraft}
           />
@@ -767,54 +795,70 @@ function HelpPanel({ onDismiss }: { onDismiss: () => void }) {
 }
 
 function SettingsPanel({
+  canSyncGoods,
   canManageSettings,
   goodsSyncError,
+  goodsSyncing,
+  goodsSyncMessage,
   goodsSyncRun,
   warehouseSettings,
   warehouseSettingsDraft,
   warehouseSettingsMessage,
   onClose,
-  onRefreshGoodsSync,
+  onRunGoodsSync,
   onSaveWarehouseSettings,
   onWarehouseSettingsDraftChange,
 }: {
+  canSyncGoods: boolean;
   canManageSettings: boolean;
   goodsSyncError: string;
+  goodsSyncing: boolean;
+  goodsSyncMessage: string;
   goodsSyncRun: WdtGoodsSyncRunDto | null;
   warehouseSettings: WarehouseUsageSettingsDto | null;
   warehouseSettingsDraft: WarehouseUsageSettingsDto | null;
   warehouseSettingsMessage: string;
   onClose: () => void;
-  onRefreshGoodsSync: () => void;
+  onRunGoodsSync: () => void;
   onSaveWarehouseSettings: () => void;
   onWarehouseSettingsDraftChange: (settings: WarehouseUsageSettingsDto) => void;
 }) {
   return (
-    <section className="rounded-md border border-border bg-card p-4 shadow-sm">
-      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <div className="flex items-center gap-2">
-            <Settings className="h-5 w-5 text-primary" />
-            <h2 className="text-base font-semibold">设置</h2>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4 py-6" role="dialog" aria-modal="true" aria-label="设置">
+      <section className="max-h-[90vh] w-full max-w-4xl overflow-y-auto rounded-md border border-border bg-card p-5 shadow-xl">
+        <div className="mb-4 flex flex-wrap items-start justify-between gap-3 border-b border-border pb-4">
+          <div>
+            <div className="flex items-center gap-2">
+              <Settings className="h-5 w-5 text-primary" />
+              <h2 className="text-base font-semibold">设置</h2>
+            </div>
+            <p className="mt-1 text-sm text-muted-foreground">调整会影响之后重新运行的初审结果。</p>
           </div>
-          <p className="mt-1 text-sm text-muted-foreground">调整会影响之后重新运行的初审结果。</p>
+          <Button className="h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80" onClick={onClose}>
+            <X className="h-4 w-4" />
+            关闭
+          </Button>
         </div>
-        <Button className="h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80" onClick={onClose}>
-          收起
-        </Button>
-      </div>
-      <div className="grid gap-4 lg:grid-cols-2">
-        <WarehouseUsageSettingsPanel
-          canManageSettings={canManageSettings}
-          draft={warehouseSettingsDraft}
-          message={warehouseSettingsMessage}
-          settings={warehouseSettings}
-          onDraftChange={onWarehouseSettingsDraftChange}
-          onSave={onSaveWarehouseSettings}
-        />
-        <GoodsSyncStatusPanel error={goodsSyncError} run={goodsSyncRun} onRefresh={onRefreshGoodsSync} />
-      </div>
-    </section>
+        <div className="grid gap-4 lg:grid-cols-2">
+          <WarehouseUsageSettingsPanel
+            canManageSettings={canManageSettings}
+            draft={warehouseSettingsDraft}
+            message={warehouseSettingsMessage}
+            settings={warehouseSettings}
+            onDraftChange={onWarehouseSettingsDraftChange}
+            onSave={onSaveWarehouseSettings}
+          />
+          <GoodsSyncStatusPanel
+            canSyncGoods={canSyncGoods}
+            error={goodsSyncError}
+            message={goodsSyncMessage}
+            run={goodsSyncRun}
+            syncing={goodsSyncing}
+            onRunSync={onRunGoodsSync}
+          />
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -1153,13 +1197,19 @@ function GoodsSyncHeaderStatus({ error, run }: { error: string; run: WdtGoodsSyn
 }
 
 function GoodsSyncStatusPanel({
+  canSyncGoods,
   error,
+  message,
   run,
-  onRefresh,
+  syncing,
+  onRunSync,
 }: {
+  canSyncGoods: boolean;
   error: string;
+  message: string;
   run: WdtGoodsSyncRunDto | null;
-  onRefresh: () => void;
+  syncing: boolean;
+  onRunSync: () => void;
 }) {
   const status = run?.status ?? "none";
   return (
@@ -1171,11 +1221,12 @@ function GoodsSyncStatusPanel({
             <Badge tone={status === "success" ? "good" : status === "failed" ? "bad" : "warn"}>{userSyncStatusText(status)}</Badge>
           </div>
           <p className="mt-2 text-sm text-muted-foreground">上次更新：{run ? formatShortDate(run.finishedAt || run.startedAt) : error}</p>
-          {status !== "success" ? <p className="mt-1 text-xs text-amber-700">刷新后仍不可用时，请先完成商品档案同步。</p> : null}
+          {message ? <p className="mt-1 text-sm text-muted-foreground">{message}</p> : null}
+          {!canSyncGoods ? <p className="mt-1 text-xs text-amber-700">当前账号只能查看同步状态，请联系管理员或运营账号处理。</p> : null}
         </div>
-        <Button className="h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80" onClick={onRefresh}>
+        <Button className="h-8 px-2" disabled={!canSyncGoods || syncing} onClick={onRunSync}>
           <RefreshCcw className="h-4 w-4" />
-          刷新
+          {syncing ? "同步中" : "手动同步"}
         </Button>
       </div>
     </section>
@@ -1337,6 +1388,7 @@ function buildUserPermissions(user: AuthUserDto | null) {
     canImport: role === "admin" || role === "operator",
     canReview: role === "admin" || role === "reviewer",
     canExport: role === "admin" || role === "operator",
+    canSyncGoods: role === "admin" || role === "operator",
     canManageSettings: role === "admin",
   };
 }

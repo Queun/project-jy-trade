@@ -162,9 +162,15 @@ describe("App", () => {
     expect(await screen.findByText(/商品档案/)).toBeInTheDocument();
     expect(screen.getByText(/上次更新：/)).toBeInTheDocument();
     fireEvent.click(await screen.findByRole("button", { name: "设置" }));
+    expect(screen.getByRole("dialog", { name: "设置" })).toBeInTheDocument();
     expect(await screen.findByText("可用仓库范围")).toBeInTheDocument();
     expect(screen.getByText("商品档案同步")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "刷新" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "手动同步" }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+      "/api/v1/wdt/goods-sync-runs",
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ mode: "incremental" }) }),
+    ));
+    expect(await screen.findByText("商品档案同步完成")).toBeInTheDocument();
     const nearExpiry = screen.getByRole("checkbox", { name: "临期仓" });
     const other = screen.getByRole("checkbox", { name: "其他仓" });
 
@@ -203,6 +209,7 @@ describe("App", () => {
     expect(screen.getByRole("checkbox", { name: "主仓" })).toBeDisabled();
     expect(screen.getByRole("checkbox", { name: "临期仓" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "保存" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "手动同步" })).not.toBeDisabled();
     expect(screen.getByText("当前账号只能查看仓库范围，请联系管理员调整。")).toBeInTheDocument();
     await clickBatch();
     switchToReviewTab();
@@ -471,6 +478,11 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
   if (url === "/api/v1/auth/logout") return json({ ok: true });
   if (url === "/api/v1/wdt/goods-sync-runs/latest") {
     return latestGoodsSyncRun ? json(latestGoodsSyncRun) : json({ message: "WDT goods sync run not found" }, 404);
+  }
+  if (url === "/api/v1/wdt/goods-sync-runs" && method === "POST") {
+    if (!["admin", "operator"].includes(currentUser.role)) return json({ message: "Forbidden" }, 403);
+    latestGoodsSyncRun = goodsSyncRun({ startedAt: "2026-07-06T00:00:00.000Z", finishedAt: "2026-07-06T00:02:00.000Z" });
+    return json(latestGoodsSyncRun, 201);
   }
   if (url === "/api/v1/settings/warehouse-usage" && method === "GET") return json(warehouseSettings);
   if (url === "/api/v1/settings/warehouse-usage" && method === "PATCH") {
