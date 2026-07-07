@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, rmSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import { eq } from "drizzle-orm";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import * as XLSX from "xlsx";
 import { createSampleOrderFile } from "@jy-trade/workflow";
 
@@ -17,6 +17,10 @@ const orderFile = createSampleOrderFile(resolve(projectRoot, "outputs/fixtures/s
 const mixedOrderFile = createSampleOrderFile(resolve(projectRoot, "outputs/fixtures/sample-order-mixed.xlsx"), 4);
 
 describe("api server", () => {
+  beforeEach(() => {
+    clearRuntimeEnvForTests();
+  });
+
   it("responds to health checks", async () => {
     const app = buildTestServer();
     const response = await app.inject({ method: "GET", url: "/api/v1/health" });
@@ -1885,6 +1889,17 @@ describe("api server", () => {
     await app.close();
   });
 });
+
+function clearRuntimeEnvForTests() {
+  delete process.env.JY_TRADE_UPLOAD_DIR;
+  delete process.env.JY_TRADE_EXPORTS_DIR;
+  delete process.env.WDT_ENV;
+  for (const key of Object.keys(process.env)) {
+    if (key.startsWith("WDT_PROD_") || key.startsWith("WDT_TEST_")) {
+      delete process.env[key];
+    }
+  }
+}
 
 function buildTestServer(
   databaseUrl = testDatabaseUrl(),
