@@ -149,7 +149,7 @@ describe("App", () => {
     fireEvent.click(within(unmatchedRow).getByRole("button", { name: "定位映射" }));
 
     expect(await screen.findByText("商品映射确认")).toBeInTheDocument();
-    expect(screen.getByText("已定位到商品映射面板，确认映射后请重新运行真实初审")).toBeInTheDocument();
+    expect(screen.getByText("已定位到商品映射面板，确认映射后会自动刷新当前正式批次")).toBeInTheDocument();
     expect(screen.getByLabelText("映射搜索")).toHaveValue("BARCODE");
   });
 
@@ -605,13 +605,64 @@ describe("App", () => {
     fireEvent.change(screen.getByLabelText("外部商品名"), { target: { value: "雅漾专研保湿修护面膜25ml*5片" } });
     fireEvent.click(screen.getByRole("button", { name: "确认映射" }));
 
-    expect(await screen.findByText("商品映射已确认，重新运行真实初审后生效")).toBeInTheDocument();
+    expect(await screen.findByText("商品映射已确认，正式订单重新初审后生效")).toBeInTheDocument();
     expect(mappingRows[0]).toMatchObject({
       externalBarcode: "2153722460015",
       externalGoodsCode: "5372246",
       wdtSpecNo: "3282770392869",
       status: "confirmed",
     });
+  });
+
+  it("refreshes the active production batch after confirming a product mapping", async () => {
+    currentBatch = { ...currentBatch, mode: "production_api" };
+    mappingRows = [];
+    lines = [
+      reviewLine({
+        id: "line-mask-1",
+        externalBarcode: "2153722460015",
+        externalGoodsCode: "5372246",
+        externalGoodsName: "雅漾专研保湿修护面膜25ml*5片",
+        goodsName: "",
+        wdtSpecNo: "",
+        matchStatus: "ambiguous",
+        matchMessage: "Name candidate needs human confirmation",
+        status: "未匹配",
+        suggestedShipQty: 0,
+      }),
+      reviewLine({
+        id: "line-mask-2",
+        excelRow: 3,
+        externalBarcode: "2153722460015",
+        externalGoodsCode: "5372246",
+        externalGoodsName: "雅漾专研保湿修护面膜25ml*5片",
+        goodsName: "",
+        wdtSpecNo: "",
+        matchStatus: "ambiguous",
+        matchMessage: "Name candidate needs human confirmation",
+        status: "未匹配",
+        suggestedShipQty: 0,
+      }),
+    ];
+    render(<App />);
+    await clickBatch();
+    fireEvent.click(screen.getByRole("checkbox", { name: "开发者模式" }));
+    switchToReviewTab();
+
+    expect(await screen.findByText("商品映射确认")).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: /雅漾专研保湿修护面膜25ml/ }));
+    fireEvent.click(screen.getByRole("button", { name: "确认映射" }));
+
+    await waitFor(() =>
+      expect(fetch).toHaveBeenCalledWith("/api/v1/batches/batch-1/actions/run-real-review", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ allowStaleCache: false }),
+      }),
+    );
+    expect(await screen.findByText("映射已应用到当前批次")).toBeInTheDocument();
+    await waitFor(() => expect(lines.every((line) => line.matchStatus === "matched")).toBe(true));
+    expect(screen.queryByText("Name candidate needs human confirmation")).not.toBeInTheDocument();
   });
 });
 
@@ -824,7 +875,27 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
     return json(saved, 201);
   }
   if (url.includes("/actions/run-mock-review")) return json({ batch: currentBatch });
-  if (url.includes("/actions/run-real-review")) return json({ batch: currentBatch, stockQueriedCount: 1 });
+  if (url.includes("/actions/run-real-review")) {
+    const confirmed = mappingRows.find((mapping) => mapping.status === "confirmed");
+    if (confirmed) {
+      lines = lines.map((line) =>
+        reviewLineMatchesMapping(line, confirmed)
+          ? {
+              ...line,
+              goodsName: confirmed.wdtGoodsName,
+              specName: confirmed.wdtSpecName,
+              wdtSpecNo: confirmed.wdtSpecNo,
+              matchStatus: "matched",
+              matchMessage: "Matched by confirmed product mapping",
+              mainAvailableBefore: 20,
+              suggestedShipQty: line.orderQty,
+              status: "库存充足",
+            }
+          : line,
+      );
+    }
+    return json({ batch: currentBatch, stockQueriedCount: 1 });
+  }
   if (url.includes("/actions/bulk-approve")) {
     lines = lines.map((line) =>
       line.matchStatus === "matched" && (line.status === "库存充足" || line.status === "部分满足")
@@ -874,6 +945,7 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
       status: "confirmed",
     });
     mappingRows = [created];
+    candidateRows = candidateRows.filter((candidate) => !candidateMatchesMapping(candidate, created));
     return json(created, 201);
   }
   if (url.includes("/api/v1/product-mappings/") && url.endsWith("/status") && method === "PATCH") {
@@ -948,6 +1020,26 @@ function productCandidate(patch: Partial<ProductMatchCandidateDto> = {}): Produc
     createdAt: "2026-07-03T00:00:00.000Z",
     ...patch,
   };
+}
+
+function candidateMatchesMapping(candidate: ProductMatchCandidateDto, mapping: ProductMappingDto) {
+  return (
+    sameIdentifier(candidate.externalBarcode, mapping.externalBarcode) ||
+    sameIdentifier(candidate.externalGoodsCode, mapping.externalGoodsCode) ||
+    (!mapping.externalBarcode && !mapping.externalGoodsCode && sameIdentifier(candidate.externalGoodsName, mapping.externalGoodsName))
+  );
+}
+
+function reviewLineMatchesMapping(line: ReviewLineDto, mapping: ProductMappingDto) {
+  return (
+    sameIdentifier(line.externalBarcode, mapping.externalBarcode) ||
+    sameIdentifier(line.externalGoodsCode, mapping.externalGoodsCode) ||
+    (!mapping.externalBarcode && !mapping.externalGoodsCode && sameIdentifier(line.externalGoodsName, mapping.externalGoodsName))
+  );
+}
+
+function sameIdentifier(left: string, right: string) {
+  return Boolean(left.trim() && right.trim() && left.trim().toLowerCase() === right.trim().toLowerCase());
 }
 
 function wdtSpec(patch: Partial<WdtGoodsSpecSearchResultDto> = {}): WdtGoodsSpecSearchResultDto {

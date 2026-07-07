@@ -5,6 +5,7 @@ import type {
   BatchSummary,
   ExportDto,
   MakeOrderReadinessDto,
+  ProductMappingDto,
   ReviewDecision,
   ReviewLineDto,
   WarehouseUsageSettingsDto,
@@ -340,6 +341,37 @@ export function App() {
     await refreshBatches();
   }
 
+  async function rerunActiveBatchAfterMapping(mapping: ProductMappingDto) {
+    if (!activeBatch || activeBatch.mode !== "production_api") {
+      setMessage("商品映射已确认，正式订单重新初审后生效");
+      return;
+    }
+    setMessage("商品映射已确认，正在刷新当前批次初审...");
+    const reviewResponse = await fetch(`/api/v1/batches/${activeBatch.id}/actions/run-real-review`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ allowStaleCache: false }),
+    });
+    if (!reviewResponse.ok) {
+      const error = await reviewResponse.json();
+      setMessage(error.message ?? "映射已保存，但当前批次刷新初审失败");
+      return;
+    }
+
+    const review = await reviewResponse.json();
+    setActiveBatch(review.batch);
+    const lines = await fetchReviewLines(activeBatch.id);
+    if (!lines) return;
+    setReviewLines(sortReviewLines(lines));
+    setDraftById(buildDrafts(lines));
+    setErrorsById({});
+    await refreshExports(activeBatch.id);
+    await refreshMakeOrderReadiness(activeBatch.id);
+    await refreshBatches();
+    setMessage(`商品映射已确认，当前批次已刷新：${mapping.externalBarcode || mapping.externalGoodsCode || mapping.externalGoodsName}`);
+    setSuccessNotice("映射已应用到当前批次");
+  }
+
   async function resolveOrderFile() {
     if (!pendingOrderUpload) {
       if (!selectedOrderFileName && !developerMode) {
@@ -525,7 +557,7 @@ export function App() {
     const query = line.externalBarcode || line.externalGoodsName || line.wdtSpecNo;
     setDeveloperMode(true);
     setMappingFocusQuery(query);
-    setMessage("已定位到商品映射面板，确认映射后请重新运行真实初审");
+    setMessage("已定位到商品映射面板，确认映射后会自动刷新当前正式批次");
     window.setTimeout(() => document.getElementById("product-mapping-panel")?.scrollIntoView?.({ behavior: "smooth", block: "start" }), 0);
   }
 
@@ -723,6 +755,7 @@ export function App() {
                 onDraftChange={updateDraft}
                 onFilterChange={setActiveFilter}
                 onLocateMapping={locateProductMapping}
+                onMappingConfirmed={rerunActiveBatchAfterMapping}
                 onMessage={setMessage}
                 onPriorityChange={togglePriority}
                 onQuickDecision={quickDecision}
@@ -1100,6 +1133,7 @@ function ReviewTab({
   onDraftChange,
   onFilterChange,
   onLocateMapping,
+  onMappingConfirmed,
   onMessage,
   onPriorityChange,
   onQuickDecision,
@@ -1121,6 +1155,7 @@ function ReviewTab({
   onDraftChange: (lineId: string, patch: Partial<ReviewDraft>) => void;
   onFilterChange: (filter: FilterKey) => void;
   onLocateMapping: (line: ReviewLineDto) => void;
+  onMappingConfirmed: (mapping: ProductMappingDto) => Promise<void> | void;
   onMessage: (message: string) => void;
   onPriorityChange: (line: ReviewLineDto, priority: boolean) => void;
   onQuickDecision: (line: ReviewLineDto, decision: ReviewDecision) => void;
@@ -1202,7 +1237,14 @@ function ReviewTab({
           <EmptyState title="先选择一个批次" description="从左侧历史批次选择订单，或回到导入订单创建新批次。" />
         )}
       </section>
-      {isDeveloperMode ? <ProductMappingPanel focusQuery={mappingFocusQuery} onMessage={onMessage} /> : null}
+      {isDeveloperMode ? (
+        <ProductMappingPanel
+          focusQuery={mappingFocusQuery}
+          sourceBatchId={activeBatch?.id ?? ""}
+          onMessage={onMessage}
+          onConfirmed={onMappingConfirmed}
+        />
+      ) : null}
     </section>
   );
 }

@@ -880,6 +880,7 @@ export function createSqliteStore(options: StoreOptions = {}) {
       } else {
         await database.db.insert(productMappings).values(row);
       }
+      await deleteProductMatchCandidatesForMapping(database, row);
       await insertAuditLog(database, actor?.id ?? null, "product_mapping.confirm", "product_mapping", row.id, row);
       return toProductMappingDto(row);
     },
@@ -923,7 +924,10 @@ export function createSqliteStore(options: StoreOptions = {}) {
             .orderBy(desc(productMatchCandidates.createdAt))
             .limit(250)
         : await base.orderBy(desc(productMatchCandidates.createdAt)).limit(250);
-      return dedupeProductMatchCandidates(rows.map(toProductMatchCandidateDto)).slice(0, 50);
+      const confirmedMappings = await database.db.select().from(productMappings).where(eq(productMappings.status, "confirmed"));
+      return dedupeProductMatchCandidates(
+        rows.map(toProductMatchCandidateDto).filter((candidate) => !confirmedMappings.some((mapping) => productCandidateMatchesMapping(candidate, mapping))),
+      ).slice(0, 50);
     },
 
     async updateProductMappingStatus(
@@ -1397,6 +1401,32 @@ function productMatchCandidateKey(
 
 function normalizeProductCandidateKeyPart(value: string) {
   return value.trim().toLowerCase().replace(/\s+/g, "");
+}
+
+async function deleteProductMatchCandidatesForMapping(database: DatabaseContext, mapping: ProductMappingRow): Promise<void> {
+  const conditions = [
+    mapping.externalBarcode ? eq(productMatchCandidates.externalBarcode, mapping.externalBarcode) : undefined,
+    mapping.externalGoodsCode ? eq(productMatchCandidates.externalGoodsCode, mapping.externalGoodsCode) : undefined,
+  ].filter((condition): condition is NonNullable<typeof condition> => Boolean(condition));
+  if (conditions.length === 0 && mapping.externalGoodsName) {
+    conditions.push(eq(productMatchCandidates.externalGoodsName, mapping.externalGoodsName));
+  }
+  if (conditions.length === 0) return;
+  await database.db.delete(productMatchCandidates).where(or(...conditions));
+}
+
+function productCandidateMatchesMapping(candidate: ProductMatchCandidateDto, mapping: ProductMappingRow): boolean {
+  if (mapping.status !== "confirmed") return false;
+  if (sameProductIdentifier(candidate.externalBarcode, mapping.externalBarcode)) return true;
+  if (sameProductIdentifier(candidate.externalGoodsCode, mapping.externalGoodsCode)) return true;
+  if (!mapping.externalBarcode && !mapping.externalGoodsCode && sameProductIdentifier(candidate.externalGoodsName, mapping.externalGoodsName)) return true;
+  return false;
+}
+
+function sameProductIdentifier(left: string, right: string): boolean {
+  const normalizedLeft = left.trim().toLowerCase();
+  const normalizedRight = right.trim().toLowerCase();
+  return Boolean(normalizedLeft && normalizedRight && normalizedLeft === normalizedRight);
 }
 
 async function getGoodsCacheStatus(database: DatabaseContext, allowStaleCache: boolean): Promise<GoodsCacheStatus> {

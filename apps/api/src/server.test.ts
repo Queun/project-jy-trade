@@ -1607,7 +1607,8 @@ describe("api server", () => {
   });
 
   it("confirms and updates product mappings", async () => {
-    const app = buildTestServer(testDatabaseUrl(), {
+    const databaseUrl = testDatabaseUrl();
+    const app = buildTestServer(databaseUrl, {
       async queryGoodsWindow() {
         return {
           totalCount: 1,
@@ -1635,6 +1636,26 @@ describe("api server", () => {
       payload: { mode: "full", startDate: "2026-01-01", endDate: "2026-01-01" },
       headers: { cookie },
     });
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await database.db.insert(productMatchCandidates).values({
+      id: `candidate-${randomUUID()}`,
+      batchId: "diagnosis-order",
+      reviewLineId: "line-1",
+      externalBarcode: "2153722460015",
+      externalGoodsName: "雅漾专研保湿修护面膜25ml*5片",
+      externalGoodsCode: "5372246",
+      wdtSpecNo: "3282770392869",
+      wdtGoodsNo: "3282770392869",
+      wdtGoodsName: "雅漾专研保湿修护面膜",
+      wdtSpecName: "25ml*5",
+      wdtBarcode: "3282770392869",
+      score: 82,
+      basis: "contains_name",
+      source: "goods",
+      createdAt: "2026-07-03T00:00:00.000Z",
+    });
+    await database.close();
 
     const created = await app.inject({
       method: "POST",
@@ -1659,6 +1680,13 @@ describe("api server", () => {
     const list = await app.inject({ method: "GET", url: "/api/v1/product-mappings?query=2153722460015", headers: { cookie } });
     expect(list.statusCode).toBe(200);
     expect(list.json()).toHaveLength(1);
+    const candidatesAfterConfirm = await app.inject({
+      method: "GET",
+      url: "/api/v1/product-match-candidates?query=2153722460015",
+      headers: { cookie },
+    });
+    expect(candidatesAfterConfirm.statusCode).toBe(200);
+    expect(candidatesAfterConfirm.json()).toHaveLength(0);
 
     const disabled = await app.inject({
       method: "PATCH",

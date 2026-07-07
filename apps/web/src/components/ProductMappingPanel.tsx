@@ -12,7 +12,9 @@ import { Button } from "./ui/button.js";
 
 interface ProductMappingPanelProps {
   focusQuery?: string;
+  sourceBatchId?: string;
   onMessage: (message: string) => void;
+  onConfirmed?: (mapping: ProductMappingDto) => Promise<void> | void;
 }
 
 interface MappingDraft {
@@ -31,7 +33,7 @@ const emptyDraft: MappingDraft = {
   note: "",
 };
 
-export function ProductMappingPanel({ focusQuery = "", onMessage }: ProductMappingPanelProps) {
+export function ProductMappingPanel({ focusQuery = "", sourceBatchId = "", onMessage, onConfirmed }: ProductMappingPanelProps) {
   const [query, setQuery] = useState("2153722460015");
   const [specQuery, setSpecQuery] = useState("雅漾");
   const [draft, setDraft] = useState<MappingDraft>(emptyDraft);
@@ -74,7 +76,7 @@ export function ProductMappingPanel({ focusQuery = "", onMessage }: ProductMappi
     const response = await fetch("/api/v1/product-mappings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(draft),
+      body: JSON.stringify({ ...draft, sourceBatchId }),
     });
     if (!response.ok) {
       const body = await response.json();
@@ -85,7 +87,9 @@ export function ProductMappingPanel({ focusQuery = "", onMessage }: ProductMappi
     setQuery(mapping.externalBarcode || mapping.externalGoodsCode || mapping.externalGoodsName);
     setDraft(emptyDraft);
     await refreshMappings(mapping.externalBarcode || mapping.externalGoodsCode || mapping.externalGoodsName);
-    onMessage("商品映射已确认，重新运行真实初审后生效");
+    await refreshCandidates(mapping.externalBarcode || mapping.externalGoodsCode || mapping.externalGoodsName);
+    onMessage("商品映射已确认");
+    await onConfirmed?.(mapping);
   }
 
   async function updateStatus(mapping: ProductMappingDto, status: Exclude<ProductMappingStatus, "confirmed">) {
