@@ -8,6 +8,7 @@ const forbiddenPathPatterns = [
   /^apps\/api\/inputs\//,
   /^ole案例文件——发货前\//,
   /^docs\/excel-schema-probe\.json$/,
+  /(^|\/)旺店通\.txt$/,
   /^node_modules\//,
   /(^|\/)dist\//,
   /(^|\/)\.env$/,

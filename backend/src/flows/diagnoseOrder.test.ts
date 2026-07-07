@@ -1,6 +1,6 @@
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import XLSX from "xlsx";
 
@@ -319,7 +319,55 @@ async function seedGoodsCacheSyncRun(
 }
 
 function sampleOrderFile(): string {
-  return resolve(process.cwd(), "ole案例文件——发货前", "1订货单", "订货通知单 .xls");
+  const filePath = resolve(process.cwd(), "outputs", "fixtures", "diagnose-order-sample.xlsx");
+  if (existsSync(filePath)) return filePath;
+  mkdirSync(dirname(filePath), { recursive: true });
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(
+    workbook,
+    XLSX.utils.json_to_sheet([
+      {
+        订货通知单号: "TEST-NOTICE-001",
+        订货审批单号: "TEST-APPROVAL-001",
+        阅读状态: "已读",
+        送货方式: "配送",
+        状态: "待处理",
+        送货地: "测试仓",
+        大类: "测试品类",
+        门店: "STORE-001",
+        门店名称: "测试门店1",
+        订货日期: "2026-07-01",
+        截止日期: "2026-07-10",
+        上传时间: "2026-07-01 10:00:00",
+        业务员: "测试业务员",
+        制单人: "测试制单人",
+        制单时间: "2026-07-01 09:00:00",
+        审核人: "测试审核人",
+        商品编码: "5372246",
+        商品名称: "雅漾专研保湿修护面膜25ml*5片",
+        商品条码: "2153722460015",
+        规格: "",
+        运输规格: "测试运输规格",
+        订货箱数: "1",
+        订货数: "1",
+        未含税进价: "10.00",
+        含税合同进价: "11.30",
+        含税进价: "11.30",
+        折扣率: "1",
+        "保质期(天)": "365",
+        实收数量: "",
+        赠品率: "0",
+        TD: "",
+        DA: "",
+        PD: "",
+        SPD: "",
+        REBATE: "",
+      },
+    ]),
+    "订货通知单",
+  );
+  XLSX.writeFile(workbook, filePath);
+  return filePath;
 }
 
 function testOutputFile(fileName: string): string {
