@@ -921,9 +921,9 @@ export function createSqliteStore(options: StoreOptions = {}) {
               ),
             )
             .orderBy(desc(productMatchCandidates.createdAt))
-            .limit(50)
-        : await base.orderBy(desc(productMatchCandidates.createdAt)).limit(50);
-      return rows.map(toProductMatchCandidateDto);
+            .limit(250)
+        : await base.orderBy(desc(productMatchCandidates.createdAt)).limit(250);
+      return dedupeProductMatchCandidates(rows.map(toProductMatchCandidateDto)).slice(0, 50);
     },
 
     async updateProductMappingStatus(
@@ -1331,9 +1331,10 @@ async function replaceProductMatchCandidates(
   now: string,
 ): Promise<void> {
   await database.db.delete(productMatchCandidates).where(eq(productMatchCandidates.batchId, batchId));
-  if (candidates.length === 0) return;
+  const uniqueCandidates = dedupeRealReviewCandidateRows(candidates);
+  if (uniqueCandidates.length === 0) return;
   await database.db.insert(productMatchCandidates).values(
-    candidates.map((candidate) => ({
+    uniqueCandidates.map((candidate) => ({
       id: `candidate-${randomUUID()}`,
       batchId,
       reviewLineId: candidate.reviewLineId,
@@ -1351,6 +1352,51 @@ async function replaceProductMatchCandidates(
       createdAt: now,
     })),
   );
+}
+
+function dedupeRealReviewCandidateRows(candidates: RealReviewCandidateRow[]): RealReviewCandidateRow[] {
+  const byKey = new Map<string, RealReviewCandidateRow>();
+  for (const candidate of candidates) {
+    const key = productMatchCandidateKey(candidate);
+    const existing = byKey.get(key);
+    if (!existing || candidate.score > existing.score) {
+      byKey.set(key, candidate);
+    }
+  }
+  return [...byKey.values()];
+}
+
+function dedupeProductMatchCandidates(candidates: ProductMatchCandidateDto[]): ProductMatchCandidateDto[] {
+  const byKey = new Map<string, ProductMatchCandidateDto>();
+  for (const candidate of candidates) {
+    const key = productMatchCandidateKey(candidate);
+    const existing = byKey.get(key);
+    if (!existing || candidate.score > existing.score) {
+      byKey.set(key, candidate);
+    }
+  }
+  return [...byKey.values()];
+}
+
+function productMatchCandidateKey(
+  candidate: Pick<
+    ProductMatchCandidateDto,
+    "externalBarcode" | "externalGoodsCode" | "externalGoodsName" | "wdtSpecNo" | "wdtGoodsNo" | "wdtSpecName" | "wdtBarcode"
+  >,
+) {
+  return [
+    normalizeProductCandidateKeyPart(candidate.externalBarcode),
+    normalizeProductCandidateKeyPart(candidate.externalGoodsCode),
+    normalizeProductCandidateKeyPart(candidate.externalGoodsName),
+    normalizeProductCandidateKeyPart(candidate.wdtSpecNo),
+    normalizeProductCandidateKeyPart(candidate.wdtGoodsNo),
+    normalizeProductCandidateKeyPart(candidate.wdtSpecName),
+    normalizeProductCandidateKeyPart(candidate.wdtBarcode),
+  ].join("\u0000");
+}
+
+function normalizeProductCandidateKeyPart(value: string) {
+  return value.trim().toLowerCase().replace(/\s+/g, "");
 }
 
 async function getGoodsCacheStatus(database: DatabaseContext, allowStaleCache: boolean): Promise<GoodsCacheStatus> {

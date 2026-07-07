@@ -1675,23 +1675,59 @@ describe("api server", () => {
     const databaseUrl = testDatabaseUrl();
     const database = createDatabaseContext(databaseUrl);
     await database.ready;
-    await database.db.insert(productMatchCandidates).values({
-      id: `candidate-${randomUUID()}`,
-      batchId: "diagnosis-order",
-      reviewLineId: "line-1",
-      externalBarcode: "2153722460015",
-      externalGoodsName: "雅漾专研保湿修护面膜25ml*5片",
-      externalGoodsCode: "5372246",
-      wdtSpecNo: "3282770392869",
-      wdtGoodsNo: "3282770392869",
-      wdtGoodsName: "雅漾专研保湿修护面膜",
-      wdtSpecName: "25ml*5",
-      wdtBarcode: "3282770392869",
-      score: 82,
-      basis: "contains_name",
-      source: "goods",
-      createdAt: "2026-07-03T00:00:00.000Z",
-    });
+    await database.db.insert(productMatchCandidates).values([
+      {
+        id: `candidate-${randomUUID()}`,
+        batchId: "diagnosis-order",
+        reviewLineId: "line-1",
+        externalBarcode: "2153722460015",
+        externalGoodsName: "雅漾专研保湿修护面膜25ml*5片",
+        externalGoodsCode: "5372246",
+        wdtSpecNo: "3282770392869",
+        wdtGoodsNo: "3282770392869",
+        wdtGoodsName: "雅漾专研保湿修护面膜",
+        wdtSpecName: "25ml*5",
+        wdtBarcode: "3282770392869",
+        score: 82,
+        basis: "contains_name",
+        source: "goods",
+        createdAt: "2026-07-03T00:00:00.000Z",
+      },
+      {
+        id: `candidate-${randomUUID()}`,
+        batchId: "diagnosis-order",
+        reviewLineId: "line-2",
+        externalBarcode: "2153722460015",
+        externalGoodsName: "雅漾专研保湿修护面膜25ml*5片",
+        externalGoodsCode: "5372246",
+        wdtSpecNo: "3282770392869",
+        wdtGoodsNo: "3282770392869",
+        wdtGoodsName: "雅漾专研保湿修护面膜",
+        wdtSpecName: "25ml*5",
+        wdtBarcode: "3282770392869",
+        score: 80,
+        basis: "contains_name",
+        source: "goods",
+        createdAt: "2026-07-03T00:01:00.000Z",
+      },
+      {
+        id: `candidate-${randomUUID()}`,
+        batchId: "diagnosis-order",
+        reviewLineId: "line-3",
+        externalBarcode: "2153722460015",
+        externalGoodsName: "雅漾专研保湿修护面膜25ml*5片",
+        externalGoodsCode: "5372246",
+        wdtSpecNo: "OTHER-SPEC",
+        wdtGoodsNo: "OTHER-GOODS",
+        wdtGoodsName: "雅漾专研保湿修护面膜",
+        wdtSpecName: "25ml",
+        wdtBarcode: "OTHER-BARCODE",
+        score: 70,
+        basis: "contains_name",
+        source: "goods",
+        createdAt: "2026-07-03T00:02:00.000Z",
+      },
+    ]);
     await database.close();
     const app = buildTestServer(databaseUrl);
     const cookie = await loginCookie(app);
@@ -1703,14 +1739,23 @@ describe("api server", () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual([
-      expect.objectContaining({
-        externalBarcode: "2153722460015",
-        wdtSpecNo: "3282770392869",
-        score: 82,
-        basis: "contains_name",
-      }),
-    ]);
+    expect(response.json()).toHaveLength(2);
+    expect(response.json()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          externalBarcode: "2153722460015",
+          wdtSpecNo: "3282770392869",
+          score: 82,
+          basis: "contains_name",
+        }),
+        expect.objectContaining({
+          externalBarcode: "2153722460015",
+          wdtSpecNo: "OTHER-SPEC",
+          score: 70,
+          basis: "contains_name",
+        }),
+      ]),
+    );
     await app.close();
   });
 
