@@ -4,36 +4,30 @@
 
 ## 快速开始
 
-要求 Node.js 24 LTS。
+要求 Node.js 24 LTS。推荐在 WSL/Linux 文件系统中开发。
 
-```powershell
-npm install
-npm run db:generate
-npm run typecheck
+```bash
+npm ci
+npm run db:migrate
 npm run test
+npm run deploy:check
 ```
 
-启动 Web MVP：
+启动本地服务：
 
-```powershell
+```bash
 npm run dev:api
 npm run dev:web
 ```
 
-继续保留的脚本验证入口：
+旧诊断脚本仍保留，但不是新功能入口。使用前先阅读 `docs/development.md` 中的旧目录说明。
 
-```powershell
-npm run node:simulate -- "ole案例文件——发货前\1订货单\订货通知单 .xls" cjmy003-test outputs\review-simulation-mock.xlsx examples\mock_flow_data.json
-npm run node:wdt -- warehouse cjmy003-test
-```
+## 开发入口
 
-## 文档入口
-
-- `docs/development.md`：开发者事实来源、目录结构、命令、工程约定。
-- `docs/technical-architecture.md`：技术栈、架构取舍、多用户协作预留。
-- `docs/deployment.md`：腾讯云部署、Nginx、systemd、备份和发布流程。
-- `docs/api-test-plan.md`：旺店通 API、测试环境、签名和探测记录。
-- `docs/excel-field-dictionary.md`：样例 Excel 字段字典。
-- `docs/flow-simulation.md`：mock/API 流程模拟记录。
+- `docs/development.md`：开发入口、目录职责、资源清单、迁移清单和开发流程。
+- `docs/project-plan.md`：当前产品和开发计划。
+- `docs/deployment.md`：腾讯云部署、Nginx、进程管理、备份和发布流程。
+- `docs/excel-field-dictionary.md`：Excel 字段字典。
+- `docs/technical-architecture.md`：技术架构和关键取舍。
 
 凭据只放本地 `.env`，不要提交真实账号、`sid`、`appkey`、`appsecret`。默认开发数据库位于 `data/jy-trade-dev.db`，该目录已被 Git 忽略。

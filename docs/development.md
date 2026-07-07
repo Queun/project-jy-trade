@@ -2,6 +2,28 @@
 
 本文记录当前可维护主链路。历史 probe 和一次性排查脚本仅在明确需要时使用，不作为新功能入口。
 
+## 文档入口
+
+文档按用途维护，避免同一类计划散落在多个文件中。
+
+- `docs/development.md`：开发入口、目录职责、资源清单、开发流程和迁移清单。
+- `docs/project-plan.md`：当前产品和开发计划的唯一入口。
+- `docs/deployment.md`：腾讯云部署、Nginx、进程管理、备份和发布流程。
+- `docs/excel-field-dictionary.md`：Excel 样例字段字典，后续导出字段对照也应沉淀到这里。
+- `docs/technical-architecture.md`：技术架构和关键取舍。
+- `docs/api-test-plan.md`：旺店通 API 探测记录和接口验证背景。
+- `docs/flow-simulation.md`：早期流程模拟记录，仅作历史参考。
+- `docs/rebuild-development-plan.md`：本轮重建历史计划，不再追加新的开发待办。
+
+文档管理规则：
+
+- 新一轮开发计划只更新 `docs/project-plan.md`。
+- 字段口径只更新 `docs/excel-field-dictionary.md`。
+- 部署、运维、服务器命令只更新 `docs/deployment.md`。
+- 开发环境、目录职责、测试要求只更新本文。
+- 非必要不新增文档；确实需要新增时，先说明它替代或补充哪个现有文档。
+- 历史探测记录可以保留，但不要让它成为当前开发依据。
+
 ## 当前主链路
 
 - API：`apps/api`
@@ -19,6 +41,39 @@
 4. 前端审核发货数量、优先处理、不发货等决策。
 5. 做单页面生成初审明细、确定发货单、批量做单表格等导出文件。
 
+## 资源清单
+
+必须随项目版本管理的资源：
+
+- `apps/api/drizzle/`：数据库迁移文件和 Drizzle 元数据。
+- `deploy/`：systemd 和 Nginx 示例配置。
+- `.env.example`、`.env.production.example`：环境变量模板，不包含真实凭据。
+- `examples/`：脱敏 mock 数据。
+- `docs/`：项目文档。
+- `tools/check-release.mjs`：发布前隐私和产物检查。
+
+本地存在但不提交的资源：
+
+- `.env`：本地开发凭据和配置。
+- `data/`：SQLite 数据库、上传文件、导出文件等运行数据。
+- `outputs/`：测试 fixture、导出结果、诊断报告、截图和临时输出。
+- `inputs/`、`apps/api/inputs/`：上传输入缓存。
+- `ole案例文件——发货前/`：私有案例 Excel。
+- `旺店通.txt`：本地凭据记录或接口资料。
+- `node_modules/`：依赖安装目录。
+
+迁移到新机器或 WSL 时，优先从 Git 重新 clone。只按需复制：
+
+- `.env`
+- `data/jy-trade-dev.db`，仅在需要保留本地开发数据时复制。
+- 私有案例 Excel，仅在需要人工分析样例时复制。
+
+不要复制：
+
+- `node_modules/`
+- `outputs/`
+- `data/uploads/` 和 `data/exports/`，除非确实要保留历史上传和导出文件。
+
 ## 旧目录状态
 
 - `backend/`：保留历史 probe、诊断脚本和少量回归测试。新业务逻辑优先放入 `packages/workflow` 或 `apps/api`。
@@ -29,9 +84,47 @@
 
 如需迁移旧 probe，先把可复用逻辑沉淀到 `packages/workflow` 或 `apps/api`，再让 probe 只做命令行包装。
 
+## WSL 开发建议
+
+推荐在 WSL 的 Linux 文件系统中开发，不建议长期在 `/mnt/d/...` 目录中运行 Node 项目。
+
+推荐路径：
+
+```bash
+mkdir -p ~/projects
+cd ~/projects
+git clone https://github.com/Queun/project-jy-trade.git
+cd project-jy-trade
+npm ci
+cp .env.example .env
+npm run db:migrate
+npm test
+npm run deploy:check
+```
+
+从 Windows 复制必要本地配置：
+
+```bash
+cp /mnt/d/Projects/project-jy-trade/.env ~/projects/project-jy-trade/.env
+```
+
+如需复制本地开发数据库：
+
+```bash
+mkdir -p ~/projects/project-jy-trade/data
+cp /mnt/d/Projects/project-jy-trade/data/jy-trade-dev.db ~/projects/project-jy-trade/data/
+```
+
+如需复制私有样例文件：
+
+```bash
+cp -r /mnt/d/Projects/project-jy-trade/ole案例文件——发货前 ~/projects/project-jy-trade/
+```
+
 ## 常用命令
 
 ```bash
+npm ci
 npm run dev:api
 npm run dev:web
 npm test
@@ -50,6 +143,25 @@ npm run deploy:check
 ```bash
 npm test
 ```
+
+## 开发流程
+
+每轮开发建议按以下顺序执行：
+
+1. `git status --short --branch`，确认工作区是否干净。
+2. 阅读 `docs/development.md` 和本轮相关业务文档。
+3. 明确本轮只改哪些模块，不顺手改无关目录。
+4. 实现功能或清理项。
+5. 运行对应测试；涉及主链路时运行 `npm run deploy:check`。
+6. 检查 `git diff --check` 和 `git status --short`。
+7. 提交时只包含本轮相关文件。
+
+文档变更要求：
+
+- 业务规则变更同步更新当前计划或字段字典。
+- 部署步骤变更同步更新部署文档。
+- 新增命令或目录职责变更同步更新本文。
+- 不把临时想法随手写进历史计划文档。
 
 ## 测试规则
 
@@ -83,3 +195,4 @@ npm run release:check
 - 涉及审核、映射、库存、导出字段时，补 API 测试；有前端交互时补 Web 测试。
 - 普通用户界面避免展示 `mock`、`API`、`production_api` 等技术词；开发者模式可以展示调试入口。
 - 商品名称相似匹配只作为候选提示，正式映射需要人工确认。
+- SQLite 目前适合本项目规模，最多 3 人同时使用时不需要优先迁移数据库。
