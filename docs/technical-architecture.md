@@ -59,8 +59,11 @@ packages/shared
 packages/workflow
   订单解析、商品匹配输入输出、库存初审、Excel 导出
 
-backend/src/integrations
-  旺店通 API client、环境变量读取
+apps/api/src/wdtClientAdapter.ts
+  旺店通只读 client 装配、环境变量读取
+
+backend/src/probes
+  legacy 诊断脚本和历史探针，不作为新功能入口
 ```
 
 核心原则：

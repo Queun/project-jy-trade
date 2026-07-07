@@ -82,6 +82,8 @@
 - `outputs/`、`data/`、`inputs/`：运行产物和本地数据，不提交。
 - `ole案例文件——发货前/`：本地私有案例文件，不提交，不作为自动测试依赖。
 
+`backend/` 不是线上后端。线上 API 在 `apps/api`，`backend/` 只作为 legacy probe 和诊断工具保留。
+
 如需迁移旧 probe，先把可复用逻辑沉淀到 `packages/workflow` 或 `apps/api`，再让 probe 只做命令行包装。
 
 ## WSL 开发建议
@@ -123,6 +125,8 @@ cp -r /mnt/d/Projects/project-jy-trade/ole案例文件——发货前 ~/projects
 
 ## 常用命令
 
+主链路命令：
+
 ```bash
 npm ci
 npm run dev:api
@@ -132,13 +136,24 @@ npm run deploy:check
 npm run db:migrate
 ```
 
+诊断 probe 命令：
+
+```bash
+npm run probe:wdt -- warehouse
+npm run probe:wdt:sync-goods -- full
+npm run probe:diagnose-order -- <order-file> <output-file>
+npm run probe:confirm-mapping -- --external-barcode <barcode> --wdt-spec-no <spec-no>
+```
+
+历史 `node:*` 脚本暂时保留为兼容入口，新文档和新流程优先使用 `probe:*`。
+
 提交前至少运行：
 
 ```bash
 npm run deploy:check
 ```
 
-涉及旧 `backend/` 诊断脚本时，同时运行：
+涉及 legacy probe 或 `backend/` 诊断脚本时，同时运行：
 
 ```bash
 npm test
