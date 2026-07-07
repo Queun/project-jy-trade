@@ -63,6 +63,7 @@ import {
   type WdtGoodsWindowClient,
 } from "./wdtGoodsSync.js";
 import { createWdtReadClientsFromEnv } from "./wdtClientAdapter.js";
+import { ensureRuntimeDir, resolveProjectRoot, resolveRuntimeDir } from "./runtimePaths.js";
 import {
   decideLocalProductMatch,
   loadOrderLines,
@@ -114,9 +115,9 @@ export class StoreValidationError extends Error {
 
 export function createSqliteStore(options: StoreOptions = {}) {
   const database = createDatabaseContext(options.databaseUrl);
-  const projectRoot = options.projectRoot ?? resolve(process.cwd(), "../..");
-  const exportsDir = resolveRuntimeDir(process.env.JY_TRADE_EXPORTS_DIR, resolve(projectRoot, "outputs/exports"), projectRoot);
-  const configuredUploadDir = resolveRuntimeDir(process.env.JY_TRADE_UPLOAD_DIR, resolve(process.cwd(), "inputs/uploads"), projectRoot);
+  const projectRoot = options.projectRoot ?? resolveProjectRoot();
+  const exportsDir = ensureRuntimeDir(resolveRuntimeDir(process.env.JY_TRADE_EXPORTS_DIR, resolve(projectRoot, "outputs/exports"), projectRoot));
+  const configuredUploadDir = ensureRuntimeDir(resolveRuntimeDir(process.env.JY_TRADE_UPLOAD_DIR, resolve(projectRoot, "inputs/uploads"), projectRoot));
   const uploadDirs = uniquePaths([
     configuredUploadDir,
     resolve(process.cwd(), "inputs/uploads"),
@@ -1901,12 +1902,6 @@ async function insertAuditLog(
 function resolveProjectPath(path: string, projectRoot: string): string {
   if (isAbsolute(path)) return path;
   return resolve(projectRoot, path);
-}
-
-function resolveRuntimeDir(configuredPath: string | undefined, fallbackPath: string, basePath: string) {
-  const trimmed = configuredPath?.trim();
-  if (!trimmed) return fallbackPath;
-  return isAbsolute(trimmed) ? resolve(trimmed) : resolve(basePath, trimmed);
 }
 
 function uniquePaths(paths: string[]) {

@@ -52,6 +52,8 @@ chmod 600 .env
 mkdir -p data/uploads data/exports backups
 ```
 
+`data/uploads`、`data/exports` 和 SQLite 数据库父目录会由应用或迁移命令自动创建；上面的 `mkdir` 只是首次部署时显式预创建，便于检查权限和目录位置。
+
 编辑 `.env`，至少确认：
 
 ```env
@@ -152,7 +154,7 @@ journalctl -u jy-trade-api -n 100 --no-pager
 ## 哪些步骤可以暂时不做
 
 - 不创建 `jytrade` 用户：可以，试运行可用 `root`。正式长期运行再考虑降权。
-- 不做软链接：可以。现在通过 `DATABASE_URL`、`JY_TRADE_UPLOAD_DIR`、`JY_TRADE_EXPORTS_DIR` 配置目录。
+- 不做软链接：可以。现在通过 `DATABASE_URL`、`JY_TRADE_UPLOAD_DIR`、`JY_TRADE_EXPORTS_DIR` 配置目录；相对路径统一按项目根目录解析，并会自动创建需要的父目录。
 - 不填 WDT 配置：可以启动系统，但不能做真实商品同步、真实初审和库存查询。
 - 不配 HTTPS：可以先用 IP + HTTP 测试。正式多人使用建议配置 HTTPS。
 - 不做自动备份：可以先手动备份。真实使用后建议每天备份 SQLite。

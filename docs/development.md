@@ -11,9 +11,9 @@
 - `docs/deployment.md`：腾讯云部署、Nginx、进程管理、备份和发布流程。
 - `docs/excel-field-dictionary.md`：Excel 样例字段字典，后续导出字段对照也应沉淀到这里。
 - `docs/technical-architecture.md`：技术架构和关键取舍。
-- `docs/api-test-plan.md`：旺店通 API 探测记录和接口验证背景。
-- `docs/flow-simulation.md`：早期流程模拟记录，仅作历史参考。
-- `docs/rebuild-development-plan.md`：本轮重建历史计划，不再追加新的开发待办。
+- `docs/archive/api-test-plan.md`：旺店通 API 探测记录和接口验证背景，仅作历史参考。
+- `docs/archive/flow-simulation.md`：早期流程模拟记录，仅作历史参考。
+- `docs/archive/rebuild-development-plan.md`：本轮重建历史计划，不再追加新的开发待办。
 
 文档管理规则：
 

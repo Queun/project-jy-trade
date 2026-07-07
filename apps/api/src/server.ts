@@ -30,11 +30,12 @@ import {
   type WdtGoodsSpecSearchResultDto,
   type WdtGoodsSyncRunDto,
 } from "@jy-trade/shared";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { extname, isAbsolute, join, resolve } from "node:path";
+import { readFile, writeFile } from "node:fs/promises";
+import { extname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 
 import { createSqliteStore, StoreValidationError, type StoreOptions } from "./store.js";
+import { ensureRuntimeDir, resolveProjectRoot, resolveRuntimeDir } from "./runtimePaths.js";
 
 interface BuildApiServerOptions extends StoreOptions {
   logger?: boolean;
@@ -43,7 +44,7 @@ interface BuildApiServerOptions extends StoreOptions {
 export function buildApiServer(options: BuildApiServerOptions = {}) {
   const app = Fastify({ logger: options.logger ?? true });
   const store = createSqliteStore(options);
-  const projectRoot = options.projectRoot ?? resolve(process.cwd(), "../..");
+  const projectRoot = options.projectRoot ?? resolveProjectRoot();
 
   void app.register(cors, { origin: true });
   app.addHook("onClose", async () => store.close());
@@ -115,8 +116,7 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
       return reply.code(400).send({ message: "只支持上传 Excel 订货单文件" });
     }
 
-    const uploadDir = resolveRuntimeDir(process.env.JY_TRADE_UPLOAD_DIR, join(process.cwd(), "inputs", "uploads"), projectRoot);
-    await mkdir(uploadDir, { recursive: true });
+    const uploadDir = ensureRuntimeDir(resolveRuntimeDir(process.env.JY_TRADE_UPLOAD_DIR, join(projectRoot, "inputs", "uploads"), projectRoot));
     const storedName = `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID()}${extension}`;
     const filePath = join(uploadDir, storedName);
     await writeFile(filePath, Buffer.from(body.contentBase64, "base64"));
@@ -322,12 +322,6 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
 
 function getCurrentUser(request: unknown) {
   return (request as { currentUser?: AuthUserDto }).currentUser;
-}
-
-function resolveRuntimeDir(configuredPath: string | undefined, fallbackPath: string, basePath: string) {
-  const trimmed = configuredPath?.trim();
-  if (!trimmed) return fallbackPath;
-  return isAbsolute(trimmed) ? resolve(trimmed) : resolve(basePath, trimmed);
 }
 
 function requireRole(request: unknown, allowedRoles: UserRole[]) {
