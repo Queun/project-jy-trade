@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { CheckCheck, ChevronDown, ChevronUp, ClipboardList, Download, FileSpreadsheet, HelpCircle, LogOut, MapPin, PackageCheck, PackageSearch, RefreshCcw, Save, Send, Settings, Trash2, Upload, Warehouse, X } from "lucide-react";
 import type {
   AuthUserDto,
@@ -47,6 +47,14 @@ const filters: Array<{ key: FilterKey; label: string }> = [
   { key: "do_not_ship", label: "不发货" },
   { key: "priority", label: "优先处理" },
   { key: "over_suggested", label: "超建议数" },
+];
+
+const workTabs: Array<{ key: WorkTab; label: string; icon: typeof FileSpreadsheet }> = [
+  { key: "import", label: "导入订单", icon: FileSpreadsheet },
+  { key: "review", label: "审核发货", icon: ClipboardList },
+  { key: "export", label: "做单", icon: PackageCheck },
+  { key: "addresses", label: "地址维护", icon: MapPin },
+  { key: "external-products", label: "商品维护", icon: PackageSearch },
 ];
 
 export function App() {
@@ -400,7 +408,7 @@ export function App() {
   }
 
   async function saveDecision(line: ReviewLineDto, patch?: Partial<ReviewDraft>, options: { silent?: boolean } = {}) {
-    const draft = { ...(draftById[line.id] ?? toDraft(line)), ...patch };
+    const draft = { ...draftById[line.id], ...patch };
     const approvedShipQty = Number(draft.approvedShipQty);
     const localError = validateDraft(line, draft, approvedShipQty);
     if (localError) {
@@ -467,7 +475,7 @@ export function App() {
   }
 
   async function autoSaveReason(line: ReviewLineDto, reason: string) {
-    const draft = { ...(draftById[line.id] ?? toDraft(line)), reason };
+    const draft = { ...draftById[line.id], reason };
     setSavingReasonById((current) => ({ ...current, [line.id]: true }));
     await saveDecision(line, draft, { silent: true });
     setSavingReasonById((current) => {
@@ -582,8 +590,6 @@ export function App() {
   const stats = useMemo(() => buildStats(reviewLines), [reviewLines]);
   const filteredLines = useMemo(() => reviewLines.filter((line) => matchesFilter(line, activeFilter)), [reviewLines, activeFilter]);
   const permissions = useMemo(() => buildUserPermissions(user), [user]);
-  const unresolvedProductCount = stats.ambiguous + stats.notFound;
-  const missingAddressCount = makeOrderReadiness?.missingAddressCount ?? 0;
 
   if (authLoading) {
     return (
@@ -628,34 +634,22 @@ export function App() {
 
   return (
     <main className="min-h-screen bg-background text-foreground">
-      <section className="flex min-h-screen flex-col">
-        <header className="flex flex-wrap items-center justify-between gap-4 border-b border-border bg-card px-5 py-4">
-          <div className="flex min-w-0 items-center gap-3">
-            <div className="grid h-9 w-9 shrink-0 place-items-center rounded-md bg-primary text-sm font-bold text-primary-foreground">
-              JY
-            </div>
-            <div className="min-w-0">
-              <h1 className="truncate text-xl font-semibold tracking-normal">订单处理工作台</h1>
-              <p className="text-sm text-muted-foreground">导入订货单，审核发货数量，导出做单 Excel</p>
-            </div>
+      <section className="mx-auto flex w-full max-w-[1500px] flex-col gap-5 px-5 py-5">
+        <header className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
+          <div>
+            <p className="text-sm text-muted-foreground">漾锦贸易订单初审平台</p>
+            <h1 className="mt-1 text-2xl font-semibold tracking-normal">订单处理工作台</h1>
           </div>
+          <GoodsSyncHeaderStatus error={goodsSyncError} run={goodsSyncRun} />
           <div className="flex flex-wrap items-center gap-2">
-            <GoodsSyncHeaderStatus error={goodsSyncError} run={goodsSyncRun} />
-            <Button className="h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80" onClick={() => setShowSettings((current) => !current)}>
-              <Settings className="h-4 w-4" />
-              设置
-            </Button>
-            <Button
-              className={activeTab === "addresses" || activeTab === "external-products" ? "h-8 px-2" : "h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80"}
-              data-testid="work-tab-external-products"
-              onClick={() => setActiveTab("external-products")}
-            >
-              <PackageSearch className="h-4 w-4" />
-              维护
-            </Button>
+            {activeBatch ? <Badge tone={batchStatusTone(activeBatch.status)}>{batchStatusText(activeBatch.status)}</Badge> : null}
             <Button className="h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80" onClick={reopenHelp}>
               <HelpCircle className="h-4 w-4" />
               帮助
+            </Button>
+            <Button className="h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80" onClick={() => setShowSettings((current) => !current)}>
+              <Settings className="h-4 w-4" />
+              设置
             </Button>
             <label className="inline-flex h-8 items-center gap-2 rounded-md border border-border bg-card px-2 text-sm text-muted-foreground">
               <input
@@ -674,7 +668,7 @@ export function App() {
           </div>
         </header>
         {successNotice ? (
-          <div className="fixed left-1/2 top-6 z-[60] -translate-x-1/2 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800 shadow-sm">
+          <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-800">
             {successNotice}
           </div>
         ) : null}
@@ -697,57 +691,34 @@ export function App() {
           />
         ) : null}
 
-        <nav className="flex flex-wrap items-center justify-between gap-3 border-b border-border bg-background px-5 py-3" aria-label="业务步骤">
-          <div className="flex flex-wrap items-center gap-2">
-            <WorkflowStepButton active={activeTab === "import"} done={Boolean(activeBatch)} testId="work-tab-import" onClick={() => setActiveTab("import")}>
-              1 导入
-            </WorkflowStepButton>
-            <WorkflowStepButton active={activeTab === "review"} done={reviewLines.length > 0} testId="work-tab-review" onClick={() => setActiveTab("review")}>
-              2 审核
-            </WorkflowStepButton>
-            <WorkflowStepButton active={activeTab === "export"} done={activeBatch?.status === "exported"} testId="work-tab-export" onClick={() => setActiveTab("export")}>
-              3 导出
-            </WorkflowStepButton>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              className="h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80"
-              data-testid="work-tab-addresses"
-              onClick={() => setActiveTab("addresses")}
-            >
-              <MapPin className="h-4 w-4" />
-              地址维护
-            </Button>
-            <Button
-              className="h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80"
-              data-testid="work-tab-external-products-secondary"
-              onClick={() => setActiveTab("external-products")}
-            >
-              <PackageSearch className="h-4 w-4" />
-              商品维护
-            </Button>
-          </div>
-        </nav>
+        <section className={activeTab === "addresses" ? "grid gap-4" : "grid gap-4 xl:grid-cols-[300px_minmax(0,1fr)]"}>
+          {activeTab === "addresses" ? null : <BatchList batches={batches} activeBatchId={activeBatch?.id} canDelete={permissions.canDeleteBatch} onDelete={(batch) => void deleteBatch(batch)} onSelect={(batch) => void loadBatch(batch)} />}
 
-        <section className="grid flex-1 gap-4 px-5 py-4 lg:grid-cols-[280px_minmax(0,1fr)] 2xl:grid-cols-[280px_minmax(0,1fr)_300px]">
-          <BatchList batches={batches} activeBatchId={activeBatch?.id} canDelete={permissions.canDeleteBatch} onDelete={(batch) => void deleteBatch(batch)} onSelect={(batch) => void loadBatch(batch)} />
-
-          <section className="min-w-0 space-y-4">
+          <section className="min-w-0">
             {showHelp ? <HelpPanel onDismiss={dismissHelp} /> : null}
-            <TaskHero
-              activeBatch={activeBatch}
-              activeTab={activeTab}
-              canReview={permissions.canReview}
-              message={message}
-              missingAddressCount={missingAddressCount}
-              reviewLines={reviewLines}
-              stats={stats}
-              unresolvedProductCount={unresolvedProductCount}
-              onBulkApprove={() => void bulkApprove()}
-              onImportTab={() => setActiveTab("import")}
-              onReviewTab={() => setActiveTab("review")}
-              onSubmitReview={() => void submitReview()}
-            />
+            {activeTab === "addresses" ? null : <CurrentBatchPanel batch={activeBatch} message={message} reviewLines={reviewLines} />}
+
+            <nav className={activeTab === "addresses" ? "grid gap-2 rounded-md border border-border bg-card p-1 sm:grid-cols-2 lg:grid-cols-5" : "mt-4 grid gap-2 rounded-md border border-border bg-card p-1 sm:grid-cols-2 lg:grid-cols-5"} aria-label="业务步骤">
+              {workTabs.map((tab) => {
+                const Icon = tab.icon;
+                const active = tab.key === activeTab;
+                return (
+                  <button
+                    key={tab.key}
+                    className={
+                      active
+                        ? "inline-flex h-10 items-center justify-center gap-2 rounded bg-primary px-3 text-sm font-medium text-primary-foreground"
+                        : "inline-flex h-10 items-center justify-center gap-2 rounded px-3 text-sm font-medium text-muted-foreground transition hover:bg-muted"
+                    }
+                    data-testid={`work-tab-${tab.key}`}
+                    onClick={() => setActiveTab(tab.key)}
+                  >
+                    <Icon className="h-4 w-4" />
+                    {tab.label}
+                  </button>
+                );
+              })}
+            </nav>
 
             {activeTab === "import" ? (
               <ImportTab
@@ -771,37 +742,29 @@ export function App() {
             ) : null}
 
             {activeTab === "review" ? (
-              <>
-                <ReviewBlockers
-                  missingAddressCount={missingAddressCount}
-                  unresolvedProductCount={unresolvedProductCount}
-                  onOpenAddressTab={() => setActiveTab("addresses")}
-                  onOpenProductTab={() => setActiveTab("external-products")}
-                />
-                <ReviewTab
-                  activeBatch={activeBatch}
-                  activeFilter={activeFilter}
-                  draftById={draftById}
-                  errorsById={errorsById}
-                  filteredLines={filteredLines}
-                  isDeveloperMode={developerMode}
-                  savingReasonById={savingReasonById}
-                  canReview={permissions.canReview}
-                  stats={stats}
-                  mappingFocusQuery={mappingFocusQuery}
-                  onBulkApprove={() => void bulkApprove()}
-                  onDraftChange={updateDraft}
-                  onFilterChange={setActiveFilter}
-                  onLocateMapping={locateProductMapping}
-                  onMappingConfirmed={rerunActiveBatchAfterMapping}
-                  onMessage={setMessage}
-                  onPriorityChange={togglePriority}
-                  onQuickDecision={quickDecision}
-                  onReasonSave={autoSaveReason}
-                  onSave={saveDecision}
-                  onSubmitReview={() => void submitReview()}
-                />
-              </>
+              <ReviewTab
+                activeBatch={activeBatch}
+                activeFilter={activeFilter}
+                draftById={draftById}
+                errorsById={errorsById}
+                filteredLines={filteredLines}
+                isDeveloperMode={developerMode}
+                savingReasonById={savingReasonById}
+                canReview={permissions.canReview}
+                stats={stats}
+                mappingFocusQuery={mappingFocusQuery}
+                onBulkApprove={() => void bulkApprove()}
+                onDraftChange={updateDraft}
+                onFilterChange={setActiveFilter}
+                onLocateMapping={locateProductMapping}
+                onMappingConfirmed={rerunActiveBatchAfterMapping}
+                onMessage={setMessage}
+                onPriorityChange={togglePriority}
+                onQuickDecision={quickDecision}
+                onReasonSave={autoSaveReason}
+                onSave={saveDecision}
+                onSubmitReview={() => void submitReview()}
+              />
             ) : null}
 
             {activeTab === "export" ? (
@@ -835,352 +798,10 @@ export function App() {
               />
             ) : null}
           </section>
-
-          <aside className="space-y-4 lg:col-start-2 2xl:col-start-auto">
-            <NextActionPanel
-              activeBatch={activeBatch}
-              activeTab={activeTab}
-              canExport={permissions.canExport}
-              canReview={permissions.canReview}
-              makeOrderReadiness={makeOrderReadiness}
-              stats={stats}
-              onCreateExport={(type) => void createExport(type)}
-              onReviewTab={() => setActiveTab("review")}
-              onSubmitReview={() => void submitReview()}
-            />
-            <ExportReadinessPanel
-              makeOrderReadiness={makeOrderReadiness}
-              reviewLines={reviewLines}
-              stats={stats}
-              onOpenAddressTab={() => setActiveTab("addresses")}
-              onOpenProductTab={() => setActiveTab("external-products")}
-            />
-          </aside>
         </section>
       </section>
     </main>
   );
-}
-
-function WorkflowStepButton({
-  active,
-  children,
-  done,
-  testId,
-  onClick,
-}: {
-  active: boolean;
-  children: ReactNode;
-  done?: boolean;
-  testId: string;
-  onClick: () => void;
-}) {
-  const className = active
-    ? "inline-flex min-h-10 items-center justify-center rounded-md border border-primary bg-primary/15 px-4 text-sm font-semibold text-primary"
-    : done
-      ? "inline-flex min-h-10 items-center justify-center rounded-md border border-emerald-200 bg-emerald-50 px-4 text-sm font-semibold text-emerald-800 hover:bg-emerald-100"
-      : "inline-flex min-h-10 items-center justify-center rounded-md border border-border bg-card px-4 text-sm font-semibold text-muted-foreground hover:bg-muted";
-
-  return (
-    <button className={className} data-testid={testId} onClick={onClick}>
-      {children}
-    </button>
-  );
-}
-
-function TaskHero({
-  activeBatch,
-  activeTab,
-  canReview,
-  message,
-  missingAddressCount,
-  reviewLines,
-  stats,
-  unresolvedProductCount,
-  onBulkApprove,
-  onImportTab,
-  onReviewTab,
-  onSubmitReview,
-}: {
-  activeBatch: BatchSummary | null;
-  activeTab: WorkTab;
-  canReview: boolean;
-  message: string;
-  missingAddressCount: number;
-  reviewLines: ReviewLineDto[];
-  stats: ReturnType<typeof buildStats>;
-  unresolvedProductCount: number;
-  onBulkApprove: () => void;
-  onImportTab: () => void;
-  onReviewTab: () => void;
-  onSubmitReview: () => void;
-}) {
-  const detail = useMemo(() => buildBatchDetail(reviewLines), [reviewLines]);
-  const maintenanceMode = activeTab === "addresses" || activeTab === "external-products";
-  const title = activeTab === "import"
-    ? "当前要做：导入订货单并生成初审"
-    : activeTab === "export"
-      ? "当前要做：生成并下载 Excel"
-      : activeTab === "addresses"
-        ? "辅助处理：补齐门店做单地址"
-        : activeTab === "external-products"
-          ? "辅助处理：维护小样和套盒商品"
-          : "当前要做：确认发货数量，然后提交审核";
-  const description = activeTab === "import"
-    ? "选择 .xls 或 .xlsx 订货单，系统会读取商品数据并查询库存。"
-    : activeTab === "export"
-      ? "审核完成后生成初审单、确定发货单和做单 Excel。"
-      : maintenanceMode
-        ? "处理完成后回到审核或导出，当前批次状态会重新检查。"
-        : "系统已完成商品匹配和库存初审。可发项可以批量通过，未匹配和缺地址项按提示处理。";
-
-  return (
-    <section className="rounded-md border border-border bg-card p-5">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            {activeBatch ? <Badge tone={batchStatusTone(activeBatch.status)}>{batchStatusText(activeBatch.status)}</Badge> : <Badge tone="neutral">未选择批次</Badge>}
-            {activeBatch ? <Badge tone="neutral">{activeBatch.fileName}</Badge> : null}
-          </div>
-          <h2 className="mt-3 text-2xl font-semibold leading-tight tracking-normal">{title}</h2>
-          <p className="mt-2 max-w-3xl text-sm text-muted-foreground">{description}</p>
-          {activeBatch ? (
-            <div className="mt-3 flex flex-wrap gap-3 text-sm text-muted-foreground">
-              <span>{activeBatch.orderLineCount} 行</span>
-              <span>{activeBatch.matchedBarcodeCount}/{activeBatch.uniqueBarcodeCount} 已匹配</span>
-              <span>{detail.storeCount} 个门店</span>
-              {unresolvedProductCount > 0 ? <span>{unresolvedProductCount} 个商品需处理</span> : null}
-              {missingAddressCount > 0 ? <span>{missingAddressCount} 个门店缺地址</span> : null}
-            </div>
-          ) : (
-            <p className="mt-3 text-sm text-muted-foreground">{message}</p>
-          )}
-          {activeBatch && message && !maintenanceMode ? <p className="mt-3 text-sm font-medium text-muted-foreground">{message}</p> : null}
-        </div>
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          {activeTab === "review" ? (
-            <>
-              <Button disabled={!activeBatch || !canReview} onClick={onBulkApprove}>
-                <CheckCheck className="h-4 w-4" />
-                批量通过可发项
-              </Button>
-              <Button disabled={!activeBatch || !canReview} onClick={onSubmitReview}>
-                <Send className="h-4 w-4" />
-                提交审核完成
-              </Button>
-            </>
-          ) : maintenanceMode ? (
-            <Button onClick={onReviewTab}>
-              <ClipboardList className="h-4 w-4" />
-              回到审核
-            </Button>
-          ) : activeTab === "export" ? (
-            <Button onClick={onReviewTab}>
-              <ClipboardList className="h-4 w-4" />
-              查看审核
-            </Button>
-          ) : (
-            <Button onClick={onImportTab}>
-              <FileSpreadsheet className="h-4 w-4" />
-              准备导入
-            </Button>
-          )}
-        </div>
-      </div>
-      {activeTab === "review" ? (
-        <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-5">
-          <Stat label="明细行" value={stats.total} />
-          <Stat label="可发" value={reviewLines.filter((line) => line.status === "库存充足").length} />
-          <Stat label="部分满足" value={reviewLines.filter((line) => line.status === "部分满足").length} />
-          <Stat label="缺货" value={reviewLines.filter((line) => line.status === "库存不足").length} />
-          <Stat label="未匹配" value={unresolvedProductCount} />
-        </div>
-      ) : null}
-    </section>
-  );
-}
-
-function ReviewBlockers({
-  missingAddressCount,
-  unresolvedProductCount,
-  onOpenAddressTab,
-  onOpenProductTab,
-}: {
-  missingAddressCount: number;
-  unresolvedProductCount: number;
-  onOpenAddressTab: () => void;
-  onOpenProductTab: () => void;
-}) {
-  if (missingAddressCount === 0 && unresolvedProductCount === 0) return null;
-
-  return (
-    <section className="rounded-md border border-amber-200 bg-amber-50/80 p-4 text-amber-950">
-      <div className="grid gap-3">
-        {unresolvedProductCount > 0 ? (
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <div className="font-semibold">{unresolvedProductCount} 个商品未完成匹配</div>
-              <div className="text-sm text-amber-900/80">处理后会自动刷新当前批次的初审建议。</div>
-            </div>
-            <Button className="bg-white text-amber-950 hover:bg-amber-100" onClick={onOpenProductTab}>
-              <PackageSearch className="h-4 w-4" />
-              处理商品映射
-            </Button>
-          </div>
-        ) : null}
-        {missingAddressCount > 0 ? (
-          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-amber-200 pt-3 first:border-t-0 first:pt-0">
-            <div>
-              <div className="font-semibold">{missingAddressCount} 个门店缺少做单地址</div>
-              <div className="text-sm text-amber-900/80">不影响审核，但会阻止做单 Excel 导出。</div>
-            </div>
-            <Button className="bg-white text-amber-950 hover:bg-amber-100" onClick={onOpenAddressTab}>
-              <MapPin className="h-4 w-4" />
-              补地址
-            </Button>
-          </div>
-        ) : null}
-      </div>
-    </section>
-  );
-}
-
-function NextActionPanel({
-  activeBatch,
-  activeTab,
-  canExport,
-  canReview,
-  makeOrderReadiness,
-  stats,
-  onCreateExport,
-  onReviewTab,
-  onSubmitReview,
-}: {
-  activeBatch: BatchSummary | null;
-  activeTab: WorkTab;
-  canExport: boolean;
-  canReview: boolean;
-  makeOrderReadiness: MakeOrderReadinessDto | null;
-  stats: ReturnType<typeof buildStats>;
-  onCreateExport: (type: ExportDto["type"]) => void;
-  onReviewTab: () => void;
-  onSubmitReview: () => void;
-}) {
-  const reviewed = activeBatch?.status === "reviewed" || activeBatch?.status === "exported";
-  const canMakeOrder = Boolean(reviewed && makeOrderReadiness?.canExport && canExport);
-  const title = !activeBatch
-    ? "先导入或选择批次"
-    : activeTab === "export" || reviewed
-      ? "生成做单 Excel"
-      : "完成审核后进入导出";
-  const text = !activeBatch
-    ? "当前没有选中的批次。"
-    : reviewed
-      ? makeOrderReadiness?.canExport
-        ? "导出准备已通过，可以生成做单 Excel。"
-        : "还有导出前事项需要处理。"
-      : stats.pending > 0
-        ? `当前还有 ${stats.pending} 行待审核。`
-        : "审核明细已处理，可以提交审核完成。";
-
-  return (
-    <section className="rounded-md border border-border bg-card p-4">
-      <Badge tone="info">下一步</Badge>
-      <h2 className="mt-3 text-lg font-semibold">{title}</h2>
-      <p className="mt-2 text-sm text-muted-foreground">{text}</p>
-      {reviewed ? (
-        <Button className="mt-4 w-full" disabled={!canMakeOrder} onClick={() => onCreateExport("wdt_import")}>
-          <Download className="h-4 w-4" />
-          生成做单 Excel
-        </Button>
-      ) : activeTab === "review" ? (
-        <Button className="mt-4 w-full" disabled={!activeBatch || !canReview} onClick={onSubmitReview}>
-          <Send className="h-4 w-4" />
-          完成审核
-        </Button>
-      ) : (
-        <Button className="mt-4 w-full" disabled={!activeBatch} onClick={onReviewTab}>
-          <ClipboardList className="h-4 w-4" />
-          回到审核
-        </Button>
-      )}
-    </section>
-  );
-}
-
-function ExportReadinessPanel({
-  makeOrderReadiness,
-  reviewLines,
-  stats,
-  onOpenAddressTab,
-  onOpenProductTab,
-}: {
-  makeOrderReadiness: MakeOrderReadinessDto | null;
-  reviewLines: ReviewLineDto[];
-  stats: ReturnType<typeof buildStats>;
-  onOpenAddressTab: () => void;
-  onOpenProductTab: () => void;
-}) {
-  const unmatchedCount = stats.ambiguous + stats.notFound;
-  const missingAddressCount = makeOrderReadiness?.missingAddressCount ?? 0;
-
-  return (
-    <section className="rounded-md border border-border bg-card">
-      <div className="border-b border-border p-4">
-        <h2 className="text-base font-semibold">导出准备</h2>
-        <p className="mt-1 text-sm text-muted-foreground">只显示会影响下一步的事项</p>
-      </div>
-      <div className="grid gap-2 p-4">
-        <ReadinessItem ok={reviewLines.length > 0} title="审核明细已生成" description={reviewLines.length > 0 ? `${reviewLines.length} 行可查看` : "导入后自动生成"} />
-        <ReadinessItem
-          ok={unmatchedCount === 0}
-          title={unmatchedCount === 0 ? "商品匹配已完成" : `还有 ${unmatchedCount} 个商品未匹配`}
-          description={unmatchedCount === 0 ? "可以进入完整复核" : "处理后才能完整复核"}
-          onClick={unmatchedCount > 0 ? onOpenProductTab : undefined}
-        />
-        <ReadinessItem
-          ok={missingAddressCount === 0}
-          title={missingAddressCount === 0 ? "做单地址已齐全" : `${missingAddressCount} 个门店缺地址`}
-          description={missingAddressCount === 0 ? "做单 Excel 可生成" : "做单 Excel 导出前补齐"}
-          onClick={missingAddressCount > 0 ? onOpenAddressTab : undefined}
-        />
-      </div>
-    </section>
-  );
-}
-
-function ReadinessItem({
-  description,
-  ok,
-  title,
-  onClick,
-}: {
-  description: string;
-  ok: boolean;
-  title: string;
-  onClick?: () => void;
-}) {
-  const content = (
-    <>
-      <span className={ok ? "grid h-5 w-5 shrink-0 place-items-center rounded-full bg-emerald-100 text-xs font-bold text-emerald-800" : "grid h-5 w-5 shrink-0 place-items-center rounded-full bg-amber-100 text-xs font-bold text-amber-800"}>
-        {ok ? "✓" : "!"}
-      </span>
-      <span className="min-w-0 text-left">
-        <span className="block font-semibold">{title}</span>
-        <span className="block text-sm text-muted-foreground">{description}</span>
-      </span>
-    </>
-  );
-
-  if (onClick) {
-    return (
-      <button className="grid grid-cols-[20px_1fr] gap-2 rounded-md border border-border bg-background p-3 text-left hover:bg-muted/50" onClick={onClick}>
-        {content}
-      </button>
-    );
-  }
-
-  return <div className="grid grid-cols-[20px_1fr] gap-2 rounded-md border border-border bg-background p-3">{content}</div>;
 }
 
 function BatchList({
@@ -1572,19 +1193,41 @@ function ReviewTab({
   const hasRows = filteredLines.length > 0;
 
   return (
-    <section className="min-w-0 space-y-4">
-      <section className="overflow-hidden rounded-md border border-border bg-card">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border p-4">
+    <section className="mt-4 min-w-0 space-y-4">
+      <div className="grid grid-cols-2 gap-3 xl:grid-cols-5">
+        <Stat label="明细行" value={stats.total} />
+        <Stat label="待审核" value={stats.pending} />
+        <Stat label="发货" value={stats.ship} />
+        <Stat label="不发货" value={stats.doNotShip} />
+        <Stat label="优先处理" value={stats.priority} />
+      </div>
+      <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+        <Stat label="已匹配" value={stats.matched} />
+        <Stat label="需确认" value={stats.ambiguous} />
+        <Stat label="未找到" value={stats.notFound} />
+        <Stat label="库存异常" value={stats.inventoryException} />
+      </div>
+      <section className="rounded-md border border-border bg-card p-4">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h2 className="text-lg font-semibold">审核明细</h2>
+            <h2 className="text-lg font-semibold">审核发货</h2>
             <p className="text-sm text-muted-foreground">{activeBatch ? "确认本批次发货数量和原因" : "请先选择或导入批次"}</p>
           </div>
-          <Badge tone="neutral">{stats.total} 行</Badge>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button disabled={!activeBatch || !canReview} onClick={onBulkApprove}>
+              <CheckCheck className="h-4 w-4" />
+              批量通过可发项
+            </Button>
+            <Button disabled={!activeBatch || !canReview} onClick={onSubmitReview}>
+              <Send className="h-4 w-4" />
+              提交审核完成
+            </Button>
+          </div>
         </div>
-        {!canReview ? <PermissionHint className="m-4" message="当前账号不能审核发货，请联系管理员或切换到审核账号。" /> : null}
+        {!canReview ? <PermissionHint className="mb-3" message="当前账号不能审核发货，请联系管理员或切换到审核账号。" /> : null}
         {activeBatch ? (
           <>
-            <div className="flex flex-wrap gap-2 border-b border-border bg-muted/30 p-3">
+            <div className="mb-3 flex flex-wrap gap-2">
               {filters.map((filter) => (
                 <button
                   key={filter.key}
@@ -1795,7 +1438,7 @@ function PermissionHint({ className = "", message }: { className?: string; messa
 
 function Stat({ label, value }: { label: string; value: number }) {
   return (
-    <div className="rounded-md border border-border bg-card p-4" data-stat-label={label}>
+    <div className="rounded-md border border-border bg-card p-4">
       <div className="text-sm text-muted-foreground">{label}</div>
       <div className="mt-2 text-3xl font-semibold">{value}</div>
     </div>

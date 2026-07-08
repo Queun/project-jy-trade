@@ -1,4 +1,3 @@
-import { useEffect, useRef, useState } from "react";
 import { flexRender, getCoreRowModel, useReactTable, type ColumnDef } from "@tanstack/react-table";
 import type { ReviewDecision, ReviewLineDto } from "@jy-trade/shared";
 import { Search } from "lucide-react";
@@ -58,41 +57,48 @@ function reviewRowTone(line: ReviewLineDto, decision: ReviewDecision) {
     return {
       key: "ship",
       rowClass: "bg-emerald-50/70 hover:bg-emerald-50",
+      stripeClass: "border-l-emerald-500",
     };
   }
   if (decision === "do_not_ship") {
     return {
       key: "do_not_ship",
       rowClass: "bg-rose-50/70 hover:bg-rose-50",
+      stripeClass: "border-l-rose-500",
     };
   }
   if (line.matchStatus !== "matched" || line.status === "未匹配") {
     return {
       key: "unmatched",
       rowClass: "bg-sky-50/60 hover:bg-sky-50",
+      stripeClass: "border-l-sky-500",
     };
   }
   if (line.status === "库存不足") {
     return {
       key: "out_of_stock",
       rowClass: "bg-red-50/60 hover:bg-red-50",
+      stripeClass: "border-l-red-500",
     };
   }
   if (line.status === "部分满足") {
     return {
       key: "partial",
       rowClass: "bg-amber-50/70 hover:bg-amber-50",
+      stripeClass: "border-l-amber-500",
     };
   }
   if (line.status === "库存充足") {
     return {
       key: "ready",
       rowClass: "bg-emerald-50/35 hover:bg-emerald-50/60",
+      stripeClass: "border-l-emerald-300",
     };
   }
   return {
     key: "pending",
     rowClass: "bg-background hover:bg-muted/30",
+    stripeClass: "border-l-transparent",
   };
 }
 
@@ -113,7 +119,7 @@ export function ReviewTable({
     {
       header: "门店 / 订单",
       cell: ({ row }) => (
-        <div className="min-w-32">
+        <div className="min-w-36">
           <div className="font-medium">{row.original.storeName}</div>
           <div className="mt-1 text-xs text-muted-foreground">{row.original.orderNoticeNo}</div>
         </div>
@@ -143,7 +149,7 @@ export function ReviewTable({
     {
       header: "数量",
       cell: ({ row }) => (
-        <div className="min-w-24 text-sm">
+        <div className="min-w-28 text-sm">
           <div>订货 {row.original.orderQty}</div>
           <div className="mt-1 text-muted-foreground">建议 {row.original.suggestedShipQty}</div>
           <div className="mt-1 text-muted-foreground">
@@ -155,7 +161,7 @@ export function ReviewTable({
     {
       header: "状态",
       cell: ({ row }) => (
-        <div className="flex min-w-24 flex-col items-start gap-2">
+        <div className="flex min-w-28 flex-col items-start gap-2">
           <Badge tone={statusTone(row.original.status)}>{row.original.status}</Badge>
           <Badge tone={row.original.matchStatus === "matched" ? "info" : "warn"}>{matchStatusText(row.original.matchStatus)}</Badge>
         </div>
@@ -176,7 +182,7 @@ export function ReviewTable({
         const isOverSuggested = draft.decision === "ship" && Number.isFinite(approvedQty) && approvedQty > line.suggestedShipQty;
 
         return (
-          <div className="min-w-72 space-y-2">
+          <div className="min-w-80 space-y-2">
             <div className="flex flex-wrap items-center gap-2">
               <Badge tone={decisionTone(draft.decision)}>{decisionText(draft.decision)}</Badge>
               {line.priority ? <Badge tone="info">优先</Badge> : null}
@@ -203,7 +209,7 @@ export function ReviewTable({
                 优先处理
               </label>
             </div>
-            <div className="grid gap-2 sm:grid-cols-[96px_minmax(160px,1fr)_auto]">
+            <div className="grid gap-2 sm:grid-cols-[120px_1fr_auto]">
               <input
                 aria-label={`审核发货数 ${line.id}`}
                 className="h-9 rounded-md border border-input bg-background px-2 text-sm"
@@ -213,12 +219,16 @@ export function ReviewTable({
                 value={draft.approvedShipQty}
                 onChange={(event) => onDraftChange(line.id, { approvedShipQty: event.target.value })}
               />
-              <ReasonInput
+              <input
+                aria-label={`审核原因 ${line.id}`}
+                className="h-9 rounded-md border border-input bg-background px-2 text-sm"
                 disabled={readOnly}
-                lineId={line.id}
+                placeholder="原因"
                 value={draft.reason}
-                onChange={(reason) => onDraftChange(line.id, { reason })}
-                onSave={(reason) => onReasonSave(line, reason)}
+                onChange={(event) => {
+                  onDraftChange(line.id, { reason: event.target.value });
+                  onReasonSave(line, event.target.value);
+                }}
               />
               <Button className="h-9 px-3" disabled={readOnly} onClick={() => onSave(line)}>
                 保存数量
@@ -234,8 +244,8 @@ export function ReviewTable({
   const table = useReactTable({ data: rows, columns, getCoreRowModel: getCoreRowModel() });
 
   return (
-    <div className="overflow-x-auto bg-card">
-      <table className="w-full min-w-[1000px] border-collapse text-sm">
+    <div className="overflow-x-auto rounded-md border border-border bg-card">
+      <table className="w-full min-w-[1080px] border-collapse text-sm">
         <thead className="bg-muted text-muted-foreground">
           {table.getHeaderGroups().map((headerGroup) => (
             <tr key={headerGroup.id}>
@@ -256,7 +266,7 @@ export function ReviewTable({
             return (
               <tr key={row.id} className={cn("border-t border-border transition-colors", tone.rowClass)} data-review-state={tone.key}>
                 {row.getVisibleCells().map((cell, index) => (
-                  <td key={cell.id} className="px-3 py-3 align-top">
+                  <td key={cell.id} className={cn("px-3 py-3 align-top", index === 0 ? "border-l-4" : "", index === 0 ? tone.stripeClass : "")}>
                     {flexRender(cell.column.columnDef.cell, cell.getContext())}
                   </td>
                 ))}
@@ -273,43 +283,5 @@ export function ReviewTable({
         </tbody>
       </table>
     </div>
-  );
-}
-
-function ReasonInput({
-  disabled,
-  lineId,
-  value,
-  onChange,
-  onSave,
-}: {
-  disabled: boolean;
-  lineId: string;
-  value: string;
-  onChange: (reason: string) => void;
-  onSave: (reason: string) => void;
-}) {
-  const [localValue, setLocalValue] = useState(value);
-  const latestValue = useRef(value);
-
-  useEffect(() => {
-    setLocalValue(value);
-    latestValue.current = value;
-  }, [value]);
-
-  return (
-    <input
-      aria-label={`审核原因 ${lineId}`}
-      className="h-9 rounded-md border border-input bg-background px-2 text-sm"
-      disabled={disabled}
-      placeholder="原因"
-      value={localValue}
-      onBlur={() => onSave(latestValue.current)}
-      onChange={(event) => {
-        latestValue.current = event.target.value;
-        setLocalValue(event.target.value);
-        onChange(event.target.value);
-      }}
-    />
   );
 }

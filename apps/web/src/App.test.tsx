@@ -138,11 +138,10 @@ describe("App", () => {
     await clickBatch();
     switchToReviewTab();
 
-    expect(await statCardText("明细行")).toContain("3");
-    expect(await statCardText("可发")).toContain("1");
-    expect(await statCardText("部分满足")).toContain("1");
-    expect(await statCardText("缺货")).toContain("0");
-    expect(await statCardText("未匹配")).toContain("1");
+    expect(await statCardText("已匹配")).toContain("2");
+    expect(await statCardText("需确认")).toContain("0");
+    expect(await statCardText("未找到")).toContain("1");
+    expect(await statCardText("库存异常")).toContain("0");
   });
 
   it("locates product mapping from an exception row", async () => {
@@ -380,10 +379,9 @@ describe("App", () => {
 
     const row = await rowFor("可发商品");
     const reasonInput = within(row).getByLabelText("审核原因 line-1");
-    fireEvent.focusIn(reasonInput);
     fireEvent.change(reasonInput, { target: { value: "门店备注" } });
-    const updatedRow = await rowFor("可发商品");
-    fireEvent.focusOut(within(updatedRow).getByLabelText("审核原因 line-1"));
+    fireEvent.blur(reasonInput);
+
     await waitFor(() => expect(lines.find((line) => line.id === "line-1")?.reason).toBe("门店备注"));
   });
 
@@ -724,8 +722,8 @@ async function rowFor(productName: string) {
 }
 
 async function statCardText(label: string) {
-  await waitFor(() => expect(document.querySelector(`[data-stat-label="${label}"]`)).toBeInTheDocument());
-  const card = document.querySelector(`[data-stat-label="${label}"]`);
+  const labelElement = await screen.findByText(label);
+  const card = labelElement.parentElement;
   if (!card) throw new Error(`No stat card found for ${label}`);
   return card.textContent ?? "";
 }

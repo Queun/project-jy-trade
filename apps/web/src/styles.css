@@ -2,16 +2,16 @@
 @import "tw-animate-css";
 
 :root {
-  --background: hsl(210 24% 97%);
-  --foreground: hsl(215 28% 15%);
+  --background: hsl(48 22% 97%);
+  --foreground: hsl(210 18% 15%);
   --card: hsl(0 0% 100%);
-  --card-foreground: hsl(215 28% 15%);
-  --muted: hsl(210 18% 93%);
-  --muted-foreground: hsl(215 14% 38%);
-  --primary: hsl(176 72% 25%);
+  --card-foreground: hsl(210 18% 15%);
+  --muted: hsl(45 18% 92%);
+  --muted-foreground: hsl(210 9% 42%);
+  --primary: hsl(173 58% 31%);
   --primary-foreground: hsl(0 0% 100%);
-  --border: hsl(214 18% 84%);
-  --input: hsl(214 16% 72%);
+  --border: hsl(42 16% 84%);
+  --input: hsl(42 16% 78%);
 }
 
 @theme inline {
@@ -33,22 +33,5 @@
     background-color: var(--background);
     color: var(--foreground);
     font-family: "Aptos", "Microsoft YaHei", ui-sans-serif, system-ui, sans-serif;
-    font-kerning: normal;
-  }
-
-  button:focus,
-  input:focus,
-  select:focus,
-  textarea:focus {
-    outline: none;
-  }
-
-  button:focus-visible,
-  input:focus-visible,
-  select:focus-visible,
-  textarea:focus-visible,
-  label:focus-within {
-    outline: 2px solid var(--primary);
-    outline-offset: 2px;
   }
 }
