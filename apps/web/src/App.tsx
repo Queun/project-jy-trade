@@ -218,6 +218,7 @@ export function App() {
     setErrorsById({});
     await refreshExports(batch.id);
     await refreshMakeOrderReadiness(batch.id);
+    setMessage(batch.status === "reviewed" || batch.status === "exported" ? "已选择批次，可以查看审核或导出文件" : "已选择批次，可以继续审核");
   }
 
   async function refreshExports(batchId: string) {
