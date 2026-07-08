@@ -409,3 +409,147 @@ export const UpdateProductMappingStatusRequestSchema = z.object({
   note: z.string().max(500).default(""),
 });
 export type UpdateProductMappingStatusRequest = z.infer<typeof UpdateProductMappingStatusRequestSchema>;
+
+export const ExternalProductTypeSchema = z.enum(["normal", "sample", "bundle", "gift"]);
+export type ExternalProductType = z.infer<typeof ExternalProductTypeSchema>;
+
+export const ExternalProductStatusSchema = z.enum(["confirmed", "needs_review", "disabled"]);
+export type ExternalProductStatus = z.infer<typeof ExternalProductStatusSchema>;
+
+export const ExternalProductComponentRoleSchema = z.enum(["primary", "replacement", "extra"]);
+export type ExternalProductComponentRole = z.infer<typeof ExternalProductComponentRoleSchema>;
+
+export const ExternalProductComponentMatchStatusSchema = z.enum([
+  "unique_wdt_hit",
+  "no_wdt_hit",
+  "ambiguous_wdt_hit",
+  "deleted_only_wdt_hit",
+  "needs_review",
+]);
+export type ExternalProductComponentMatchStatus = z.infer<typeof ExternalProductComponentMatchStatusSchema>;
+
+export const ImportExternalProductsRequestSchema = z.object({
+  fileName: z.string().min(1),
+  contentBase64: z.string().min(1),
+});
+export type ImportExternalProductsRequest = z.infer<typeof ImportExternalProductsRequestSchema>;
+
+export const ExternalProductComponentDtoSchema = z.object({
+  id: z.string(),
+  externalProductId: z.string(),
+  sortOrder: z.number(),
+  role: ExternalProductComponentRoleSchema,
+  componentBarcode: z.string(),
+  componentGoodsCode: z.string(),
+  componentName: z.string(),
+  componentSpec: z.string(),
+  quantityMultiplier: z.number(),
+  wdtSpecNo: z.string(),
+  wdtGoodsNo: z.string(),
+  wdtGoodsName: z.string(),
+  wdtSpecName: z.string(),
+  wdtBarcode: z.string(),
+  matchStatus: ExternalProductComponentMatchStatusSchema,
+  matchMessage: z.string(),
+  note: z.string(),
+  sourceSheet: z.string(),
+  sourceRow: z.number(),
+  rawJson: z.string(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type ExternalProductComponentDto = z.infer<typeof ExternalProductComponentDtoSchema>;
+
+export const ExternalProductDtoSchema = z.object({
+  id: z.string(),
+  type: ExternalProductTypeSchema,
+  externalBarcode: z.string(),
+  externalGoodsCode: z.string(),
+  externalGoodsName: z.string(),
+  status: ExternalProductStatusSchema,
+  sourceFileName: z.string(),
+  sourceSheet: z.string(),
+  sourceRow: z.number(),
+  importedAt: z.string(),
+  rawJson: z.string(),
+  note: z.string(),
+  updatedByUserId: z.string().nullable().optional(),
+  updatedByUsername: z.string().nullable().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  components: z.array(ExternalProductComponentDtoSchema),
+});
+export type ExternalProductDto = z.infer<typeof ExternalProductDtoSchema>;
+
+export const ExternalProductImportComponentPreviewSchema = z.object({
+  role: ExternalProductComponentRoleSchema,
+  componentBarcode: z.string(),
+  componentGoodsCode: z.string(),
+  componentName: z.string(),
+  componentSpec: z.string(),
+  quantityMultiplier: z.number(),
+  wdtSpecNo: z.string(),
+  wdtGoodsNo: z.string(),
+  wdtGoodsName: z.string(),
+  wdtSpecName: z.string(),
+  wdtBarcode: z.string(),
+  matchStatus: ExternalProductComponentMatchStatusSchema,
+  matchMessage: z.string(),
+  note: z.string(),
+  sourceSheet: z.string(),
+  sourceRow: z.number(),
+  rawJson: z.string(),
+});
+export type ExternalProductImportComponentPreview = z.infer<typeof ExternalProductImportComponentPreviewSchema>;
+
+export const ExternalProductImportPreviewItemSchema = z.object({
+  action: z.enum(["create", "update", "unchanged"]),
+  type: ExternalProductTypeSchema,
+  externalBarcode: z.string(),
+  externalGoodsCode: z.string(),
+  externalGoodsName: z.string(),
+  status: ExternalProductStatusSchema,
+  sourceSheet: z.string(),
+  sourceRow: z.number(),
+  note: z.string(),
+  rawJson: z.string(),
+  componentCount: z.number(),
+  resolvedComponentCount: z.number(),
+  needsReviewComponentCount: z.number(),
+  existing: z
+    .object({
+      id: z.string(),
+      status: ExternalProductStatusSchema,
+      componentCount: z.number(),
+      updatedAt: z.string(),
+    })
+    .nullable(),
+  components: z.array(ExternalProductImportComponentPreviewSchema),
+});
+export type ExternalProductImportPreviewItem = z.infer<typeof ExternalProductImportPreviewItemSchema>;
+
+export const ImportExternalProductsPreviewResponseSchema = z.object({
+  fileName: z.string(),
+  sheetCount: z.number(),
+  parsedProductCount: z.number(),
+  parsedComponentCount: z.number(),
+  skippedRowCount: z.number(),
+  createCount: z.number(),
+  updateCount: z.number(),
+  unchangedCount: z.number(),
+  needsReviewCount: z.number(),
+  items: z.array(ExternalProductImportPreviewItemSchema),
+});
+export type ImportExternalProductsPreviewResponse = z.infer<typeof ImportExternalProductsPreviewResponseSchema>;
+
+export const ImportExternalProductsResponseSchema = z.object({
+  fileName: z.string(),
+  sheetCount: z.number(),
+  parsedProductCount: z.number(),
+  parsedComponentCount: z.number(),
+  importedProductCount: z.number(),
+  importedComponentCount: z.number(),
+  skippedRowCount: z.number(),
+  needsReviewCount: z.number(),
+});
+export type ImportExternalProductsResponse = z.infer<typeof ImportExternalProductsResponseSchema>;

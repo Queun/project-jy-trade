@@ -7,7 +7,19 @@ import * as XLSX from "xlsx";
 import { createSampleOrderFile } from "@jy-trade/workflow";
 
 import { createDatabaseContext } from "./db/client.js";
-import { auditLogs, batches, exportsTable, productMatchCandidates, reviewDecisions, reviewLines, storeAddresses, wdtGoodsSpecs, wdtGoodsSyncRuns } from "./db/schema.js";
+import {
+  auditLogs,
+  batches,
+  externalProductComponents,
+  externalProducts,
+  exportsTable,
+  productMatchCandidates,
+  reviewDecisions,
+  reviewLines,
+  storeAddresses,
+  wdtGoodsSpecs,
+  wdtGoodsSyncRuns,
+} from "./db/schema.js";
 import { buildApiServer } from "./server.js";
 import type { StockLookupClient, StoreOptions } from "./store.js";
 import type { WdtGoodsWindowClient } from "./wdtGoodsSync.js";
@@ -1418,6 +1430,188 @@ describe("api server", () => {
     await app.close();
   });
 
+  it("previews external sample and bundle workbooks against the local WDT goods cache", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await seedExternalProductGoodsCache(database);
+    await database.close();
+
+    const app = buildTestServer(databaseUrl);
+    const cookie = await loginCookie(app);
+    const contentBase64 = externalProductsWorkbookBase64();
+
+    const preview = await app.inject({
+      method: "POST",
+      url: "/api/v1/external-products/import-preview",
+      payload: {
+        fileName: "小样套盒统计.xlsx",
+        contentBase64,
+      },
+      headers: { cookie },
+    });
+
+    expect(preview.statusCode).toBe(200);
+    expect(preview.json()).toMatchObject({
+      fileName: "小样套盒统计.xlsx",
+      sheetCount: 2,
+      parsedProductCount: 3,
+      parsedComponentCount: 5,
+      createCount: 3,
+      updateCount: 0,
+      unchangedCount: 0,
+      needsReviewCount: 2,
+    });
+    expect(preview.json().items.find((item: { externalGoodsName: string }) => item.externalGoodsName === "小样命中")).toMatchObject({
+      type: "sample",
+      status: "confirmed",
+      resolvedComponentCount: 1,
+      components: [
+        {
+          componentBarcode: "690000000001",
+          matchStatus: "unique_wdt_hit",
+          wdtSpecNo: "SPEC-SAMPLE-1",
+        },
+      ],
+    });
+    expect(preview.json().items.find((item: { externalGoodsName: string }) => item.externalGoodsName === "小样未命中")).toMatchObject({
+      type: "sample",
+      status: "needs_review",
+      needsReviewComponentCount: 1,
+      components: [
+        {
+          componentBarcode: "690000000099",
+          matchStatus: "no_wdt_hit",
+        },
+      ],
+    });
+    const bundle = preview.json().items.find((item: { externalGoodsName: string }) => item.externalGoodsName === "命中套盒");
+    expect(bundle).toMatchObject({
+      type: "bundle",
+      externalBarcode: "BUNDLE001",
+      status: "needs_review",
+      componentCount: 3,
+      resolvedComponentCount: 1,
+      needsReviewComponentCount: 2,
+    });
+    expect(bundle.components.map((component: { role: string; matchStatus: string; wdtSpecNo: string }) => component)).toMatchObject([
+      { role: "primary", matchStatus: "unique_wdt_hit", wdtSpecNo: "SPEC-BUNDLE-PRIMARY" },
+      { role: "replacement", matchStatus: "needs_review", wdtSpecNo: "" },
+      { role: "extra", matchStatus: "needs_review", wdtSpecNo: "" },
+    ]);
+    await app.close();
+  });
+
+  it("imports external products with components and makes repeated previews idempotent", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await seedExternalProductGoodsCache(database);
+    await database.close();
+
+    const app = buildTestServer(databaseUrl);
+    const cookie = await loginCookie(app);
+    const contentBase64 = externalProductsWorkbookBase64();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/external-products/import",
+      payload: {
+        fileName: "小样套盒统计.xlsx",
+        contentBase64,
+      },
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({
+      parsedProductCount: 3,
+      parsedComponentCount: 5,
+      importedProductCount: 3,
+      importedComponentCount: 5,
+      needsReviewCount: 2,
+    });
+
+    const list = await app.inject({
+      method: "GET",
+      url: `/api/v1/external-products?query=${encodeURIComponent("命中套盒")}`,
+      headers: { cookie },
+    });
+    expect(list.statusCode).toBe(200);
+    expect(list.json()).toHaveLength(1);
+    expect(list.json()[0]).toMatchObject({
+      type: "bundle",
+      externalBarcode: "BUNDLE001",
+      externalGoodsName: "命中套盒",
+      status: "needs_review",
+      sourceFileName: "小样套盒统计.xlsx",
+      updatedByUsername: "admin",
+    });
+    expect(list.json()[0].components).toHaveLength(3);
+    expect(list.json()[0].components[0]).toMatchObject({
+      role: "primary",
+      componentBarcode: "690000000002",
+      wdtSpecNo: "SPEC-BUNDLE-PRIMARY",
+      matchStatus: "unique_wdt_hit",
+    });
+    expect(list.json()[0].components[1]).toMatchObject({
+      role: "replacement",
+      componentBarcode: "690000000003",
+      matchStatus: "needs_review",
+      quantityMultiplier: 2,
+    });
+
+    const afterDatabase = createDatabaseContext(databaseUrl);
+    await afterDatabase.ready;
+    expect(await afterDatabase.db.select().from(externalProducts)).toHaveLength(3);
+    expect(await afterDatabase.db.select().from(externalProductComponents)).toHaveLength(5);
+    const logs = await afterDatabase.db.select().from(auditLogs).where(eq(auditLogs.action, "external_product.import"));
+    expect(logs).toHaveLength(1);
+    await afterDatabase.close();
+
+    const secondPreview = await app.inject({
+      method: "POST",
+      url: "/api/v1/external-products/import-preview",
+      payload: {
+        fileName: "小样套盒统计.xlsx",
+        contentBase64,
+      },
+      headers: { cookie },
+    });
+    expect(secondPreview.statusCode).toBe(200);
+    expect(secondPreview.json()).toMatchObject({
+      createCount: 0,
+      updateCount: 0,
+      unchangedCount: 3,
+    });
+    await app.close();
+  });
+
+  it("rejects external product imports from reviewer accounts", async () => {
+    const app = buildTestServer();
+    const reviewerCookie = await loginCookie(app, "reviewer", "reviewer123");
+    const payload = {
+      fileName: "小样套盒统计.xlsx",
+      contentBase64: externalProductsWorkbookBase64(),
+    };
+
+    const preview = await app.inject({
+      method: "POST",
+      url: "/api/v1/external-products/import-preview",
+      payload,
+      headers: { cookie: reviewerCookie },
+    });
+    expect(preview.statusCode).toBe(403);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/external-products/import",
+      payload,
+      headers: { cookie: reviewerCookie },
+    });
+    expect(response.statusCode).toBe(403);
+    await app.close();
+  });
+
   it("exports WDT make-order Excel with the client import template", async () => {
     const app = buildTestServer();
     const { batch, lines, cookie } = await createReviewedBatch(app, "examples/mock_flow_mixed.json");
@@ -2083,6 +2277,76 @@ async function seedSuccessfulGoodsCache(database: ReturnType<typeof createDataba
     rawJson: "{}",
     syncedAt: now,
   });
+}
+
+async function seedExternalProductGoodsCache(database: ReturnType<typeof createDatabaseContext>) {
+  const now = "2026-07-03T00:00:00.000Z";
+  await database.db.insert(wdtGoodsSpecs).values([
+    {
+      id: "wdt-goods-spec-sample-1",
+      goodsNo: "GOODS-SAMPLE-1",
+      goodsName: "小样命中 WDT 商品",
+      specNo: "SPEC-SAMPLE-1",
+      specName: "1ml",
+      specCode: "CODE-SAMPLE-1",
+      barcode: "690000000001",
+      barcodesJson: JSON.stringify(["690000000001"]),
+      deleted: 0,
+      modified: now,
+      rawJson: "{}",
+      syncedAt: now,
+    },
+    {
+      id: "wdt-goods-spec-bundle-primary",
+      goodsNo: "GOODS-BUNDLE-PRIMARY",
+      goodsName: "套盒主商品 WDT 商品",
+      specNo: "SPEC-BUNDLE-PRIMARY",
+      specName: "正装",
+      specCode: "CODE-BUNDLE-PRIMARY",
+      barcode: "690000000002",
+      barcodesJson: JSON.stringify(["690000000002"]),
+      deleted: 0,
+      modified: now,
+      rawJson: "{}",
+      syncedAt: now,
+    },
+    {
+      id: "wdt-goods-spec-bundle-replacement",
+      goodsNo: "GOODS-BUNDLE-REPLACEMENT",
+      goodsName: "套盒替换商品 WDT 商品",
+      specNo: "SPEC-BUNDLE-REPLACEMENT",
+      specName: "替换装",
+      specCode: "CODE-BUNDLE-REPLACEMENT",
+      barcode: "690000000003",
+      barcodesJson: JSON.stringify(["690000000003"]),
+      deleted: 0,
+      modified: now,
+      rawJson: "{}",
+      syncedAt: now,
+    },
+  ]);
+}
+
+function externalProductsWorkbookBase64() {
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(
+    workbook,
+    XLSX.utils.aoa_to_sheet([
+      ["商品编码", "商品条码", "商品全称", "标签价格", "系统供货价"],
+      ["SAMPLE-001", "690000000001", "小样命中", 19.9, 8.8],
+      ["SAMPLE-002", "690000000099", "小样未命中", 29.9, 9.9],
+    ]),
+    "小样价格",
+  );
+  XLSX.utils.book_append_sheet(
+    workbook,
+    XLSX.utils.aoa_to_sheet([
+      ["品名", "规格", "套盒条码", "组件编码1", "组件备注1", "合同价", "组件编码2", "组件备注2", "组件名称2", "组件价格2", "组件编码3", "组件备注3"],
+      ["命中套盒", "", "BUNDLE001", "690000000002", "1个", "99", "690000000003", "替换2个", "替换品", "10", "690000000004", "赠品1个"],
+    ]),
+    "套盒",
+  );
+  return (XLSX.write(workbook, { bookType: "xlsx", type: "buffer" }) as Buffer).toString("base64");
 }
 
 function fakeStockClient(): StockLookupClient {

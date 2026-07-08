@@ -284,3 +284,66 @@ export const productMatchCandidates = sqliteTable(
     index("product_match_candidates_review_line_id_idx").on(table.reviewLineId),
   ],
 );
+
+export const externalProducts = sqliteTable(
+  "external_products",
+  {
+    id: text("id").primaryKey(),
+    type: text("type", { enum: ["normal", "sample", "bundle", "gift"] }).notNull(),
+    externalBarcode: text("external_barcode").notNull().default(""),
+    externalGoodsCode: text("external_goods_code").notNull().default(""),
+    externalGoodsName: text("external_goods_name").notNull().default(""),
+    status: text("status", { enum: ["confirmed", "needs_review", "disabled"] }).notNull(),
+    sourceFileName: text("source_file_name").notNull().default(""),
+    sourceSheet: text("source_sheet").notNull().default(""),
+    sourceRow: integer("source_row").notNull().default(0),
+    importedAt: text("imported_at").notNull().default(""),
+    rawJson: text("raw_json").notNull().default("{}"),
+    note: text("note").notNull().default(""),
+    updatedByUserId: text("updated_by_user_id"),
+    updatedByUsername: text("updated_by_username"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    index("external_products_type_idx").on(table.type),
+    index("external_products_external_barcode_idx").on(table.externalBarcode),
+    index("external_products_external_goods_code_idx").on(table.externalGoodsCode),
+    index("external_products_updated_at_idx").on(table.updatedAt),
+  ],
+);
+
+export const externalProductComponents = sqliteTable(
+  "external_product_components",
+  {
+    id: text("id").primaryKey(),
+    externalProductId: text("external_product_id").notNull(),
+    sortOrder: integer("sort_order").notNull(),
+    role: text("role", { enum: ["primary", "replacement", "extra"] }).notNull().default("primary"),
+    componentBarcode: text("component_barcode").notNull().default(""),
+    componentGoodsCode: text("component_goods_code").notNull().default(""),
+    componentName: text("component_name").notNull().default(""),
+    componentSpec: text("component_spec").notNull().default(""),
+    quantityMultiplier: real("quantity_multiplier").notNull().default(1),
+    wdtSpecNo: text("wdt_spec_no").notNull().default(""),
+    wdtGoodsNo: text("wdt_goods_no").notNull().default(""),
+    wdtGoodsName: text("wdt_goods_name").notNull().default(""),
+    wdtSpecName: text("wdt_spec_name").notNull().default(""),
+    wdtBarcode: text("wdt_barcode").notNull().default(""),
+    matchStatus: text("match_status", {
+      enum: ["unique_wdt_hit", "no_wdt_hit", "ambiguous_wdt_hit", "deleted_only_wdt_hit", "needs_review"],
+    }).notNull(),
+    matchMessage: text("match_message").notNull().default(""),
+    note: text("note").notNull().default(""),
+    sourceSheet: text("source_sheet").notNull().default(""),
+    sourceRow: integer("source_row").notNull().default(0),
+    rawJson: text("raw_json").notNull().default("{}"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    index("external_product_components_product_id_idx").on(table.externalProductId),
+    index("external_product_components_component_barcode_idx").on(table.componentBarcode),
+    index("external_product_components_wdt_spec_no_idx").on(table.wdtSpecNo),
+  ],
+);

@@ -11,6 +11,7 @@ import {
   ReviewDecisionDtoSchema,
   UpdateReviewLinePriorityRequestSchema,
   ImportStoreAddressesRequestSchema,
+  ImportExternalProductsRequestSchema,
   RunMockReviewRequestSchema,
   RunRealReviewRequestSchema,
   UpsertStoreAddressRequestSchema,
@@ -19,6 +20,9 @@ import {
   type AuthUserDto,
   type BatchSummary,
   type ExportDto,
+  type ExternalProductDto,
+  type ImportExternalProductsPreviewResponse,
+  type ImportExternalProductsResponse,
   type MakeOrderReadinessDto,
   type ImportStoreAddressesPreviewResponse,
   type ImportStoreAddressesResponse,
@@ -280,6 +284,25 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   app.get("/api/v1/product-match-candidates", async (request): Promise<ProductMatchCandidateDto[]> => {
     const { query } = request.query as { query?: string };
     return store.listProductMatchCandidates(query ?? "");
+  });
+
+  app.get("/api/v1/external-products", async (request): Promise<ExternalProductDto[]> => {
+    const { query } = request.query as { query?: string };
+    return store.listExternalProducts(query ?? "");
+  });
+
+  app.post("/api/v1/external-products/import-preview", async (request, reply): Promise<ImportExternalProductsPreviewResponse> => {
+    requireRole(request, ["admin", "operator"]);
+    const body = ImportExternalProductsRequestSchema.parse(request.body ?? {});
+    const result = await store.previewExternalProductImport(body);
+    return reply.code(200).send(result);
+  });
+
+  app.post("/api/v1/external-products/import", async (request, reply): Promise<ImportExternalProductsResponse> => {
+    requireRole(request, ["admin", "operator"]);
+    const body = ImportExternalProductsRequestSchema.parse(request.body ?? {});
+    const result = await store.importExternalProducts(body, getCurrentUser(request));
+    return reply.code(201).send(result);
   });
 
   app.get("/api/v1/store-addresses", async (request): Promise<StoreAddressDto[]> => {

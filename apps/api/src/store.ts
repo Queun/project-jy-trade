@@ -6,6 +6,13 @@
   CreateExportRequest,
   ConfirmProductMappingRequest,
   ExportDto,
+  ExternalProductComponentDto,
+  ExternalProductDto,
+  ExternalProductImportPreviewItem,
+  ExternalProductImportComponentPreview,
+  ImportExternalProductsRequest,
+  ImportExternalProductsPreviewResponse,
+  ImportExternalProductsResponse,
   ImportStoreAddressesRequest,
   ImportStoreAddressesPreviewResponse,
   ImportStoreAddressesResponse,
@@ -43,6 +50,8 @@ import { createDatabaseContext, type DatabaseContext } from "./db/client.js";
 import {
   auditLogs,
   batches,
+  externalProductComponents,
+  externalProducts,
   exportsTable,
   reviewDecisions,
   reviewLines,
@@ -85,6 +94,8 @@ type WdtGoodsSyncRunRow = typeof wdtGoodsSyncRuns.$inferSelect;
 type WdtGoodsSpecRow = typeof wdtGoodsSpecs.$inferSelect;
 type ProductMappingRow = typeof productMappings.$inferSelect;
 type ProductMatchCandidateRow = typeof productMatchCandidates.$inferSelect;
+type ExternalProductRow = typeof externalProducts.$inferSelect;
+type ExternalProductComponentRow = typeof externalProductComponents.$inferSelect;
 
 export interface StockLookupClient {
   queryStock(specNo: string): Promise<WdtStockResponse>;
@@ -509,6 +520,124 @@ export function createSqliteStore(options: StoreOptions = {}) {
         parsedRowCount: parsed.addresses.length,
         importedAddressCount,
         skippedRowCount: parsed.skippedRowCount,
+      };
+    },
+
+    async listExternalProducts(query = ""): Promise<ExternalProductDto[]> {
+      await ready;
+      const trimmed = query.trim();
+      const base = database.db.select().from(externalProducts);
+      const rows = trimmed
+        ? await base
+            .where(
+              or(
+                like(externalProducts.externalBarcode, `%${trimmed}%`),
+                like(externalProducts.externalGoodsCode, `%${trimmed}%`),
+                like(externalProducts.externalGoodsName, `%${trimmed}%`),
+              ),
+            )
+            .orderBy(desc(externalProducts.updatedAt))
+            .limit(50)
+        : await base.orderBy(desc(externalProducts.updatedAt)).limit(50);
+      return toExternalProductDtos(database, rows);
+    },
+
+    async previewExternalProductImport(input: ImportExternalProductsRequest): Promise<ImportExternalProductsPreviewResponse> {
+      await ready;
+      const parsed = parseExternalProductImportInput(input);
+      const previewItems = await buildExternalProductImportPreview(database, parsed.products);
+      return summarizeExternalProductPreview(input.fileName, parsed, previewItems);
+    },
+
+    async importExternalProducts(input: ImportExternalProductsRequest, actor?: AuthUserDto): Promise<ImportExternalProductsResponse> {
+      await ready;
+      const parsed = parseExternalProductImportInput(input);
+      const previewItems = await buildExternalProductImportPreview(database, parsed.products);
+      const now = new Date().toISOString();
+      let importedProductCount = 0;
+      let importedComponentCount = 0;
+
+      for (const item of previewItems) {
+        const existing = await findExternalProductRow(database, item);
+        const productId = existing?.id ?? `external-product-${randomUUID()}`;
+        const productRow: ExternalProductRow = {
+          id: productId,
+          type: item.type,
+          externalBarcode: item.externalBarcode,
+          externalGoodsCode: item.externalGoodsCode,
+          externalGoodsName: item.externalGoodsName,
+          status: item.status,
+          sourceFileName: input.fileName,
+          sourceSheet: item.sourceSheet,
+          sourceRow: item.sourceRow,
+          importedAt: now,
+          rawJson: item.rawJson,
+          note: item.note,
+          updatedByUserId: actor?.id ?? null,
+          updatedByUsername: actor?.username ?? null,
+          createdAt: existing?.createdAt ?? now,
+          updatedAt: now,
+        };
+
+        if (existing) {
+          await database.db.update(externalProducts).set(productRow).where(eq(externalProducts.id, existing.id));
+        } else {
+          await database.db.insert(externalProducts).values(productRow);
+        }
+
+        await database.db.delete(externalProductComponents).where(eq(externalProductComponents.externalProductId, productId));
+        if (item.components.length > 0) {
+          await database.db.insert(externalProductComponents).values(
+            item.components.map((component, index) => ({
+              id: `external-product-component-${randomUUID()}`,
+              externalProductId: productId,
+              sortOrder: index + 1,
+              role: component.role,
+              componentBarcode: component.componentBarcode,
+              componentGoodsCode: component.componentGoodsCode,
+              componentName: component.componentName,
+              componentSpec: component.componentSpec,
+              quantityMultiplier: component.quantityMultiplier,
+              wdtSpecNo: component.wdtSpecNo,
+              wdtGoodsNo: component.wdtGoodsNo,
+              wdtGoodsName: component.wdtGoodsName,
+              wdtSpecName: component.wdtSpecName,
+              wdtBarcode: component.wdtBarcode,
+              matchStatus: component.matchStatus,
+              matchMessage: component.matchMessage,
+              note: component.note,
+              sourceSheet: component.sourceSheet,
+              sourceRow: component.sourceRow,
+              rawJson: component.rawJson,
+              createdAt: now,
+              updatedAt: now,
+            })),
+          );
+        }
+        importedProductCount += 1;
+        importedComponentCount += item.components.length;
+      }
+
+      await insertAuditLog(database, actor?.id ?? null, "external_product.import", "external_product", input.fileName, {
+        fileName: input.fileName,
+        sheetCount: parsed.sheetCount,
+        parsedProductCount: parsed.products.length,
+        parsedComponentCount: parsed.products.reduce((total, product) => total + product.components.length, 0),
+        importedProductCount,
+        importedComponentCount,
+        skippedRowCount: parsed.skippedRowCount,
+        needsReviewCount: previewItems.filter((item) => item.status === "needs_review").length,
+      });
+
+      return {
+        fileName: input.fileName,
+        sheetCount: parsed.sheetCount,
+        parsedProductCount: parsed.products.length,
+        parsedComponentCount: parsed.products.reduce((total, product) => total + product.components.length, 0),
+        importedProductCount,
+        importedComponentCount,
+        skippedRowCount: parsed.skippedRowCount,
+        needsReviewCount: previewItems.filter((item) => item.status === "needs_review").length,
       };
     },
 
@@ -1927,6 +2056,7 @@ async function prepareDatabase(database: DatabaseContext, bootstrapUsers: Array<
   await ensureReviewLineColumns(database);
   await ensureWarehouseUsageSettings(database);
   await ensureStoreAddresses(database);
+  await ensureExternalProducts(database);
   await ensureBootstrapUsers(database, bootstrapUsers);
 }
 
@@ -2042,6 +2172,62 @@ async function ensureStoreAddresses(database: DatabaseContext) {
   await database.client.execute("create index if not exists store_addresses_store_no_idx on store_addresses (store_no)");
   await database.client.execute("create index if not exists store_addresses_normalized_store_name_idx on store_addresses (normalized_store_name)");
   await database.client.execute("create index if not exists store_addresses_updated_at_idx on store_addresses (updated_at)");
+}
+
+async function ensureExternalProducts(database: DatabaseContext) {
+  await database.client.execute(`
+    create table if not exists external_products (
+      id text primary key not null,
+      type text not null,
+      external_barcode text not null default '',
+      external_goods_code text not null default '',
+      external_goods_name text not null default '',
+      status text not null,
+      source_file_name text not null default '',
+      source_sheet text not null default '',
+      source_row integer not null default 0,
+      imported_at text not null default '',
+      raw_json text not null default '{}',
+      note text not null default '',
+      updated_by_user_id text,
+      updated_by_username text,
+      created_at text not null,
+      updated_at text not null
+    )
+  `);
+  await database.client.execute(`
+    create table if not exists external_product_components (
+      id text primary key not null,
+      external_product_id text not null,
+      sort_order integer not null,
+      role text not null default 'primary',
+      component_barcode text not null default '',
+      component_goods_code text not null default '',
+      component_name text not null default '',
+      component_spec text not null default '',
+      quantity_multiplier real not null default 1,
+      wdt_spec_no text not null default '',
+      wdt_goods_no text not null default '',
+      wdt_goods_name text not null default '',
+      wdt_spec_name text not null default '',
+      wdt_barcode text not null default '',
+      match_status text not null,
+      match_message text not null default '',
+      note text not null default '',
+      source_sheet text not null default '',
+      source_row integer not null default 0,
+      raw_json text not null default '{}',
+      created_at text not null,
+      updated_at text not null
+    )
+  `);
+  await database.client.execute("create index if not exists external_products_type_idx on external_products (type)");
+  await database.client.execute("create index if not exists external_products_external_barcode_idx on external_products (external_barcode)");
+  await database.client.execute("create index if not exists external_products_external_goods_code_idx on external_products (external_goods_code)");
+  await database.client.execute("create index if not exists external_products_updated_at_idx on external_products (updated_at)");
+  await database.client.execute("create index if not exists external_product_components_product_id_idx on external_product_components (external_product_id)");
+  await database.client.execute("create index if not exists external_product_components_component_barcode_idx on external_product_components (component_barcode)");
+  await database.client.execute("create index if not exists external_product_components_wdt_spec_no_idx on external_product_components (wdt_spec_no)");
 }
 
 async function migrateLegacyWarehouseUsageSettings(database: DatabaseContext) {
@@ -2304,6 +2490,40 @@ interface StoreAddressImportGroup {
   rawAddresses: ParsedStoreAddress[];
 }
 
+interface ParsedExternalProduct {
+  type: ExternalProductDto["type"];
+  externalBarcode: string;
+  externalGoodsCode: string;
+  externalGoodsName: string;
+  sourceSheet: string;
+  sourceSheetIndex: number;
+  sourceRow: number;
+  sourceOrder: number;
+  note: string;
+  rawFields: Record<string, string>;
+  components: ParsedExternalProductComponent[];
+}
+
+interface ParsedExternalProductComponent {
+  role: ExternalProductComponentDto["role"];
+  componentBarcode: string;
+  componentGoodsCode: string;
+  componentName: string;
+  componentSpec: string;
+  quantityMultiplier: number;
+  note: string;
+  sourceSheet: string;
+  sourceRow: number;
+  rawFields: Record<string, string>;
+}
+
+interface ExternalProductImportParseResult {
+  workbookSheetCount: number;
+  sheetCount: number;
+  skippedRowCount: number;
+  products: ParsedExternalProduct[];
+}
+
 interface MakeOrderAddressIndex {
   byStoreNo: Map<string, MakeOrderAddress>;
   byStoreName: Map<string, MakeOrderAddress>;
@@ -2465,6 +2685,514 @@ function makeOrderReadinessError(readiness: MakeOrderReadinessDto) {
     .join("、");
   const suffix = readiness.missingAddressCount > 3 ? `等 ${readiness.missingAddressCount} 个门店` : "";
   return `缺少发货地址：${names}${suffix}`;
+}
+
+function parseExternalProductImportInput(input: ImportExternalProductsRequest): ExternalProductImportParseResult {
+  const workbook = XLSX.read(Buffer.from(input.contentBase64, "base64"), { type: "buffer", cellDates: false });
+  const products: ParsedExternalProduct[] = [];
+  let skippedRowCount = 0;
+  let sourceOrder = 0;
+  const parsedSheetNames = new Set<string>();
+
+  for (const sheetName of workbook.SheetNames) {
+    const rows = XLSX.utils.sheet_to_json<Array<string | number>>(workbook.Sheets[sheetName], { header: 1, defval: "" });
+    if (sheetName === "小样价格") {
+      const result = parseSampleProductSheet(rows, sheetName, sourceOrder);
+      products.push(...result.products);
+      sourceOrder = result.sourceOrder;
+      skippedRowCount += result.skippedRowCount;
+      if (result.products.length > 0) parsedSheetNames.add(sheetName);
+    } else if (sheetName === "套盒") {
+      const result = parseBundleProductSheet(rows, sheetName, sourceOrder);
+      products.push(...result.products);
+      sourceOrder = result.sourceOrder;
+      skippedRowCount += result.skippedRowCount;
+      if (result.products.length > 0) parsedSheetNames.add(sheetName);
+    } else if (sheetName === "联营套盒") {
+      const result = parseJointBundleProductSheet(rows, sheetName, sourceOrder);
+      products.push(...result.products);
+      sourceOrder = result.sourceOrder;
+      skippedRowCount += result.skippedRowCount;
+      if (result.products.length > 0) parsedSheetNames.add(sheetName);
+    }
+  }
+
+  return {
+    workbookSheetCount: workbook.SheetNames.length,
+    sheetCount: parsedSheetNames.size,
+    skippedRowCount,
+    products,
+  };
+}
+
+function parseSampleProductSheet(rows: Array<Array<string | number>>, sheetName: string, initialSourceOrder: number) {
+  const products: ParsedExternalProduct[] = [];
+  let skippedRowCount = 0;
+  let sourceOrder = initialSourceOrder;
+  if (rows.length < 2) return { products, skippedRowCount, sourceOrder };
+
+  const headers = rows[0].map((value) => normalizeHeader(value));
+  const rawHeaders = buildRawHeaderLabels(rows[0]);
+  const goodsCodeIndex = findHeaderIndex(headers, ["商品编码"]);
+  const barcodeIndex = findHeaderIndex(headers, ["商品条码"]);
+  const nameIndex = findHeaderIndex(headers, ["商品全称", "商品名称"]);
+  const tagPriceIndex = findHeaderIndex(headers, ["标签价格"]);
+  const supplyPriceIndex = findHeaderIndex(headers, ["系统供货价"]);
+  if (barcodeIndex < 0 || nameIndex < 0) return { products, skippedRowCount: rows.length, sourceOrder };
+
+  for (let rowIndex = 1; rowIndex < rows.length; rowIndex += 1) {
+    const row = rows[rowIndex];
+    if (!row.some((value) => cellText(value))) continue;
+    const externalBarcode = cellText(row[barcodeIndex]);
+    const externalGoodsName = cellText(row[nameIndex]);
+    const externalGoodsCode = goodsCodeIndex >= 0 ? cellText(row[goodsCodeIndex]) : "";
+    if (!externalBarcode && !externalGoodsName && !externalGoodsCode) {
+      skippedRowCount += 1;
+      continue;
+    }
+    const note = [
+      tagPriceIndex >= 0 && cellText(row[tagPriceIndex]) ? `标签价格:${cellText(row[tagPriceIndex])}` : "",
+      supplyPriceIndex >= 0 && cellText(row[supplyPriceIndex]) ? `系统供货价:${cellText(row[supplyPriceIndex])}` : "",
+    ]
+      .filter(Boolean)
+      .join("; ");
+    const rawFields = rawFieldsForRow(rawHeaders, row);
+    const component: ParsedExternalProductComponent = {
+      role: "primary",
+      componentBarcode: externalBarcode,
+      componentGoodsCode: externalGoodsCode,
+      componentName: externalGoodsName,
+      componentSpec: "",
+      quantityMultiplier: 1,
+      note,
+      sourceSheet: sheetName,
+      sourceRow: rowIndex + 1,
+      rawFields,
+    };
+    products.push({
+      type: "sample",
+      externalBarcode,
+      externalGoodsCode,
+      externalGoodsName,
+      sourceSheet: sheetName,
+      sourceSheetIndex: 0,
+      sourceRow: rowIndex + 1,
+      sourceOrder: sourceOrder += 1,
+      note,
+      rawFields,
+      components: [component],
+    });
+  }
+  return { products, skippedRowCount, sourceOrder };
+}
+
+function parseBundleProductSheet(rows: Array<Array<string | number>>, sheetName: string, initialSourceOrder: number) {
+  const products: ParsedExternalProduct[] = [];
+  let skippedRowCount = 0;
+  let sourceOrder = initialSourceOrder;
+  let current: ParsedExternalProduct | undefined;
+  const rawHeaders = bundleRawHeaders();
+
+  for (let rowIndex = 1; rowIndex < rows.length; rowIndex += 1) {
+    const row = rows[rowIndex];
+    if (!row.some((value) => cellText(value))) continue;
+    if (cellText(row[0])) {
+      current = {
+        type: "bundle",
+        externalBarcode: cellText(row[2]),
+        externalGoodsCode: "",
+        externalGoodsName: cellText(row[0]),
+        sourceSheet: sheetName,
+        sourceSheetIndex: 0,
+        sourceRow: rowIndex + 1,
+        sourceOrder: sourceOrder += 1,
+        note: cellText(row[5]) ? `合同价:${cellText(row[5])}` : "",
+        rawFields: rawFieldsForRow(rawHeaders, row),
+        components: [],
+      };
+      products.push(current);
+    }
+    if (!current) {
+      skippedRowCount += 1;
+      continue;
+    }
+    const componentSlots: Array<{ role: ParsedExternalProductComponent["role"]; codeIndex: number; noteIndex: number; nameIndex?: number; priceIndex?: number }> = [
+      { role: "primary", codeIndex: 3, noteIndex: 4 },
+      { role: "replacement", codeIndex: 6, noteIndex: 7, nameIndex: 8, priceIndex: 9 },
+      { role: "extra", codeIndex: 10, noteIndex: 11 },
+    ];
+    for (const slot of componentSlots) {
+      const code = cellText(row[slot.codeIndex]);
+      if (!isLikelyProductIdentifier(code)) continue;
+      const note = [
+        cellText(row[slot.noteIndex]),
+        slot.priceIndex !== undefined && cellText(row[slot.priceIndex]) ? `价格:${cellText(row[slot.priceIndex])}` : "",
+      ]
+        .filter(Boolean)
+        .join("; ");
+      current.components.push({
+        role: slot.role,
+        componentBarcode: code,
+        componentGoodsCode: "",
+        componentName: slot.nameIndex !== undefined ? cellText(row[slot.nameIndex]) : "",
+        componentSpec: "",
+        quantityMultiplier: quantityFromCell(row[slot.noteIndex]),
+        note,
+        sourceSheet: sheetName,
+        sourceRow: rowIndex + 1,
+        rawFields: rawFieldsForRow(rawHeaders, row),
+      });
+    }
+  }
+  return { products: products.filter((product) => product.components.length > 0), skippedRowCount, sourceOrder };
+}
+
+function parseJointBundleProductSheet(rows: Array<Array<string | number>>, sheetName: string, initialSourceOrder: number) {
+  const products: ParsedExternalProduct[] = [];
+  let skippedRowCount = 0;
+  let sourceOrder = initialSourceOrder;
+  let current: ParsedExternalProduct | undefined;
+  const rawHeaders = ["套盒名称", "商品条码", "商品名称", "规格", "原价", "特售价", "数量备注", "备注1", "备注2", "备注3", "备注4"];
+
+  for (let rowIndex = 1; rowIndex < rows.length; rowIndex += 1) {
+    const row = rows[rowIndex];
+    if (!row.some((value) => cellText(value))) continue;
+    if (cellText(row[0])) {
+      current = {
+        type: "bundle",
+        externalBarcode: "",
+        externalGoodsCode: "",
+        externalGoodsName: cellText(row[0]),
+        sourceSheet: sheetName,
+        sourceSheetIndex: 0,
+        sourceRow: rowIndex + 1,
+        sourceOrder: sourceOrder += 1,
+        note: [cellText(row[4]) ? `原价:${cellText(row[4])}` : "", cellText(row[5]) ? `特售价:${cellText(row[5])}` : ""].filter(Boolean).join("; "),
+        rawFields: rawFieldsForRow(rawHeaders, row),
+        components: [],
+      };
+      products.push(current);
+    }
+    if (!current) {
+      skippedRowCount += 1;
+      continue;
+    }
+    const componentBarcode = cellText(row[1]);
+    const note = [cellText(row[6]), cellText(row[7]), cellText(row[8]), cellText(row[9]), cellText(row[10])].filter(Boolean).join("; ");
+    if (!componentBarcode && !cellText(row[2]) && !note) continue;
+    current.components.push({
+      role: "primary",
+      componentBarcode,
+      componentGoodsCode: "",
+      componentName: cellText(row[2]),
+      componentSpec: cellText(row[3]),
+      quantityMultiplier: quantityFromCell(row[6]),
+      note,
+      sourceSheet: sheetName,
+      sourceRow: rowIndex + 1,
+      rawFields: rawFieldsForRow(rawHeaders, row),
+    });
+  }
+  return { products: products.filter((product) => product.components.length > 0), skippedRowCount, sourceOrder };
+}
+
+async function buildExternalProductImportPreview(
+  database: DatabaseContext,
+  products: ParsedExternalProduct[],
+): Promise<ExternalProductImportPreviewItem[]> {
+  const goodsSpecs = await database.db.select().from(wdtGoodsSpecs);
+  const matcher = buildWdtSpecIdentifierMatcher(goodsSpecs);
+  const items: ExternalProductImportPreviewItem[] = [];
+  for (const product of products) {
+    const components = product.components.map((component) => toExternalProductComponentPreview(component, matcher));
+    const status: ExternalProductDto["status"] = components.every((component) => component.matchStatus === "unique_wdt_hit")
+      ? "confirmed"
+      : "needs_review";
+    const itemBase = {
+      type: product.type,
+      externalBarcode: product.externalBarcode,
+      externalGoodsCode: product.externalGoodsCode,
+      externalGoodsName: product.externalGoodsName,
+    };
+    const existing = await findExternalProductRow(database, itemBase);
+    const previewWithoutAction = {
+      ...itemBase,
+      status,
+      sourceSheet: product.sourceSheet,
+      sourceRow: product.sourceRow,
+      note: product.note,
+      rawJson: JSON.stringify(product.rawFields),
+      componentCount: components.length,
+      resolvedComponentCount: components.filter((component) => component.matchStatus === "unique_wdt_hit").length,
+      needsReviewComponentCount: components.filter((component) => component.matchStatus !== "unique_wdt_hit").length,
+      existing: existing
+        ? {
+            id: existing.id,
+            status: existing.status,
+            componentCount: await countExternalProductComponents(database, existing.id),
+            updatedAt: existing.updatedAt,
+          }
+        : null,
+      components,
+    };
+    items.push({
+      action: await externalProductPreviewAction(database, existing, previewWithoutAction),
+      ...previewWithoutAction,
+    });
+  }
+  return items;
+}
+
+function summarizeExternalProductPreview(
+  fileName: string,
+  parsed: ExternalProductImportParseResult,
+  items: ExternalProductImportPreviewItem[],
+): ImportExternalProductsPreviewResponse {
+  return {
+    fileName,
+    sheetCount: parsed.sheetCount,
+    parsedProductCount: items.length,
+    parsedComponentCount: items.reduce((total, item) => total + item.components.length, 0),
+    skippedRowCount: parsed.skippedRowCount,
+    createCount: items.filter((item) => item.action === "create").length,
+    updateCount: items.filter((item) => item.action === "update").length,
+    unchangedCount: items.filter((item) => item.action === "unchanged").length,
+    needsReviewCount: items.filter((item) => item.status === "needs_review").length,
+    items,
+  };
+}
+
+function toExternalProductComponentPreview(
+  component: ParsedExternalProductComponent,
+  matcher: (identifier: string) => ReturnType<typeof matchWdtSpecIdentifier>,
+): ExternalProductImportComponentPreview {
+  const identifier = component.componentBarcode || component.componentGoodsCode;
+  const match = matcher(identifier);
+  const forceReview = component.role !== "primary";
+  const matchStatus = forceReview ? "needs_review" : match.matchStatus;
+  const matchMessage = forceReview ? `非主组件/替换备注需人工确认；${match.matchMessage}` : match.matchMessage;
+  return {
+    role: component.role,
+    componentBarcode: component.componentBarcode,
+    componentGoodsCode: component.componentGoodsCode,
+    componentName: component.componentName,
+    componentSpec: component.componentSpec,
+    quantityMultiplier: component.quantityMultiplier,
+    wdtSpecNo: forceReview ? "" : match.spec?.specNo ?? "",
+    wdtGoodsNo: forceReview ? "" : match.spec?.goodsNo ?? "",
+    wdtGoodsName: forceReview ? "" : match.spec?.goodsName ?? "",
+    wdtSpecName: forceReview ? "" : match.spec?.specName ?? "",
+    wdtBarcode: forceReview ? "" : match.spec?.barcode ?? "",
+    matchStatus,
+    matchMessage,
+    note: component.note,
+    sourceSheet: component.sourceSheet,
+    sourceRow: component.sourceRow,
+    rawJson: JSON.stringify(component.rawFields),
+  };
+}
+
+function buildWdtSpecIdentifierMatcher(goodsSpecs: WdtGoodsSpecRow[]) {
+  const barcodeIndex = new Map<string, WdtGoodsSpecRow[]>();
+  const codeIndex = new Map<string, WdtGoodsSpecRow[]>();
+  for (const spec of goodsSpecs) {
+    for (const barcode of [...parseBarcodes(spec.barcodesJson), spec.barcode].map(normalizeIdentifier).filter(Boolean)) {
+      const rows = barcodeIndex.get(barcode) ?? [];
+      rows.push(spec);
+      barcodeIndex.set(barcode, rows);
+    }
+    for (const code of [spec.goodsNo, spec.specNo, spec.specCode].map(normalizeIdentifier).filter(Boolean)) {
+      const rows = codeIndex.get(code) ?? [];
+      rows.push(spec);
+      codeIndex.set(code, rows);
+    }
+  }
+  return (identifier: string) => matchWdtSpecIdentifier(identifier, barcodeIndex, codeIndex);
+}
+
+function matchWdtSpecIdentifier(
+  identifier: string,
+  barcodeIndex: Map<string, WdtGoodsSpecRow[]>,
+  codeIndex: Map<string, WdtGoodsSpecRow[]>,
+) {
+  const key = normalizeIdentifier(identifier);
+  if (!key) {
+    return { matchStatus: "needs_review" as const, matchMessage: "缺少组件编号", spec: undefined };
+  }
+  const matches = [...(barcodeIndex.get(key) ?? []), ...(codeIndex.get(key) ?? [])];
+  const activeBySpecNo = new Map(matches.filter((spec) => spec.deleted !== 1).map((spec) => [spec.specNo, spec]));
+  const active = [...activeBySpecNo.values()];
+  if (active.length === 1) {
+    return { matchStatus: "unique_wdt_hit" as const, matchMessage: "唯一命中 WDT 规格", spec: active[0] };
+  }
+  if (active.length > 1) {
+    return { matchStatus: "ambiguous_wdt_hit" as const, matchMessage: `命中多个 WDT 规格：${active.map((spec) => spec.specNo).join(", ")}`, spec: undefined };
+  }
+  if (matches.length > 0) {
+    return { matchStatus: "deleted_only_wdt_hit" as const, matchMessage: "仅命中已删除 WDT 规格", spec: undefined };
+  }
+  return { matchStatus: "no_wdt_hit" as const, matchMessage: "未命中本地 WDT 商品档案", spec: undefined };
+}
+
+async function findExternalProductRow(
+  database: DatabaseContext,
+  input: Pick<ExternalProductImportPreviewItem, "type" | "externalBarcode" | "externalGoodsCode" | "externalGoodsName">,
+): Promise<ExternalProductRow | undefined> {
+  const conditions = [eq(externalProducts.type, input.type)];
+  if (input.externalBarcode) {
+    conditions.push(eq(externalProducts.externalBarcode, input.externalBarcode));
+  } else if (input.externalGoodsCode) {
+    conditions.push(eq(externalProducts.externalGoodsCode, input.externalGoodsCode));
+  } else if (input.externalGoodsName) {
+    conditions.push(eq(externalProducts.externalGoodsName, input.externalGoodsName));
+  } else {
+    return undefined;
+  }
+  const [row] = await database.db.select().from(externalProducts).where(and(...conditions)).limit(1);
+  return row;
+}
+
+async function externalProductPreviewAction(
+  database: DatabaseContext,
+  existing: ExternalProductRow | undefined,
+  item: Omit<ExternalProductImportPreviewItem, "action">,
+): Promise<ExternalProductImportPreviewItem["action"]> {
+  if (!existing) return "create";
+  const components = await database.db.select().from(externalProductComponents).where(eq(externalProductComponents.externalProductId, existing.id));
+  const currentFingerprint = externalProductFingerprint(toExternalProductDto(existing, components));
+  const nextFingerprint = externalProductPreviewFingerprint(item);
+  return currentFingerprint === nextFingerprint ? "unchanged" : "update";
+}
+
+async function countExternalProductComponents(database: DatabaseContext, externalProductId: string): Promise<number> {
+  const rows = await database.db.select().from(externalProductComponents).where(eq(externalProductComponents.externalProductId, externalProductId));
+  return rows.length;
+}
+
+function externalProductFingerprint(product: ExternalProductDto): string {
+  return JSON.stringify({
+    type: product.type,
+    externalBarcode: product.externalBarcode,
+    externalGoodsCode: product.externalGoodsCode,
+    externalGoodsName: product.externalGoodsName,
+    status: product.status,
+    note: product.note,
+    components: product.components.map((component) => ({
+      role: component.role,
+      componentBarcode: component.componentBarcode,
+      componentGoodsCode: component.componentGoodsCode,
+      componentName: component.componentName,
+      componentSpec: component.componentSpec,
+      quantityMultiplier: component.quantityMultiplier,
+      wdtSpecNo: component.wdtSpecNo,
+      matchStatus: component.matchStatus,
+      note: component.note,
+    })),
+  });
+}
+
+function externalProductPreviewFingerprint(item: Omit<ExternalProductImportPreviewItem, "action">): string {
+  return JSON.stringify({
+    type: item.type,
+    externalBarcode: item.externalBarcode,
+    externalGoodsCode: item.externalGoodsCode,
+    externalGoodsName: item.externalGoodsName,
+    status: item.status,
+    note: item.note,
+    components: item.components.map((component) => ({
+      role: component.role,
+      componentBarcode: component.componentBarcode,
+      componentGoodsCode: component.componentGoodsCode,
+      componentName: component.componentName,
+      componentSpec: component.componentSpec,
+      quantityMultiplier: component.quantityMultiplier,
+      wdtSpecNo: component.wdtSpecNo,
+      matchStatus: component.matchStatus,
+      note: component.note,
+    })),
+  });
+}
+
+async function toExternalProductDtos(database: DatabaseContext, rows: ExternalProductRow[]): Promise<ExternalProductDto[]> {
+  const result: ExternalProductDto[] = [];
+  for (const row of rows) {
+    const components = await database.db
+      .select()
+      .from(externalProductComponents)
+      .where(eq(externalProductComponents.externalProductId, row.id))
+      .orderBy(externalProductComponents.sortOrder);
+    result.push(toExternalProductDto(row, components));
+  }
+  return result;
+}
+
+function toExternalProductDto(row: ExternalProductRow, components: ExternalProductComponentRow[]): ExternalProductDto {
+  return {
+    id: row.id,
+    type: row.type,
+    externalBarcode: row.externalBarcode,
+    externalGoodsCode: row.externalGoodsCode,
+    externalGoodsName: row.externalGoodsName,
+    status: row.status,
+    sourceFileName: row.sourceFileName,
+    sourceSheet: row.sourceSheet,
+    sourceRow: row.sourceRow,
+    importedAt: row.importedAt,
+    rawJson: row.rawJson,
+    note: row.note,
+    updatedByUserId: row.updatedByUserId ?? null,
+    updatedByUsername: row.updatedByUsername ?? null,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    components: components.map(toExternalProductComponentDto),
+  };
+}
+
+function toExternalProductComponentDto(row: ExternalProductComponentRow): ExternalProductComponentDto {
+  return {
+    id: row.id,
+    externalProductId: row.externalProductId,
+    sortOrder: row.sortOrder,
+    role: row.role,
+    componentBarcode: row.componentBarcode,
+    componentGoodsCode: row.componentGoodsCode,
+    componentName: row.componentName,
+    componentSpec: row.componentSpec,
+    quantityMultiplier: row.quantityMultiplier,
+    wdtSpecNo: row.wdtSpecNo,
+    wdtGoodsNo: row.wdtGoodsNo,
+    wdtGoodsName: row.wdtGoodsName,
+    wdtSpecName: row.wdtSpecName,
+    wdtBarcode: row.wdtBarcode,
+    matchStatus: row.matchStatus,
+    matchMessage: row.matchMessage,
+    note: row.note,
+    sourceSheet: row.sourceSheet,
+    sourceRow: row.sourceRow,
+    rawJson: row.rawJson,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+function normalizeIdentifier(value: unknown) {
+  return cellText(value).replace(/\.0$/, "");
+}
+
+function isLikelyProductIdentifier(value: unknown) {
+  const candidate = normalizeIdentifier(value);
+  return /^\d{5,}$/.test(candidate) || /^[A-Z]{1,4}-/.test(candidate) || /^A\d[A-Z0-9]+/.test(candidate) || /^KY\d+/.test(candidate);
+}
+
+function quantityFromCell(value: unknown) {
+  const match = cellText(value).match(/(\d+(?:\.\d+)?)\s*(?:个|支|件|瓶|片)?/);
+  if (!match) return 1;
+  const quantity = Number(match[1]);
+  return Number.isFinite(quantity) && quantity > 0 ? quantity : 1;
+}
+
+function bundleRawHeaders() {
+  return ["品名", "规格", "套盒条码", "组件编码1", "组件备注1", "合同价", "组件编码2", "组件备注2", "组件名称2", "组件价格2", "组件编码3", "组件备注3"];
 }
 
 async function loadMakeOrderAddressIndex(database: DatabaseContext): Promise<MakeOrderAddressIndex> {

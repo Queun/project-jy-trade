@@ -57,6 +57,13 @@
       "when": 1783371124506,
       "tag": "0007_uneven_cerebro",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1783375200000,
+      "tag": "0008_external_products",
+      "breakpoints": true
     }
   ]
 }
