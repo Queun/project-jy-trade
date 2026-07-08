@@ -54,6 +54,8 @@ export interface WdtStockRow {
   defect?: boolean;
   stock_num?: number;
   available_send_stock?: number;
+  库存?: number | string;
+  可发库存?: number | string;
 }
 
 export interface WdtStockResponse {
@@ -62,6 +64,19 @@ export interface WdtStockResponse {
     total_count?: number;
     detail_list?: WdtStockRow[];
   };
+}
+
+export function getWdtAvailableSendStock(row: WdtStockRow): number {
+  return numberFromWdtCell(row.available_send_stock ?? row.可发库存);
+}
+
+export function getWdtStockNum(row: WdtStockRow): number {
+  return numberFromWdtCell(row.stock_num ?? row.库存);
+}
+
+function numberFromWdtCell(value: unknown): number {
+  const numeric = typeof value === "string" ? Number(value.trim()) : Number(value ?? 0);
+  return Number.isFinite(numeric) ? numeric : 0;
 }
 
 export interface WdtSuiteRow {

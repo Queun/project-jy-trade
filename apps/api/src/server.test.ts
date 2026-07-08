@@ -2035,6 +2035,58 @@ describe("api server", () => {
     await app.close();
   });
 
+  it("uses WDT available send stock instead of physical stock numbers", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await seedSuccessfulGoodsCache(database);
+    await database.close();
+
+    const stockClient: StockLookupClient = {
+      async queryStock(specNo) {
+        return {
+          status: 0,
+          data: {
+            total_count: 1,
+            detail_list: [
+              { spec_no: specNo, warehouse_no: "001", warehouse_name: "主仓", stock_num: 999, 可发库存: "1" },
+            ],
+          },
+        };
+      },
+    };
+    const app = buildTestServer(databaseUrl, undefined, stockClient);
+    const cookie = await loginCookie(app);
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/v1/batches",
+      payload: { filePath: orderFile, mode: "production_api" },
+      headers: { cookie },
+    });
+    const review = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${created.json().id}/actions/run-real-review`,
+      payload: {},
+      headers: { cookie },
+    });
+    expect(review.statusCode).toBe(200);
+
+    const linesResponse = await app.inject({
+      method: "GET",
+      url: `/api/v1/batches/${created.json().id}/review-lines`,
+      headers: { cookie },
+    });
+    const firstMatched = linesResponse.json().find((line: { wdtSpecNo: string }) => line.wdtSpecNo === "3282770392869");
+    expect(firstMatched).toMatchObject({
+      matchStatus: "matched",
+      mainAvailableBefore: 1,
+      suggestedShipQty: 1,
+      status: "部分满足",
+    });
+    expect(firstMatched.warehouseBreakdown ?? "").not.toContain("999");
+    await app.close();
+  });
+
   it("applies warehouse usage settings to real review suggestions", async () => {
     const databaseUrl = testDatabaseUrl();
     const database = createDatabaseContext(databaseUrl);

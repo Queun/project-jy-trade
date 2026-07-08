@@ -13,7 +13,7 @@ import XLSX from "xlsx";
 import { createDatabaseContext, type DatabaseContext } from "../../../apps/api/src/db/client.js";
 import { productMappings, productMatchCandidates, wdtGoodsSpecs, wdtGoodsSyncRuns } from "../../../apps/api/src/db/schema.js";
 import { loadOrderLines, type OrderLine } from "../core/orders.js";
-import type { WdtStockResponse, WdtStockRow } from "../integrations/wdtClient.js";
+import { getWdtAvailableSendStock, type WdtStockResponse, type WdtStockRow } from "../integrations/wdtClient.js";
 
 export interface StockLookupClient {
   queryStock(specNo: string): Promise<WdtStockResponse>;
@@ -141,7 +141,7 @@ export function summarizeWarehouseStock(rows: WdtStockRow[]): WarehouseStockSumm
   let otherAvailableStock = 0;
 
   for (const row of rows) {
-    const available = Number(row.available_send_stock ?? 0);
+    const available = getWdtAvailableSendStock(row);
     const warehouseNo = row.warehouse_no ?? "";
     if (MAIN_WAREHOUSE_NOS.includes(warehouseNo)) mainAvailableStock += available;
     else if (NEAR_EXPIRY_WAREHOUSE_NOS.includes(warehouseNo)) nearExpiryAvailableStock += available;
@@ -155,7 +155,7 @@ export function summarizeWarehouseStock(rows: WdtStockRow[]): WarehouseStockSumm
     defectAvailableStock,
     otherAvailableStock,
     warehouseBreakdown: rows
-      .map((row) => `${row.warehouse_no ?? ""}/${row.warehouse_name ?? ""}:${row.available_send_stock ?? 0}`)
+      .map((row) => `${row.warehouse_no ?? ""}/${row.warehouse_name ?? ""}:可发库存${getWdtAvailableSendStock(row)}`)
       .filter(Boolean)
       .join("; "),
     rows,
@@ -379,8 +379,8 @@ function stockRows(lines: DiagnosisLine[]): Array<Record<string, string | number
       warehouseNo: row.warehouse_no ?? "",
       warehouseName: row.warehouse_name ?? "",
       defect: row.defect ?? false,
-      stockNum: row.stock_num ?? 0,
-      availableSendStock: row.available_send_stock ?? 0,
+      stockNum: row.stock_num ?? row.库存 ?? 0,
+      availableSendStock: getWdtAvailableSendStock(row),
       goodsName: row.goods_name ?? "",
       specName: row.spec_name ?? "",
     })),

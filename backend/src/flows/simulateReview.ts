@@ -11,6 +11,8 @@ import XLSX from "xlsx";
 import { loadOrderLines, type OrderLine } from "../core/orders.js";
 import { buildReviewLines, type InventorySnapshot, type ReviewLine } from "../core/review.js";
 import {
+  getWdtAvailableSendStock,
+  getWdtStockNum,
   WdtClient,
   type WdtGoodsResponse,
   type WdtGoodsSpec,
@@ -277,8 +279,8 @@ function summarizeWarehouseStock(response: WdtStockResponse, requestedMainWareho
   const breakdown = new Map<string, { warehouseNo: string; warehouseName: string; available: number; stock: number }>();
   for (const row of rows) {
     const warehouseNo = row.warehouse_no ?? "";
-    const available = Number(row.available_send_stock ?? 0);
-    const stock = Number(row.stock_num ?? 0);
+    const available = getWdtAvailableSendStock(row);
+    const stock = getWdtStockNum(row);
     const key = warehouseNo || row.warehouse_name || "unknown";
     const current = breakdown.get(key) ?? {
       warehouseNo,
@@ -303,7 +305,7 @@ function summarizeWarehouseStock(response: WdtStockResponse, requestedMainWareho
 
   summary.warehouseBreakdown = [...breakdown.values()]
     .sort((a, b) => b.available - a.available || a.warehouseNo.localeCompare(b.warehouseNo))
-    .map((item) => `${item.warehouseNo || "unknown"} ${item.warehouseName || ""}:可发${item.available}/库存${item.stock}`.trim())
+    .map((item) => `${item.warehouseNo || "unknown"} ${item.warehouseName || ""}:可发库存${item.available}`.trim())
     .join("; ");
 
   return summary;

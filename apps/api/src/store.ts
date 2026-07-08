@@ -80,7 +80,7 @@ import {
   type ProductMappingCandidate,
   type ProductMatchDecision,
 } from "@jy-trade/workflow";
-import type { WdtStockResponse, WdtStockRow } from "../../../backend/src/integrations/wdtClient.js";
+import { getWdtAvailableSendStock, type WdtStockResponse, type WdtStockRow } from "../../../backend/src/integrations/wdtClient.js";
 
 type BatchRow = typeof batches.$inferSelect;
 type ReviewLineRow = typeof reviewLines.$inferSelect;
@@ -1617,7 +1617,7 @@ function summarizeWarehouseStock(rows: WdtStockRow[], settings: WarehouseUsageSe
   let otherAvailableStock = 0;
 
   for (const row of rows) {
-    const available = Number(row.available_send_stock ?? 0);
+    const available = getWdtAvailableSendStock(row);
     const warehouseNo = row.warehouse_no ?? "";
     if (warehouseNo === "001") mainAvailableStock += available;
     else if (warehouseNo === "LINQI") nearExpiryAvailableStock += available;
@@ -1638,7 +1638,7 @@ function summarizeWarehouseStock(rows: WdtStockRow[], settings: WarehouseUsageSe
     otherAvailableStock,
     usableAvailableStock,
     warehouseBreakdown: rows
-      .map((row) => `${row.warehouse_no ?? ""}/${row.warehouse_name ?? ""}:${row.available_send_stock ?? 0}`)
+      .map((row) => `${row.warehouse_no ?? ""}/${row.warehouse_name ?? ""}:可发库存${getWdtAvailableSendStock(row)}`)
       .filter(Boolean)
       .join("; "),
   };
