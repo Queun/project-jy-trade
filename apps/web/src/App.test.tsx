@@ -5,6 +5,8 @@ import { App } from "./App.js";
 import type {
   BatchSummary,
   ExportDto,
+  ExternalProductImportComponentPreview,
+  ExternalProductDto,
   MakeOrderReadinessDto,
   ProductMappingDto,
   ProductMatchCandidateDto,
@@ -37,6 +39,7 @@ let latestGoodsSyncRun: WdtGoodsSyncRunDto | null;
 let warehouseSettings: WarehouseUsageSettingsDto;
 let makeOrderReadiness: MakeOrderReadinessDto;
 let storeAddressRows: StoreAddressDto[];
+let externalProductRows: ExternalProductDto[];
 let currentUser: { id: string; username: string; role: "admin" | "operator" | "reviewer"; createdAt: string };
 let failReviewLines: boolean;
 let batchDeleted: boolean;
@@ -69,6 +72,7 @@ describe("App", () => {
     latestGoodsSyncRun = goodsSyncRun();
     warehouseSettings = warehouseUsageSettings();
     storeAddressRows = [];
+    externalProductRows = [externalProduct()];
     makeOrderReadiness = {
       batchId: "batch-1",
       canExport: false,
@@ -551,6 +555,50 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "保存地址" })).toBeDisabled();
   });
 
+  it("imports external product maintenance workbooks from the product maintenance tab", async () => {
+    render(<App />);
+
+    await screen.findByText("订单处理工作台");
+    switchToExternalProductsTab();
+    expect(await screen.findByText("小样和套盒维护")).toBeInTheDocument();
+    expect(await screen.findByText("既有小样")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("商品维护查询"), { target: { value: "不匹配的旧查询" } });
+    fireEvent.click(screen.getByRole("button", { name: "查询" }));
+    await waitFor(() => expect(screen.getByText("暂无维护商品")).toBeInTheDocument());
+
+    fireEvent.change(screen.getByLabelText("导入商品维护 Excel"), {
+      target: {
+        files: [new File(["fake workbook"], "小样套盒统计.xlsx", { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" })],
+      },
+    });
+
+    expect(await screen.findAllByText("已解析 2 个维护商品，新增 1 个，更新 1 个，需复查 1 个")).toHaveLength(2);
+    expect(screen.getByText("商品维护导入预览")).toBeInTheDocument();
+    expect(screen.getByText("导入套盒")).toBeInTheDocument();
+    expect(screen.getByText("主件：690000000002")).toBeInTheDocument();
+    expect(screen.getByText("替换：690000000003")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "确认导入维护表" }));
+
+    expect(await screen.findAllByText("已导入 2 个维护商品、3 个组件，需复查 1 个")).toHaveLength(2);
+    expect(screen.getByLabelText("商品维护查询")).toHaveValue("");
+    expect(await screen.findByText("导入小样")).toBeInTheDocument();
+    expect(screen.getByText("导入套盒")).toBeInTheDocument();
+    expect(screen.getByText("WDT：SPEC-SAMPLE-1 / 小样 WDT")).toBeInTheDocument();
+  });
+
+  it("keeps external product maintenance read-only for reviewers", async () => {
+    currentUser = { ...currentUser, username: "reviewer", role: "reviewer" };
+    render(<App />);
+
+    await screen.findByText("订单处理工作台");
+    switchToExternalProductsTab();
+    expect(await screen.findByText("小样和套盒维护")).toBeInTheDocument();
+    expect(screen.getByText("当前账号只能查看维护商品。")).toBeInTheDocument();
+    expect(screen.getByLabelText("导入商品维护 Excel")).toBeDisabled();
+  });
+
   it("shows failed export reasons clearly", async () => {
     currentBatch = { ...currentBatch, status: "reviewed" };
     exportRows = [
@@ -699,6 +747,10 @@ function switchToExportTab() {
   fireEvent.click(screen.getByTestId("work-tab-export"));
 }
 
+function switchToExternalProductsTab() {
+  fireEvent.click(screen.getByTestId("work-tab-external-products"));
+}
+
 async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
   const url = String(input);
   const method = init?.method ?? "GET";
@@ -758,6 +810,157 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
     return failReviewLines ? json({ message: "审核明细读取失败" }, 500) : json(lines);
   }
   if (url.includes("/make-order-readiness") && method === "GET") return json(makeOrderReadiness);
+  if (url.startsWith("/api/v1/external-products") && method === "GET") {
+    const query = decodeURIComponent(url.split("query=")[1] ?? "").trim();
+    const rows = query
+      ? externalProductRows.filter((row) => [row.externalBarcode, row.externalGoodsCode, row.externalGoodsName].some((value) => value.includes(query)))
+      : externalProductRows;
+    return json(rows);
+  }
+  if (url === "/api/v1/external-products/import-preview" && method === "POST") {
+    if (!["admin", "operator"].includes(currentUser.role)) return json({ message: "Forbidden" }, 403);
+    return json({
+      fileName: "小样套盒统计.xlsx",
+      sheetCount: 2,
+      parsedProductCount: 2,
+      parsedComponentCount: 3,
+      skippedRowCount: 0,
+      createCount: 1,
+      updateCount: 1,
+      unchangedCount: 0,
+      needsReviewCount: 1,
+      items: [
+        {
+          action: "create",
+          type: "sample",
+          externalBarcode: "690000000001",
+          externalGoodsCode: "SAMPLE-001",
+          externalGoodsName: "导入小样",
+          status: "confirmed",
+          sourceSheet: "小样价格",
+          sourceRow: 2,
+          note: "标签价格:19.9",
+          rawJson: "{}",
+          componentCount: 1,
+          resolvedComponentCount: 1,
+          needsReviewComponentCount: 0,
+          existing: null,
+          components: [
+            externalProductComponentPreview({
+              componentBarcode: "690000000001",
+              componentGoodsCode: "SAMPLE-001",
+              componentName: "导入小样",
+              wdtSpecNo: "SPEC-SAMPLE-1",
+              wdtGoodsName: "小样 WDT",
+            }),
+          ],
+        },
+        {
+          action: "update",
+          type: "bundle",
+          externalBarcode: "BUNDLE001",
+          externalGoodsCode: "",
+          externalGoodsName: "导入套盒",
+          status: "needs_review",
+          sourceSheet: "套盒",
+          sourceRow: 2,
+          note: "合同价:99",
+          rawJson: "{}",
+          componentCount: 2,
+          resolvedComponentCount: 1,
+          needsReviewComponentCount: 1,
+          existing: {
+            id: "external-product-existing",
+            status: "needs_review",
+            componentCount: 1,
+            updatedAt: "2026-07-07T00:00:00.000Z",
+          },
+          components: [
+            externalProductComponentPreview({
+              componentBarcode: "690000000002",
+              role: "primary",
+              wdtSpecNo: "SPEC-BUNDLE-PRIMARY",
+              wdtGoodsName: "套盒主件 WDT",
+            }),
+            externalProductComponentPreview({
+              componentBarcode: "690000000003",
+              role: "replacement",
+              matchStatus: "needs_review",
+              wdtSpecNo: "",
+              wdtGoodsName: "",
+            }),
+          ],
+        },
+      ],
+    });
+  }
+  if (url === "/api/v1/external-products/import" && method === "POST") {
+    if (!["admin", "operator"].includes(currentUser.role)) return json({ message: "Forbidden" }, 403);
+    externalProductRows = [
+      externalProduct({
+        id: "external-product-imported-sample",
+        type: "sample",
+        externalBarcode: "690000000001",
+        externalGoodsCode: "SAMPLE-001",
+        externalGoodsName: "导入小样",
+        status: "confirmed",
+        sourceFileName: "小样套盒统计.xlsx",
+        sourceSheet: "小样价格",
+        sourceRow: 2,
+        note: "标签价格:19.9",
+        components: [
+          externalProductComponent({
+            id: "external-product-component-sample",
+            externalProductId: "external-product-imported-sample",
+            componentBarcode: "690000000001",
+            componentGoodsCode: "SAMPLE-001",
+            componentName: "导入小样",
+            wdtSpecNo: "SPEC-SAMPLE-1",
+            wdtGoodsName: "小样 WDT",
+          }),
+        ],
+      }),
+      externalProduct({
+        id: "external-product-imported-bundle",
+        type: "bundle",
+        externalBarcode: "BUNDLE001",
+        externalGoodsName: "导入套盒",
+        status: "needs_review",
+        sourceFileName: "小样套盒统计.xlsx",
+        sourceSheet: "套盒",
+        sourceRow: 2,
+        note: "合同价:99",
+        components: [
+          externalProductComponent({
+            id: "external-product-component-bundle-primary",
+            externalProductId: "external-product-imported-bundle",
+            componentBarcode: "690000000002",
+            wdtSpecNo: "SPEC-BUNDLE-PRIMARY",
+            wdtGoodsName: "套盒主件 WDT",
+          }),
+          externalProductComponent({
+            id: "external-product-component-bundle-replacement",
+            externalProductId: "external-product-imported-bundle",
+            role: "replacement",
+            componentBarcode: "690000000003",
+            matchStatus: "needs_review",
+            wdtSpecNo: "",
+            wdtGoodsName: "",
+          }),
+        ],
+      }),
+    ];
+    return json({
+      fileName: "小样套盒统计.xlsx",
+      sheetCount: 2,
+      parsedProductCount: 2,
+      parsedComponentCount: 3,
+      importedProductCount: 2,
+      importedComponentCount: 3,
+      skippedRowCount: 0,
+      needsReviewCount: 1,
+    }, 201);
+  }
   if (url.startsWith("/api/v1/store-addresses") && method === "GET") {
     const query = decodeURIComponent(url.split("query=")[1] ?? "").trim();
     const rows = query
@@ -1018,6 +1221,91 @@ function productCandidate(patch: Partial<ProductMatchCandidateDto> = {}): Produc
     basis: "contains_name",
     source: "goods",
     createdAt: "2026-07-03T00:00:00.000Z",
+    ...patch,
+  };
+}
+
+function externalProduct(patch: Partial<ExternalProductDto> = {}): ExternalProductDto {
+  const id = patch.id ?? "external-product-1";
+  const components = patch.components ?? [
+    externalProductComponent({
+      id: "external-product-component-1",
+      externalProductId: id,
+    }),
+  ];
+  return {
+    id,
+    type: "sample",
+    externalBarcode: "690000000009",
+    externalGoodsCode: "SAMPLE-OLD",
+    externalGoodsName: "既有小样",
+    status: "confirmed",
+    sourceFileName: "旧维护表.xlsx",
+    sourceSheet: "小样价格",
+    sourceRow: 2,
+    importedAt: "2026-07-07T00:00:00.000Z",
+    rawJson: "{}",
+    note: "",
+    updatedByUserId: "user-1",
+    updatedByUsername: "admin",
+    createdAt: "2026-07-07T00:00:00.000Z",
+    updatedAt: "2026-07-07T00:00:00.000Z",
+    components,
+    ...patch,
+  };
+}
+
+function externalProductComponent(
+  patch: Partial<ExternalProductDto["components"][number]> = {},
+): ExternalProductDto["components"][number] {
+  return {
+    id: "external-product-component-1",
+    externalProductId: "external-product-1",
+    sortOrder: 1,
+    role: "primary",
+    componentBarcode: "690000000009",
+    componentGoodsCode: "SAMPLE-OLD",
+    componentName: "既有小样",
+    componentSpec: "",
+    quantityMultiplier: 1,
+    wdtSpecNo: "SPEC-OLD",
+    wdtGoodsNo: "GOODS-OLD",
+    wdtGoodsName: "既有小样 WDT",
+    wdtSpecName: "1ml",
+    wdtBarcode: "690000000009",
+    matchStatus: "unique_wdt_hit",
+    matchMessage: "唯一命中 WDT 规格",
+    note: "",
+    sourceSheet: "小样价格",
+    sourceRow: 2,
+    rawJson: "{}",
+    createdAt: "2026-07-07T00:00:00.000Z",
+    updatedAt: "2026-07-07T00:00:00.000Z",
+    ...patch,
+  };
+}
+
+function externalProductComponentPreview(
+  patch: Partial<ExternalProductImportComponentPreview> = {},
+): ExternalProductImportComponentPreview {
+  return {
+    role: "primary",
+    componentBarcode: "690000000001",
+    componentGoodsCode: "",
+    componentName: "",
+    componentSpec: "",
+    quantityMultiplier: 1,
+    wdtSpecNo: "SPEC-SAMPLE-1",
+    wdtGoodsNo: "GOODS-SAMPLE-1",
+    wdtGoodsName: "小样 WDT",
+    wdtSpecName: "1ml",
+    wdtBarcode: "690000000001",
+    matchStatus: "unique_wdt_hit",
+    matchMessage: "唯一命中 WDT 规格",
+    note: "",
+    sourceSheet: "小样价格",
+    sourceRow: 2,
+    rawJson: "{}",
     ...patch,
   };
 }

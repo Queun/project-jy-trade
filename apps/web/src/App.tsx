@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { CheckCheck, ChevronDown, ChevronUp, ClipboardList, Download, FileSpreadsheet, HelpCircle, LogOut, MapPin, PackageCheck, RefreshCcw, Save, Send, Settings, Trash2, Upload, Warehouse, X } from "lucide-react";
+import { CheckCheck, ChevronDown, ChevronUp, ClipboardList, Download, FileSpreadsheet, HelpCircle, LogOut, MapPin, PackageCheck, PackageSearch, RefreshCcw, Save, Send, Settings, Trash2, Upload, Warehouse, X } from "lucide-react";
 import type {
   AuthUserDto,
   BatchSummary,
@@ -13,6 +13,7 @@ import type {
 } from "@jy-trade/shared";
 
 import { ProductMappingPanel } from "./components/ProductMappingPanel.js";
+import { ExternalProductPanel } from "./components/ExternalProductPanel.js";
 import { ReviewTable, type ReviewDraft } from "./components/ReviewTable.js";
 import { StoreAddressPanel } from "./components/StoreAddressPanel.js";
 import { Badge } from "./components/ui/badge.js";
@@ -22,7 +23,7 @@ const defaultOrderFile = "outputs\\fixtures\\sample-order.xlsx";
 const defaultMockFile = "examples/mock_flow_data.json";
 const helpDismissedStorageKey = "jy-trade-help-dismissed-v1";
 
-type WorkTab = "import" | "review" | "export" | "addresses";
+type WorkTab = "import" | "review" | "export" | "addresses" | "external-products";
 type FilterKey =
   | "all"
   | "ready"
@@ -53,6 +54,7 @@ const workTabs: Array<{ key: WorkTab; label: string; icon: typeof FileSpreadshee
   { key: "review", label: "审核发货", icon: ClipboardList },
   { key: "export", label: "做单", icon: PackageCheck },
   { key: "addresses", label: "地址维护", icon: MapPin },
+  { key: "external-products", label: "商品维护", icon: PackageSearch },
 ];
 
 export function App() {
@@ -696,7 +698,7 @@ export function App() {
             {showHelp ? <HelpPanel onDismiss={dismissHelp} /> : null}
             {activeTab === "addresses" ? null : <CurrentBatchPanel batch={activeBatch} message={message} reviewLines={reviewLines} />}
 
-            <nav className={activeTab === "addresses" ? "grid gap-2 rounded-md border border-border bg-card p-1 sm:grid-cols-4" : "mt-4 grid gap-2 rounded-md border border-border bg-card p-1 sm:grid-cols-4"} aria-label="业务步骤">
+            <nav className={activeTab === "addresses" ? "grid gap-2 rounded-md border border-border bg-card p-1 sm:grid-cols-2 lg:grid-cols-5" : "mt-4 grid gap-2 rounded-md border border-border bg-card p-1 sm:grid-cols-2 lg:grid-cols-5"} aria-label="业务步骤">
               {workTabs.map((tab) => {
                 const Icon = tab.icon;
                 const active = tab.key === activeTab;
@@ -785,6 +787,14 @@ export function App() {
                 onSaved={() => {
                   if (activeBatch) void refreshMakeOrderReadiness(activeBatch.id);
                 }}
+              />
+            ) : null}
+
+            {activeTab === "external-products" ? (
+              <ExternalProductTab
+                canEdit={permissions.canExport}
+                message={message}
+                onMessage={setMessage}
               />
             ) : null}
           </section>
@@ -1016,6 +1026,23 @@ function AddressTab({
     <section className="mt-4">
       {message ? <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">{message}</div> : null}
       <StoreAddressPanel canEdit={canEdit} missingStores={missingStores} onMessage={onMessage} onSaved={onSaved} />
+    </section>
+  );
+}
+
+function ExternalProductTab({
+  canEdit,
+  message,
+  onMessage,
+}: {
+  canEdit: boolean;
+  message: string;
+  onMessage: (message: string) => void;
+}) {
+  return (
+    <section className="mt-4">
+      {message ? <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">{message}</div> : null}
+      <ExternalProductPanel canEdit={canEdit} onMessage={onMessage} />
     </section>
   );
 }
