@@ -695,6 +695,7 @@ describe("App", () => {
     switchToReviewTab();
 
     fireEvent.click(screen.getByRole("button", { name: "长期映射库" }));
+    expect(await screen.findByText("库存查询")).toBeInTheDocument();
     expect(await screen.findByText("商品映射确认")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "当前行映射" }));
     expect(await screen.findByText("待确认候选")).toBeInTheDocument();
@@ -725,6 +726,29 @@ describe("App", () => {
       wdtSpecNo: "3282770392869",
       status: "confirmed",
     });
+  });
+
+  it("uses the mapping dialog as a stock lookup tool", async () => {
+    render(<App />);
+    await clickBatch();
+    switchToReviewTab();
+
+    fireEvent.click(screen.getByRole("button", { name: "长期映射库" }));
+    expect(await screen.findByText("库存查询")).toBeInTheDocument();
+    expect(screen.getByText("输入名称、商品条码、组合装条码、商家编码或规格编码，结果按当前仓库范围显示可发库存。")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("库存查询"), { target: { value: "雅漾" } });
+    fireEvent.click(screen.getByRole("button", { name: "查询库存" }));
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/v1/wdt/goods-specs/search?query=%E9%9B%85%E6%BC%BE"));
+    await waitFor(() => expect(screen.getAllByText("3282770392869 / 25ml*5 / 3282770392869").length).toBeGreaterThan(0));
+    expect(screen.getByText("可发 15")).toBeInTheDocument();
+    expect(screen.getByText("001 /主仓: 12")).toBeInTheDocument();
+    expect(screen.getByText("LINQI /临期仓: 3")).toBeInTheDocument();
+
+    fireEvent.click(screen.getAllByRole("button", { name: /用作映射目标/ })[0]);
+    expect(await screen.findByText("已带入旺店通规格，请补充外部条码或编码后保存长期映射")).toBeInTheDocument();
+    expect(screen.getByLabelText("旺店通 spec_no")).toHaveValue("3282770392869");
   });
 
   it("clears spec search results when locating another product mapping", async () => {
@@ -779,6 +803,7 @@ describe("App", () => {
     switchToReviewTab();
 
     fireEvent.click(screen.getByRole("button", { name: "长期映射库" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "长期映射库" }).at(-1)!);
     expect(await screen.findByText("已确认/待处理映射")).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText("人工确认")).toBeInTheDocument());
     const mappingRow = [...document.querySelectorAll("tr")].find((row) => row.textContent?.includes("人工确认"));
@@ -796,6 +821,7 @@ describe("App", () => {
     switchToReviewTab();
 
     fireEvent.click(screen.getByRole("button", { name: "长期映射库" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "长期映射库" }).at(-1)!);
     expect(await screen.findByText("已确认/待处理映射")).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText("人工确认")).toBeInTheDocument());
     const mappingRow = [...document.querySelectorAll("tr")].find((row) => row.textContent?.includes("人工确认"));

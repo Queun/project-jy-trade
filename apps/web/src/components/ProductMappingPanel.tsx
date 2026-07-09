@@ -92,7 +92,7 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
   const [candidates, setCandidates] = useState<ProductMatchCandidateDto[]>([]);
   const [specs, setSpecs] = useState<WdtGoodsSpecSearchResultDto[]>([]);
   const [error, setError] = useState("");
-  const [activeView, setActiveView] = useState<"current" | "library">(focusProduct ? "current" : "library");
+  const [activeView, setActiveView] = useState<"lookup" | "current" | "library">(focusProduct ? "current" : "lookup");
 
   async function refreshMappings(nextQuery = query) {
     const response = await fetch(`/api/v1/product-mappings?query=${encodeURIComponent(nextQuery)}`);
@@ -205,6 +205,12 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
     setSpecQuery(candidate.wdtSpecNo);
   }
 
+  function useSpecAsMappingTarget(spec: WdtGoodsSpecSearchResultDto) {
+    chooseSpec(spec);
+    setActiveView("current");
+    onMessage("已带入旺店通规格，请补充外部条码或编码后保存长期映射");
+  }
+
   useEffect(() => {
     void refreshMappings();
     void refreshCandidates();
@@ -237,9 +243,9 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           {surface === "panel" ? <h2 className="text-lg font-semibold">商品映射确认</h2> : null}
-          <p className="mt-1 text-sm text-muted-foreground">把已核实的客户侧编码、小样或组合装保存为可复用规则</p>
+          <p className="mt-1 text-sm text-muted-foreground">查询旺店通可发库存，选择替代编码，并把核实后的关系保存为长期映射</p>
         </div>
-        <Badge tone="warn">保存后长期复用</Badge>
+        <Badge tone="warn">WDT 只读</Badge>
       </div>
       {focusProduct ? (
         <div className="mt-3 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
@@ -256,9 +262,15 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
         </div>
       ) : null}
       <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
-        名称候选只用于人工判断，不会自动通过；只有保存后的编号映射会在后续批次优先命中。
+        库存查询和名称候选只用于人工判断，不会自动改订单；只有手动保存后的编号映射会在后续批次优先命中。
       </div>
       <div className="mt-4 flex flex-wrap gap-2">
+        <button
+          className={activeView === "lookup" ? "rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground" : "rounded-md border border-border bg-card px-3 py-2 text-sm text-muted-foreground hover:bg-muted"}
+          onClick={() => setActiveView("lookup")}
+        >
+          查库存
+        </button>
         <button
           className={activeView === "current" ? "rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground" : "rounded-md border border-border bg-card px-3 py-2 text-sm text-muted-foreground hover:bg-muted"}
           onClick={() => setActiveView("current")}
@@ -272,6 +284,40 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
           长期映射库
         </button>
       </div>
+
+      {activeView === "lookup" ? (
+        <div className="mt-4 rounded-md border border-border p-3">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold">库存查询</h3>
+              <p className="mt-1 text-sm text-muted-foreground">输入名称、商品条码、组合装条码、商家编码或规格编码，结果按当前仓库范围显示可发库存。</p>
+            </div>
+            <Badge tone="info">旺店通商品库</Badge>
+          </div>
+          <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto]">
+            <input
+              aria-label="库存查询"
+              className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+              placeholder="输入名称、条码或编码"
+              value={specQuery}
+              onChange={(event) => setSpecQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void searchSpecs();
+              }}
+            />
+            <Button className="h-9" onClick={() => void searchSpecs()}>
+              <Search className="h-4 w-4" />
+              查询库存
+            </Button>
+          </div>
+          <SpecSearchResults
+            specs={specs}
+            emptyText="输入关键词后查询可发库存"
+            actionLabel="用作映射目标"
+            onChoose={useSpecAsMappingTarget}
+          />
+        </div>
+      ) : null}
 
       {activeView === "current" ? <div className="mt-4 grid gap-3 xl:grid-cols-[1fr_1fr]">
         <div className="rounded-md border border-border p-3">
@@ -288,25 +334,7 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
               搜索规格
             </Button>
           </div>
-          <div className="mt-3 max-h-72 space-y-2 overflow-auto">
-            {specs.length === 0 ? <div className="text-sm text-muted-foreground">输入名称、条码或规格编码搜索</div> : null}
-            {specs.map((spec) => (
-              <button
-                key={spec.id}
-                className="w-full rounded-md border border-border px-3 py-2 text-left text-sm hover:bg-muted"
-                onClick={() => chooseSpec(spec)}
-              >
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-medium">{spec.goodsName}</span>
-                  <StockBadge stockError={spec.stockError} stockTotalAvailable={spec.stockTotalAvailable} />
-                </div>
-                <div className="mt-1 text-muted-foreground">
-                  {spec.specNo} / {spec.specName} / {spec.barcode || "无主条码"}
-                </div>
-                <StockRows id={spec.id} rows={spec.stockRows} stockError={spec.stockError} />
-              </button>
-            ))}
-          </div>
+          <SpecSearchResults specs={specs} emptyText="输入名称、条码或规格编码搜索" onChoose={chooseSpec} />
         </div>
 
         <div className="rounded-md border border-border p-3">
@@ -450,6 +478,43 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
         </div>
       </div>
     </section>
+  );
+}
+
+function SpecSearchResults({
+  specs,
+  emptyText,
+  actionLabel = "选择",
+  onChoose,
+}: {
+  specs: WdtGoodsSpecSearchResultDto[];
+  emptyText: string;
+  actionLabel?: string;
+  onChoose: (spec: WdtGoodsSpecSearchResultDto) => void;
+}) {
+  return (
+    <div className="mt-3 max-h-80 space-y-2 overflow-auto">
+      {specs.length === 0 ? <div className="text-sm text-muted-foreground">{emptyText}</div> : null}
+      {specs.map((spec) => (
+        <button
+          key={spec.id}
+          className="w-full rounded-md border border-border px-3 py-2 text-left text-sm transition hover:bg-muted focus:outline-none focus:ring-2 focus:ring-primary/40"
+          onClick={() => onChoose(spec)}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="font-medium">{spec.goodsName}</span>
+            <span className="flex flex-wrap items-center gap-2">
+              <StockBadge stockError={spec.stockError} stockTotalAvailable={spec.stockTotalAvailable} />
+              <span className="rounded border border-border bg-background px-1.5 py-0.5 text-xs text-muted-foreground">{actionLabel}</span>
+            </span>
+          </div>
+          <div className="mt-1 text-muted-foreground">
+            {spec.specNo} / {spec.specName} / {spec.barcode || "无主条码"}
+          </div>
+          <StockRows id={spec.id} rows={spec.stockRows} stockError={spec.stockError} />
+        </button>
+      ))}
+    </div>
   );
 }
 
