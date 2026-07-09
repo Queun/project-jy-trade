@@ -872,7 +872,7 @@ describe("App", () => {
     fireEvent.click(within(secondRow).getByRole("button", { name: "定位映射" }));
 
     expect(screen.getByLabelText("旺店通商品搜索")).toHaveValue("爱马仕巴赫尼香水7.5ml");
-    await waitFor(() => expect(screen.getByText("输入名称、条码或规格编码搜索")).toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText("3282770392869 / 25ml*5 / 3282770392869")).not.toBeInTheDocument());
     await waitFor(() => expect(screen.getByLabelText("旺店通 spec_no")).toHaveValue(""));
   });
 

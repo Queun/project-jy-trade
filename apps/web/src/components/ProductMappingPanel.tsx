@@ -331,7 +331,6 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
       {activeView === "current" ? <div className="mt-4 grid gap-3 xl:grid-cols-[1fr_1fr]">
         <div className="rounded-md border border-border p-3">
           <h3 className="text-sm font-semibold">手动查询</h3>
-          <p className="mt-1 text-sm text-muted-foreground">输入名称、条码或编码搜索旺店通商品和可发库存。</p>
           <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto]">
             <input
               aria-label="旺店通商品搜索"
@@ -344,7 +343,7 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
               搜索规格
             </Button>
           </div>
-          <SpecSearchResults specs={specs} emptyText="输入名称、条码或规格编码搜索" onChoose={chooseSpec} />
+          <SpecSearchResults specs={specs} emptyText="" onChoose={chooseSpec} />
         </div>
 
         <div className="rounded-md border border-border p-3">
@@ -377,10 +376,7 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
       {activeView === "current" ? (
         <div className="mb-4 rounded-md border border-border p-3">
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <h3 className="text-sm font-semibold">智能候选</h3>
-              <p className="mt-1 text-sm text-muted-foreground">系统按条码、编码和名称相似度给出的候选；名称类候选需要人工确认。</p>
-            </div>
+            <h3 className="text-sm font-semibold">智能候选</h3>
             <Button
               className="h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80"
               onClick={() => void refreshCandidates()}
@@ -514,7 +510,7 @@ function SpecSearchResults({
 }) {
   return (
     <div className="mt-3 max-h-80 space-y-2 overflow-auto">
-      {specs.length === 0 ? <div className="text-sm text-muted-foreground">{emptyText}</div> : null}
+      {specs.length === 0 && emptyText ? <div className="text-sm text-muted-foreground">{emptyText}</div> : null}
       {specs.map((spec) => (
         <button
           key={spec.id}
