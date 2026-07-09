@@ -32,6 +32,8 @@ export interface ProductMatchDecision {
 
 const HUMAN_REVIEW_SCORE = 70;
 const AMBIGUOUS_SCORE_GAP = 8;
+const MIN_NAME_MATCH_LENGTH = 4;
+const MIN_PREFIX_VARIANT_REMAINING_RATIO = 0.5;
 
 export function normalizeProductText(value: string | undefined): string {
   return (value ?? "")
@@ -59,20 +61,13 @@ export function scoreProductCandidate(input: ProductMatchInput, candidate: Produ
 
   if (!inputName || !candidateName) return undefined;
 
-  if (inputName === candidateName) {
-    return { ...candidate, score: 92, basis: "exact_name" };
-  }
+  const nameScores = inputNameVariants(inputName)
+    .map((variant) => scoreNameVariant(variant, candidateName))
+    .filter((score): score is Pick<ScoredProductCandidate, "score" | "basis"> => Boolean(score))
+    .sort((left, right) => right.score - left.score);
+  const bestNameScore = nameScores[0];
 
-  if (inputName.length >= 4 && (candidateName.includes(inputName) || inputName.includes(candidateName))) {
-    return { ...candidate, score: 82, basis: "contains_name" };
-  }
-
-  const similarity = diceCoefficient(inputName, candidateName);
-  if (similarity >= 0.72) {
-    return { ...candidate, score: Math.round(similarity * 100), basis: "fuzzy_name" };
-  }
-
-  return undefined;
+  return bestNameScore ? { ...candidate, ...bestNameScore } : undefined;
 }
 
 export function decideProductMatch(input: ProductMatchInput, candidates: ProductCandidate[]): ProductMatchDecision {
@@ -168,6 +163,88 @@ function bigramCounts(value: string): Map<string, number> {
 
 function countPairs(counts: Map<string, number>): number {
   return [...counts.values()].reduce((total, count) => total + count, 0);
+}
+
+interface ProductNameVariant {
+  value: string;
+  penalty: number;
+  original: boolean;
+}
+
+function inputNameVariants(inputName: string): ProductNameVariant[] {
+  const variants: ProductNameVariant[] = [];
+  const seen = new Set<string>();
+  const addVariant = (value: string, penalty: number, original = false, minimumLength = MIN_NAME_MATCH_LENGTH) => {
+    if (value.length < minimumLength || seen.has(value)) return;
+    seen.add(value);
+    variants.push({ value, penalty, original });
+  };
+
+  addVariant(inputName, 0, true, 2);
+  const withoutTrailingSpec = stripTrailingSpec(inputName);
+  addVariant(withoutTrailingSpec, 6);
+
+  const base = withoutTrailingSpec.length >= MIN_NAME_MATCH_LENGTH ? withoutTrailingSpec : inputName;
+  const leadingEnglishRemoved = stripLeadingEnglish(base);
+  addVariant(leadingEnglishRemoved, 8);
+
+  for (const count of [2, 3, 4, 5]) {
+    const minimumRemainingLength = Math.max(MIN_NAME_MATCH_LENGTH, Math.ceil(base.length * MIN_PREFIX_VARIANT_REMAINING_RATIO));
+    addVariant(stripLeadingCharacters(base, count), 8 + count + (count >= 4 ? 2 : 0), false, minimumRemainingLength);
+  }
+
+  return variants;
+}
+
+function scoreNameVariant(variant: ProductNameVariant, candidateName: string): Pick<ScoredProductCandidate, "score" | "basis"> | undefined {
+  if (variant.value === candidateName) {
+    const score = Math.max(0, 92 - variant.penalty);
+    return { score, basis: variant.original ? "exact_name" : "contains_name" };
+  }
+
+  if (
+    variant.value.length >= MIN_NAME_MATCH_LENGTH
+    && candidateName.length >= MIN_NAME_MATCH_LENGTH
+    && (candidateName.includes(variant.value) || variant.value.includes(candidateName))
+  ) {
+    return { score: Math.max(0, 82 - variant.penalty - embeddedCandidatePenalty(variant, candidateName)), basis: "contains_name" };
+  }
+
+  const similarity = diceCoefficient(variant.value, candidateName);
+  if (similarity >= 0.72) {
+    return { score: Math.max(0, Math.round(similarity * 100) - variant.penalty), basis: "fuzzy_name" };
+  }
+
+  return undefined;
+}
+
+function embeddedCandidatePenalty(variant: ProductNameVariant, candidateName: string): number {
+  if (!variant.value.includes(candidateName) || candidateName.includes(variant.value)) return 0;
+  let penalty = 0;
+  if (!variant.value.startsWith(candidateName)) penalty += 8;
+  if (candidateName.length / variant.value.length < 0.55) penalty += 4;
+  return penalty;
+}
+
+function stripTrailingSpec(value: string): string {
+  let current = value;
+  for (let index = 0; index < 8; index += 1) {
+    const next = current
+      .replace(/(?:\d+(?:\.\d+)?(?:ml|毫升|l|g|克|kg|千克|片|包|支|瓶|盒|袋|贴|粒|颗|枚|只|套|组|个|抽|卷|罐|板|pcs?|p))$/iu, "")
+      .replace(/(?:单片|单支|单包|试用装|旅行装|小样)$/u, "")
+      .replace(/(?:[a-z]*\d+[a-z0-9]*)$/iu, "");
+    if (next === current) break;
+    current = next;
+  }
+  return current;
+}
+
+function stripLeadingEnglish(value: string): string {
+  return value.replace(/^[a-z0-9]+/iu, "");
+}
+
+function stripLeadingCharacters(value: string, count: number): string {
+  return [...value].slice(count).join("");
 }
 
 function candidateKey(candidate: ProductCandidate): string {

@@ -77,10 +77,50 @@ describe("product matcher", () => {
     expect(normalizeProductText(" 益家小蓝瓶™_10 瓶装 ")).toBe(normalizeProductText("益家小蓝瓶10瓶装"));
   });
 
+  it("finds manual candidates after trimming trailing package specs", () => {
+    const result = decideProductMatch(
+      { goodsName: "肌肤未来光感透润美白面膜单片25ml" },
+      [{ source: "goods", goodsName: "肌肤未来光感透润美白面膜", specNo: "MASK-25ML", barcodes: ["MASK-25ML"] }],
+    );
+
+    expect(result.status).toBe("ambiguous");
+    expect(result.candidates[0]).toMatchObject({ specNo: "MASK-25ML", basis: "contains_name" });
+  });
+
+  it("finds manual candidates after trimming leading English brand text", () => {
+    const result = decideProductMatch(
+      { goodsName: "CPB金致乳霜5ml" },
+      [{ source: "goods", goodsName: "金致乳霜", specNo: "CREAM-5ML", barcodes: ["CREAM-5ML"] }],
+    );
+
+    expect(result.status).toBe("ambiguous");
+    expect(result.candidates[0]).toMatchObject({ specNo: "CREAM-5ML", basis: "contains_name" });
+  });
+
+  it("finds low-weight candidates after conservative leading Chinese trimming", () => {
+    const result = decideProductMatch(
+      { goodsName: "肌肤之钥金致乳霜5ml" },
+      [{ source: "goods", goodsName: "金致乳霜", specNo: "CPB-CREAM-5ML", barcodes: ["CPB-CREAM-5ML"] }],
+    );
+
+    expect(result.status).toBe("ambiguous");
+    expect(result.candidates[0]).toMatchObject({ specNo: "CPB-CREAM-5ML", basis: "contains_name" });
+    expect(result.candidates[0].score).toBeLessThan(82);
+  });
+
   it("does not auto-match weak name candidates", () => {
     const result = decideProductMatch(
       { goodsName: "益生菌小样" },
       [{ source: "goods", goodsName: "完全不同的测试物品", specNo: "X1", barcodes: ["X1"] }],
+    );
+
+    expect(result.status).toBe("not_found");
+  });
+
+  it("does not match overly short generic names after trimming", () => {
+    const result = decideProductMatch(
+      { goodsName: "肌肤之钥乳霜5ml" },
+      [{ source: "goods", goodsName: "霜", specNo: "GENERIC-CREAM", barcodes: ["GENERIC-CREAM"] }],
     );
 
     expect(result.status).toBe("not_found");
