@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, Search, ShieldAlert, Trash2, X, XCircle } from "lucide-react";
 import type {
   ProductMappingDto,
@@ -93,6 +93,7 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
   const [specs, setSpecs] = useState<WdtGoodsSpecSearchResultDto[]>([]);
   const [error, setError] = useState("");
   const [activeView, setActiveView] = useState<"lookup" | "current" | "library">(focusProduct ? "current" : "lookup");
+  const candidateRequestIdRef = useRef(0);
 
   async function refreshMappings(nextQuery = query) {
     const response = await fetch(`/api/v1/product-mappings?query=${encodeURIComponent(nextQuery)}`);
@@ -104,7 +105,10 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
   }
 
   async function refreshCandidates(nextQuery = query) {
+    const requestId = candidateRequestIdRef.current + 1;
+    candidateRequestIdRef.current = requestId;
     const response = await fetch(`/api/v1/product-match-candidates?query=${encodeURIComponent(nextQuery)}`);
+    if (requestId !== candidateRequestIdRef.current) return;
     if (!response.ok) {
       setCandidates([]);
       return;
@@ -213,13 +217,13 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
 
   useEffect(() => {
     void refreshMappings();
-    void refreshCandidates();
   }, []);
 
   useEffect(() => {
     if (!focusQuery) return;
     setQuery(focusQuery);
     setSpecQuery(focusProduct?.externalGoodsName || focusQuery);
+    setCandidates([]);
     setSpecs([]);
     setActiveView("current");
     if (focusProduct) {

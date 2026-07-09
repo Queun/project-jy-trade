@@ -699,6 +699,7 @@ describe("App", () => {
     expect(await screen.findByText("商品映射确认")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "当前行映射" }));
     expect(await screen.findByText("待确认候选")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "刷新候选" }));
     await waitFor(() => expect(screen.getAllByText("雅漾专研保湿修护面膜25ml*5片").length).toBeGreaterThan(0));
     expect(screen.getByText("可发 15")).toBeInTheDocument();
     expect(screen.getByText("001 /主仓: 12")).toBeInTheDocument();
@@ -726,6 +727,48 @@ describe("App", () => {
       wdtSpecNo: "3282770392869",
       status: "confirmed",
     });
+  });
+
+  it("does not show unrelated global candidates when locating a product mapping", async () => {
+    lines = [
+      reviewLine({
+        id: "line-target-mapping",
+        externalBarcode: "TARGET-BARCODE",
+        externalGoodsCode: "TARGET-CODE",
+        externalGoodsName: "当前要处理的商品",
+        goodsName: "",
+        wdtSpecNo: "",
+        matchStatus: "ambiguous",
+        matchMessage: "Name candidate needs human confirmation",
+        status: "未匹配",
+        suggestedShipQty: 0,
+      }),
+    ];
+    candidateRows = [
+      productCandidate({
+        id: "candidate-unrelated-1",
+        externalBarcode: "2153659120013",
+        externalGoodsCode: "5365912",
+        externalGoodsName: "肌肤之钥金致乳霜5ml",
+      }),
+      productCandidate({
+        id: "candidate-unrelated-2",
+        externalBarcode: "2153659160019",
+        externalGoodsCode: "5365916",
+        externalGoodsName: "肌肤未来光感透润美白面膜单片25ml",
+      }),
+    ];
+    render(<App />);
+    await clickBatch();
+    switchToReviewTab();
+
+    const targetRow = await rowFor("当前要处理的商品");
+    fireEvent.click(within(targetRow).getByRole("button", { name: "定位映射" }));
+
+    expect(await screen.findByText("商品映射确认")).toBeInTheDocument();
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/v1/product-match-candidates?query=TARGET-BARCODE"));
+    expect(screen.queryByText("肌肤之钥金致乳霜5ml")).not.toBeInTheDocument();
+    expect(screen.queryByText("肌肤未来光感透润美白面膜单片25ml")).not.toBeInTheDocument();
   });
 
   it("uses the mapping dialog as a stock lookup tool", async () => {
@@ -1514,7 +1557,7 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
     return json(created, 201);
   }
   if (url.startsWith("/api/v1/product-mappings") && method === "GET") return json(mappingRows);
-  if (url.startsWith("/api/v1/product-match-candidates") && method === "GET") return json(candidateRows);
+  if (url.startsWith("/api/v1/product-match-candidates") && method === "GET") return json(filterProductCandidates(url));
   if (url === "/api/v1/product-mappings" && method === "POST") {
     const body = JSON.parse(String(init?.body));
     const spec = specRows.find((item) => item.specNo === body.wdtSpecNo);
@@ -1619,6 +1662,20 @@ function productCandidate(patch: Partial<ProductMatchCandidateDto> = {}): Produc
     createdAt: "2026-07-03T00:00:00.000Z",
     ...patch,
   };
+}
+
+function filterProductCandidates(url: string) {
+  const query = decodeURIComponent(url.split("query=")[1] ?? "").trim().toLowerCase();
+  if (!query) return candidateRows;
+  return candidateRows.filter((candidate) =>
+    [
+      candidate.externalBarcode,
+      candidate.externalGoodsCode,
+      candidate.externalGoodsName,
+      candidate.wdtSpecNo,
+      candidate.wdtGoodsName,
+    ].some((value) => value.toLowerCase().includes(query)),
+  );
 }
 
 function externalProduct(patch: Partial<ExternalProductDto> = {}): ExternalProductDto {
