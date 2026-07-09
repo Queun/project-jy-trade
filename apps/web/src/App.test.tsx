@@ -830,6 +830,83 @@ describe("App", () => {
     expect(screen.getByLabelText("旺店通 spec_no")).toHaveValue("3282770392869");
   });
 
+  it("shows suite results and carries the make-order code from manual search", async () => {
+    specRows = [
+      wdtSpec({
+        id: "wdt-suite-2150317560013",
+        source: "suite",
+        goodsNo: "2150317560013",
+        goodsName: "lelabo护发素(33檀香系列)50ml",
+        specNo: "021700004",
+        specName: "50ml",
+        specCode: "2150317560013",
+        makeOrderCode: "2150317560013",
+        barcode: "2150317560013",
+        barcodes: ["2150317560013", "021700004"],
+        stockTotalAvailable: 8,
+        stockRows: [{ warehouseNo: "001", warehouseName: "主仓", availableSendStock: 8, included: true }],
+      }),
+    ];
+    render(<App />);
+    await clickBatch();
+    switchToReviewTab();
+
+    fireEvent.click(screen.getByRole("button", { name: "长期映射库" }));
+    expect(await screen.findByText("库存查询")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("库存查询"), { target: { value: "2150317560013" } });
+    fireEvent.click(screen.getByRole("button", { name: "查询库存" }));
+
+    expect(await screen.findByText("组合装")).toBeInTheDocument();
+    expect(screen.getByText("做单码 2150317560013")).toBeInTheDocument();
+    expect(screen.getByText("021700004 / 50ml / 2150317560013")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /用作映射目标/ }));
+    expect(screen.getByLabelText("旺店通 spec_no")).toHaveValue("021700004");
+    expect(screen.getByLabelText("做单码")).toHaveValue("2150317560013");
+  });
+
+  it("shows loading feedback while manual stock search is running", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).startsWith("/api/v1/wdt/goods-specs/search")) return new Promise<Response>(() => {});
+        return handleFetch(input, init);
+      }),
+    );
+    render(<App />);
+    await clickBatch();
+    switchToReviewTab();
+
+    fireEvent.click(screen.getByRole("button", { name: "长期映射库" }));
+    expect(await screen.findByText("库存查询")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("库存查询"), { target: { value: "雅漾" } });
+    fireEvent.click(screen.getByRole("button", { name: "查询库存" }));
+
+    expect(screen.getByRole("button", { name: "查询中..." })).toBeDisabled();
+    expect(screen.getByText("正在查询库存...")).toBeInTheDocument();
+  });
+
+  it("shows loading feedback while smart candidates are running", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).startsWith("/api/v1/product-match-candidates")) return new Promise<Response>(() => {});
+        return handleFetch(input, init);
+      }),
+    );
+    render(<App />);
+    await clickBatch();
+    switchToReviewTab();
+
+    fireEvent.click(screen.getByRole("button", { name: "长期映射库" }));
+    expect(await screen.findByText("库存查询")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "当前行映射" }));
+    fireEvent.click(screen.getByRole("button", { name: "刷新智能候选" }));
+
+    expect(screen.getByRole("button", { name: "查询中..." })).toBeDisabled();
+    expect(screen.getByText("正在查询智能候选...")).toBeInTheDocument();
+  });
+
   it("clears spec search results when locating another product mapping", async () => {
     lines = [
       reviewLine({
@@ -1519,6 +1596,7 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
               goodsName: confirmed.wdtGoodsName,
               specName: confirmed.wdtSpecName,
               wdtSpecNo: confirmed.wdtSpecNo,
+              wdtMakeOrderCode: confirmed.wdtMakeOrderCode || confirmed.wdtSpecNo,
               matchStatus: "matched",
               matchMessage: confirmedProductMappingMatchMessage,
               suggestedShipQty: line.orderQty,
@@ -1606,6 +1684,7 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
       wdtSpecNo: body.wdtSpecNo,
       wdtSpecName: spec?.specName ?? "",
       wdtBarcode: spec?.barcode ?? "",
+      wdtMakeOrderCode: body.wdtMakeOrderCode || body.wdtSpecNo,
       note: body.note,
       status: "confirmed",
     });
@@ -1662,6 +1741,7 @@ function productMapping(patch: Partial<ProductMappingDto> = {}): ProductMappingD
     wdtSpecNo: "3282770392869",
     wdtSpecName: "25ml*5",
     wdtBarcode: "3282770392869",
+    wdtMakeOrderCode: "3282770392869",
     status: "confirmed",
     sourceBatchId: "",
     confirmedByUserId: "user-1",
@@ -1836,11 +1916,13 @@ function sameIdentifier(left: string, right: string) {
 function wdtSpec(patch: Partial<WdtGoodsSpecSearchResultDto> = {}): WdtGoodsSpecSearchResultDto {
   return {
     id: "wdt-goods-spec-3282770392869",
+    source: "goods",
     goodsNo: "3282770392869",
     goodsName: "雅漾专研保湿修护面膜",
     specNo: "3282770392869",
     specName: "25ml*5",
     specCode: "",
+    makeOrderCode: "3282770392869",
     barcode: "3282770392869",
     barcodes: ["3282770392869"],
     deleted: 0,

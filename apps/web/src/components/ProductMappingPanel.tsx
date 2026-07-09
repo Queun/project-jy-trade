@@ -40,6 +40,7 @@ interface MappingDraft {
   externalGoodsCode: string;
   externalGoodsName: string;
   wdtSpecNo: string;
+  wdtMakeOrderCode: string;
   note: string;
 }
 
@@ -48,6 +49,7 @@ const emptyDraft: MappingDraft = {
   externalGoodsCode: "",
   externalGoodsName: "",
   wdtSpecNo: "",
+  wdtMakeOrderCode: "",
   note: "",
 };
 
@@ -93,6 +95,8 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
   const [specs, setSpecs] = useState<WdtGoodsSpecSearchResultDto[]>([]);
   const [error, setError] = useState("");
   const [activeView, setActiveView] = useState<"lookup" | "current" | "library">(focusProduct ? "current" : "lookup");
+  const [isLoadingCandidates, setIsLoadingCandidates] = useState(false);
+  const [isSearchingSpecs, setIsSearchingSpecs] = useState(false);
   const mappingRequestIdRef = useRef(0);
   const candidateRequestIdRef = useRef(0);
 
@@ -111,24 +115,34 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
   async function refreshCandidates(nextQuery = query) {
     const requestId = candidateRequestIdRef.current + 1;
     candidateRequestIdRef.current = requestId;
-    const response = await fetch(`/api/v1/product-match-candidates?query=${encodeURIComponent(nextQuery)}`);
-    if (requestId !== candidateRequestIdRef.current) return;
-    if (!response.ok) {
-      setCandidates([]);
-      return;
+    setIsLoadingCandidates(true);
+    try {
+      const response = await fetch(`/api/v1/product-match-candidates?query=${encodeURIComponent(nextQuery)}`);
+      if (requestId !== candidateRequestIdRef.current) return;
+      if (!response.ok) {
+        setCandidates([]);
+        return;
+      }
+      setCandidates((await response.json()) as ProductMatchCandidateDto[]);
+    } finally {
+      if (requestId === candidateRequestIdRef.current) setIsLoadingCandidates(false);
     }
-    setCandidates((await response.json()) as ProductMatchCandidateDto[]);
   }
 
   async function searchSpecs() {
     setError("");
-    const response = await fetch(`/api/v1/wdt/goods-specs/search?query=${encodeURIComponent(specQuery)}`);
-    if (!response.ok) {
-      setSpecs([]);
-      setError("商品规格搜索失败");
-      return;
+    setIsSearchingSpecs(true);
+    try {
+      const response = await fetch(`/api/v1/wdt/goods-specs/search?query=${encodeURIComponent(specQuery)}`);
+      if (!response.ok) {
+        setSpecs([]);
+        setError("商品规格搜索失败");
+        return;
+      }
+      setSpecs((await response.json()) as WdtGoodsSpecSearchResultDto[]);
+    } finally {
+      setIsSearchingSpecs(false);
     }
-    setSpecs((await response.json()) as WdtGoodsSpecSearchResultDto[]);
   }
 
   async function confirmMapping() {
@@ -174,6 +188,7 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
       externalGoodsCode: mapping.externalGoodsCode,
       externalGoodsName: mapping.externalGoodsName,
       wdtSpecNo: mapping.wdtSpecNo,
+      wdtMakeOrderCode: mapping.wdtMakeOrderCode || mapping.wdtSpecNo,
       note: mapping.note || "复查长期映射",
     });
     setSpecQuery(mapping.wdtGoodsName || mapping.wdtSpecNo);
@@ -198,6 +213,7 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
     setDraft((current) => ({
       ...current,
       wdtSpecNo: spec.specNo,
+      wdtMakeOrderCode: spec.makeOrderCode || spec.specNo,
       note: current.note || "前端人工确认映射",
     }));
   }
@@ -208,6 +224,7 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
       externalGoodsCode: candidate.externalGoodsCode,
       externalGoodsName: candidate.externalGoodsName,
       wdtSpecNo: candidate.wdtSpecNo,
+      wdtMakeOrderCode: candidate.source === "suite" ? candidate.wdtGoodsNo : candidate.wdtSpecNo,
       note: `智能候选确认：${candidateBasisLabel(candidate.basis)}，分数 ${candidate.score}`,
     });
     setSpecQuery(candidate.wdtSpecNo);
@@ -237,6 +254,7 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
         externalGoodsCode: focusProduct.externalGoodsCode,
         externalGoodsName: focusProduct.externalGoodsName,
         wdtSpecNo: "",
+        wdtMakeOrderCode: "",
         note: "审核异常行保存为长期映射",
       });
     }
@@ -244,7 +262,10 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
     void refreshCandidates(focusQuery);
   }, [focusQuery, focusProduct]);
 
-  const selectedSpec = useMemo(() => specs.find((spec) => spec.specNo === draft.wdtSpecNo), [draft.wdtSpecNo, specs]);
+  const selectedSpec = useMemo(
+    () => specs.find((spec) => spec.specNo === draft.wdtSpecNo && (spec.makeOrderCode || spec.specNo) === (draft.wdtMakeOrderCode || draft.wdtSpecNo)),
+    [draft.wdtMakeOrderCode, draft.wdtSpecNo, specs],
+  );
   const canSaveMapping = Boolean(draft.wdtSpecNo && (draft.externalBarcode || draft.externalGoodsCode));
 
   return (
@@ -314,14 +335,14 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
                 if (event.key === "Enter") void searchSpecs();
               }}
             />
-            <Button className="h-9" onClick={() => void searchSpecs()}>
+            <Button className="h-9" disabled={isSearchingSpecs} onClick={() => void searchSpecs()}>
               <Search className="h-4 w-4" />
-              查询库存
+              {isSearchingSpecs ? "查询中..." : "查询库存"}
             </Button>
           </div>
           <SpecSearchResults
             specs={specs}
-            emptyText="输入关键词后查询可发库存"
+            emptyText={isSearchingSpecs ? "正在查询库存..." : "输入关键词后查询可发库存"}
             actionLabel="用作映射目标"
             onChoose={useSpecAsMappingTarget}
           />
@@ -338,12 +359,12 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
               value={specQuery}
               onChange={(event) => setSpecQuery(event.target.value)}
             />
-            <Button className="h-9" onClick={() => void searchSpecs()}>
+            <Button className="h-9" disabled={isSearchingSpecs} onClick={() => void searchSpecs()}>
               <Search className="h-4 w-4" />
-              搜索规格
+              {isSearchingSpecs ? "搜索中..." : "搜索规格"}
             </Button>
           </div>
-          <SpecSearchResults specs={specs} emptyText="" onChoose={chooseSpec} />
+          <SpecSearchResults specs={specs} emptyText={isSearchingSpecs ? "正在搜索商品..." : ""} onChoose={chooseSpec} />
         </div>
 
         <div className="rounded-md border border-border p-3">
@@ -358,11 +379,13 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
               onChange={(value) => setDraft((current) => ({ ...current, externalGoodsName: value }))}
             />
             <Field label="旺店通 spec_no" value={draft.wdtSpecNo} onChange={(value) => setDraft((current) => ({ ...current, wdtSpecNo: value }))} />
+            <Field label="做单码" value={draft.wdtMakeOrderCode} onChange={(value) => setDraft((current) => ({ ...current, wdtMakeOrderCode: value }))} />
             <Field label="备注" value={draft.note} onChange={(value) => setDraft((current) => ({ ...current, note: value }))} />
           </div>
           {selectedSpec ? (
             <div className="mt-3 rounded-md bg-muted px-3 py-2 text-sm">
               已选：{selectedSpec.goodsName} / {selectedSpec.specName} / {selectedSpec.barcode}
+              {(selectedSpec.makeOrderCode || selectedSpec.specNo) !== selectedSpec.specNo ? ` / 做单码 ${selectedSpec.makeOrderCode}` : ""}
             </div>
           ) : null}
           {error ? <div className="mt-3 text-sm text-rose-700">{error}</div> : null}
@@ -379,12 +402,14 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
             <h3 className="text-sm font-semibold">智能候选</h3>
             <Button
               className="h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80"
+              disabled={isLoadingCandidates}
               onClick={() => void refreshCandidates()}
             >
               <Search className="h-4 w-4" />
-              刷新智能候选
+              {isLoadingCandidates ? "刷新中..." : "刷新智能候选"}
             </Button>
           </div>
+          {isLoadingCandidates ? <div className="mb-2 text-sm text-muted-foreground">正在查询智能候选...</div> : null}
           <div className="grid gap-2 lg:grid-cols-2">
             {candidates.map((candidate) => (
               <button
@@ -408,7 +433,7 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
                 <StockRows id={candidate.id} rows={candidate.stockRows} stockError={candidate.stockError} />
               </button>
             ))}
-            {candidates.length === 0 ? <div className="text-sm text-muted-foreground">暂无智能候选，可使用上方手动查询继续查找。</div> : null}
+            {candidates.length === 0 && !isLoadingCandidates ? <div className="text-sm text-muted-foreground">暂无智能候选，可使用上方手动查询继续查找。</div> : null}
           </div>
         </div>
       ) : null}
@@ -429,12 +454,13 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
             </Button>
             <Button
               className="h-9 bg-muted text-muted-foreground hover:bg-muted/80"
+              disabled={isLoadingCandidates}
               onClick={() => {
                 setActiveView("current");
                 void refreshCandidates();
               }}
             >
-              查智能候选
+              {isLoadingCandidates ? "查询中..." : "查智能候选"}
             </Button>
           </div>
         </div>
@@ -518,7 +544,10 @@ function SpecSearchResults({
           onClick={() => onChoose(spec)}
         >
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="font-medium">{spec.goodsName}</span>
+            <span className="flex flex-wrap items-center gap-2">
+              <span className="font-medium">{spec.goodsName}</span>
+              <Badge tone={spec.source === "suite" ? "info" : "neutral"}>{spec.source === "suite" ? "组合装" : "商品"}</Badge>
+            </span>
             <span className="flex flex-wrap items-center gap-2">
               <StockBadge stockError={spec.stockError} stockTotalAvailable={spec.stockTotalAvailable} />
               <span className="rounded border border-border bg-background px-1.5 py-0.5 text-xs text-muted-foreground">{actionLabel}</span>
@@ -527,6 +556,9 @@ function SpecSearchResults({
           <div className="mt-1 text-muted-foreground">
             {spec.specNo} / {spec.specName} / {spec.barcode || "无主条码"}
           </div>
+          {(spec.makeOrderCode || spec.specNo) !== spec.specNo ? (
+            <div className="mt-1 text-muted-foreground">做单码 {spec.makeOrderCode}</div>
+          ) : null}
           <StockRows id={spec.id} rows={spec.stockRows} stockError={spec.stockError} />
         </button>
       ))}

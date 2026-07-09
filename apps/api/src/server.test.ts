@@ -2842,6 +2842,63 @@ describe("api server", () => {
     await app.close();
   });
 
+  it("returns WDT suites from manual goods search and stores suite make-order codes in mappings", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await seedSingleComponentSuite(database);
+    await database.close();
+
+    const stockClient: StockLookupClient = {
+      async queryStock(specNo) {
+        expect(specNo).toBe("021700004");
+        return {
+          status: 0,
+          data: {
+            total_count: 1,
+            detail_list: [{ spec_no: specNo, warehouse_no: "001", warehouse_name: "主仓", available_send_stock: 8 }],
+          },
+        };
+      },
+    };
+    const app = buildTestServer(databaseUrl, undefined, stockClient);
+    const cookie = await loginCookie(app);
+
+    const search = await app.inject({
+      method: "GET",
+      url: "/api/v1/wdt/goods-specs/search?query=2150317560013",
+      headers: { cookie },
+    });
+    expect(search.statusCode).toBe(200);
+    expect(search.json()[0]).toMatchObject({
+      source: "suite",
+      goodsNo: "2150317560013",
+      specNo: "021700004",
+      makeOrderCode: "2150317560013",
+      stockTotalAvailable: 8,
+    });
+
+    const mapping = await app.inject({
+      method: "POST",
+      url: "/api/v1/product-mappings",
+      payload: {
+        externalBarcode: "EXTERNAL-SUITE",
+        externalGoodsName: "外部组合装",
+        wdtSpecNo: "021700004",
+        wdtMakeOrderCode: "2150317560013",
+        note: "组合装人工映射",
+      },
+      headers: { cookie },
+    });
+    expect(mapping.statusCode).toBe(201);
+    expect(mapping.json()).toMatchObject({
+      externalBarcode: "EXTERNAL-SUITE",
+      wdtSpecNo: "021700004",
+      wdtMakeOrderCode: "2150317560013",
+    });
+    await app.close();
+  });
+
   it("uses WDT available send stock instead of physical stock numbers", async () => {
     const databaseUrl = testDatabaseUrl();
     const database = createDatabaseContext(databaseUrl);

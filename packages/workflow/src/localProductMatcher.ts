@@ -11,6 +11,7 @@ export interface ProductMappingCandidate {
   wdtSpecNo: string;
   wdtSpecName?: string;
   wdtBarcode?: string;
+  wdtMakeOrderCode?: string;
   status: "confirmed" | "disabled" | "needs_review";
 }
 
@@ -35,6 +36,8 @@ export interface LocalSuiteCandidate {
   componentSpecName?: string;
   componentBarcode?: string;
   deleted?: number;
+  modified?: string;
+  syncedAt?: string;
 }
 
 export interface LocalProductMatchSources {
@@ -55,11 +58,12 @@ export function decideLocalProductMatch(input: ProductMatchInput, sources: Local
     return {
       status: "matched",
       candidate: {
-        source: "goods",
+        source: mapping.wdtMakeOrderCode && mapping.wdtMakeOrderCode !== mapping.wdtSpecNo ? "suite" : "goods",
         goodsNo: mapping.wdtGoodsNo,
         goodsName: mapping.wdtGoodsName,
         specNo: mapping.wdtSpecNo,
         specName: mapping.wdtSpecName,
+        makeOrderCode: mapping.wdtMakeOrderCode || mapping.wdtSpecNo,
         barcodes: [mapping.wdtBarcode].filter((item): item is string => Boolean(item)),
         score: 110,
         basis: "code",

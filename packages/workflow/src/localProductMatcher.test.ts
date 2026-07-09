@@ -52,6 +52,31 @@ describe("local product matcher", () => {
     expect(result.message).toBe(confirmedProductMappingMatchMessage);
   });
 
+  it("keeps suite make-order code from confirmed mappings", () => {
+    const result = decideLocalProductMatch(
+      { barcode: "external-suite", goodsName: "外部组合装" },
+      {
+        mappings: [
+          {
+            externalBarcode: "external-suite",
+            wdtSpecNo: "021700004",
+            wdtMakeOrderCode: "2150317560013",
+            wdtGoodsName: "组合装组件",
+            status: "confirmed",
+          },
+        ],
+        goodsSpecs: [],
+      },
+    );
+
+    expect(result.status).toBe("matched");
+    expect(result.candidate).toMatchObject({
+      source: "suite",
+      specNo: "021700004",
+      makeOrderCode: "2150317560013",
+    });
+  });
+
   it("matches single-component WDT suites before confirmed mappings", () => {
     const result = decideLocalProductMatch(
       { barcode: "2150317560013", goodsName: "lelabo护发素(33檀香系列)50ml" },

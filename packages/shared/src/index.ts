@@ -401,11 +401,13 @@ const WdtStockAvailabilityFieldsSchema = {
 
 export const WdtGoodsSpecSearchResultDtoSchema = z.object({
   id: z.string(),
+  source: z.enum(["goods", "suite"]).optional(),
   goodsNo: z.string(),
   goodsName: z.string(),
   specNo: z.string(),
   specName: z.string(),
   specCode: z.string(),
+  makeOrderCode: z.string().optional(),
   barcode: z.string(),
   barcodes: z.array(z.string()),
   deleted: z.number(),
@@ -428,6 +430,7 @@ export const ProductMappingDtoSchema = z.object({
   wdtSpecNo: z.string(),
   wdtSpecName: z.string(),
   wdtBarcode: z.string(),
+  wdtMakeOrderCode: z.string().optional(),
   status: ProductMappingStatusSchema,
   sourceBatchId: z.string(),
   confirmedByUserId: z.string().nullable().optional(),
@@ -463,6 +466,7 @@ export const ConfirmProductMappingRequestSchema = z.object({
   externalGoodsName: z.string().default(""),
   externalGoodsCode: z.string().default(""),
   wdtSpecNo: z.string().min(1),
+  wdtMakeOrderCode: z.string().default(""),
   sourceBatchId: z.string().default(""),
   note: z.string().max(500).default(""),
 });

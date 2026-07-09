@@ -1176,7 +1176,7 @@ export function createSqliteStore(options: StoreOptions = {}) {
       const trimmed = query.trim();
       if (!trimmed) return [];
       const pattern = `%${trimmed}%`;
-      const rows = await database.db
+      const goodsRows = await database.db
         .select()
         .from(wdtGoodsSpecs)
         .where(
@@ -1190,13 +1190,19 @@ export function createSqliteStore(options: StoreOptions = {}) {
           ),
         )
         .limit(20);
-      return attachWdtGoodsSpecSearchStock(rows.map(toWdtGoodsSpecSearchResultDto), database, stockClient);
+      const suiteRows = (await loadLocalSuiteCandidates(database))
+        .filter((suite) => suiteMatchesSearchQuery(suite, trimmed))
+        .map(toSuiteSearchResultDto);
+      const rows = dedupeWdtSearchResults([...goodsRows.map(toWdtGoodsSpecSearchResultDto), ...suiteRows])
+        .sort((left, right) => compareWdtSearchResults(left, right, trimmed))
+        .slice(0, 30);
+      return attachWdtGoodsSpecSearchStock(rows, database, stockClient);
     },
 
     async confirmProductMapping(input: ConfirmProductMappingRequest, actor?: AuthUserDto): Promise<ProductMappingDto> {
       await ready;
-      const [spec] = await database.db.select().from(wdtGoodsSpecs).where(eq(wdtGoodsSpecs.specNo, input.wdtSpecNo)).limit(1);
-      if (!spec) {
+      const target = await findProductMappingTarget(database, input.wdtSpecNo, input.wdtMakeOrderCode);
+      if (!target) {
         throw new StoreValidationError(`WDT goods spec not found: ${input.wdtSpecNo}`);
       }
       if (!input.externalBarcode && !input.externalGoodsCode) {
@@ -1210,11 +1216,12 @@ export function createSqliteStore(options: StoreOptions = {}) {
         externalBarcode: input.externalBarcode,
         externalGoodsName: input.externalGoodsName,
         externalGoodsCode: input.externalGoodsCode,
-        wdtGoodsNo: spec.goodsNo,
-        wdtGoodsName: spec.goodsName,
-        wdtSpecNo: spec.specNo,
-        wdtSpecName: spec.specName,
-        wdtBarcode: spec.barcode,
+        wdtGoodsNo: target.goodsNo,
+        wdtGoodsName: target.goodsName,
+        wdtSpecNo: target.specNo,
+        wdtSpecName: target.specName,
+        wdtBarcode: target.barcode,
+        wdtMakeOrderCode: target.makeOrderCode || target.specNo,
         status: "confirmed",
         sourceBatchId: input.sourceBatchId,
         confirmedByUserId: actor?.id ?? existing?.confirmedByUserId ?? null,
@@ -2314,6 +2321,8 @@ function toLocalSuiteCandidate(suite: WdtSuiteRow, component: WdtSuiteComponentR
     componentSpecName: component.specName,
     componentBarcode: component.barcode,
     deleted: suite.deleted,
+    modified: suite.modified,
+    syncedAt: suite.syncedAt,
   };
 }
 
@@ -2327,6 +2336,7 @@ function toProductMappingCandidate(row: ProductMappingRow): ProductMappingCandid
     wdtSpecNo: row.wdtSpecNo,
     wdtSpecName: row.wdtSpecName,
     wdtBarcode: row.wdtBarcode,
+    wdtMakeOrderCode: row.wdtMakeOrderCode || row.wdtSpecNo,
     status: row.status,
   };
 }
@@ -2862,17 +2872,97 @@ function toWdtGoodsSyncRunDto(row: GoodsSyncRunRecord | WdtGoodsSyncRunRow): Wdt
 function toWdtGoodsSpecSearchResultDto(row: WdtGoodsSpecRow): WdtGoodsSpecSearchResultDto {
   return {
     id: row.id,
+    source: "goods",
     goodsNo: row.goodsNo,
     goodsName: row.goodsName,
     specNo: row.specNo,
     specName: row.specName,
     specCode: row.specCode,
+    makeOrderCode: row.specNo,
     barcode: row.barcode,
     barcodes: parseBarcodes(row.barcodesJson),
     deleted: row.deleted,
     modified: row.modified,
     syncedAt: row.syncedAt,
   };
+}
+
+function toSuiteSearchResultDto(suite: LocalSuiteCandidate): WdtGoodsSpecSearchResultDto {
+  return {
+    id: `wdt-suite-${suite.suiteNo}`,
+    source: "suite",
+    goodsNo: suite.suiteNo,
+    goodsName: suite.suiteName || suite.componentGoodsName || suite.suiteNo,
+    specNo: suite.componentSpecNo,
+    specName: suite.componentSpecName || "",
+    specCode: suite.suiteNo,
+    makeOrderCode: suite.suiteNo,
+    barcode: suite.barcode || suite.suiteNo,
+    barcodes: [...new Set([suite.barcode, suite.suiteNo, suite.componentBarcode].filter((item): item is string => Boolean(item)))],
+    deleted: suite.deleted ?? 0,
+    modified: suite.modified ?? "",
+    syncedAt: suite.syncedAt ?? "",
+  };
+}
+
+function suiteMatchesSearchQuery(suite: LocalSuiteCandidate, query: string): boolean {
+  const normalizedQuery = normalizeProductCandidateKeyPart(query);
+  return [
+    suite.suiteNo,
+    suite.suiteName,
+    suite.barcode,
+    suite.componentSpecNo,
+    suite.componentGoodsNo,
+    suite.componentGoodsName,
+    suite.componentSpecName,
+    suite.componentBarcode,
+  ].some((value) => normalizeProductCandidateKeyPart(value ?? "").includes(normalizedQuery));
+}
+
+function dedupeWdtSearchResults(rows: WdtGoodsSpecSearchResultDto[]): WdtGoodsSpecSearchResultDto[] {
+  const byKey = new Map<string, WdtGoodsSpecSearchResultDto>();
+  for (const row of rows) {
+    const key = [row.source ?? "goods", row.makeOrderCode || row.specNo, row.specNo].join("|");
+    if (!byKey.has(key)) byKey.set(key, row);
+  }
+  return [...byKey.values()];
+}
+
+function compareWdtSearchResults(left: WdtGoodsSpecSearchResultDto, right: WdtGoodsSpecSearchResultDto, query: string): number {
+  return searchResultRank(right, query) - searchResultRank(left, query)
+    || (left.source === "suite" ? 1 : 0) - (right.source === "suite" ? 1 : 0)
+    || left.goodsName.localeCompare(right.goodsName);
+}
+
+function searchResultRank(row: WdtGoodsSpecSearchResultDto, query: string): number {
+  const normalizedQuery = normalizeProductCandidateKeyPart(query);
+  const identifiers = [row.barcode, row.makeOrderCode, row.specNo, row.specCode, row.goodsNo, ...row.barcodes]
+    .filter((value): value is string => Boolean(value))
+    .map(normalizeProductCandidateKeyPart);
+  if (identifiers.some((value) => value === normalizedQuery)) return 100;
+  if (identifiers.some((value) => value.includes(normalizedQuery))) return 80;
+  const names = [row.goodsName, row.specName].map(normalizeProductCandidateKeyPart);
+  if (names.some((value) => value === normalizedQuery)) return 70;
+  if (names.some((value) => value.includes(normalizedQuery))) return 60;
+  return 0;
+}
+
+async function findProductMappingTarget(
+  database: DatabaseContext,
+  specNo: string,
+  makeOrderCode: string,
+): Promise<WdtGoodsSpecSearchResultDto | undefined> {
+  const [spec] = await database.db.select().from(wdtGoodsSpecs).where(eq(wdtGoodsSpecs.specNo, specNo)).limit(1);
+  if (spec) {
+    return { ...toWdtGoodsSpecSearchResultDto(spec), makeOrderCode: makeOrderCode || spec.specNo };
+  }
+
+  const suites = await loadLocalSuiteCandidates(database);
+  const suite = suites.find((item) => {
+    if (item.componentSpecNo !== specNo) return false;
+    return !makeOrderCode || item.suiteNo === makeOrderCode;
+  });
+  return suite ? toSuiteSearchResultDto(suite) : undefined;
 }
 
 function toProductMappingDto(row: ProductMappingRow): ProductMappingDto {
@@ -2886,6 +2976,7 @@ function toProductMappingDto(row: ProductMappingRow): ProductMappingDto {
     wdtSpecNo: row.wdtSpecNo,
     wdtSpecName: row.wdtSpecName,
     wdtBarcode: row.wdtBarcode,
+    wdtMakeOrderCode: row.wdtMakeOrderCode || row.wdtSpecNo,
     status: row.status,
     sourceBatchId: row.sourceBatchId,
     confirmedByUserId: row.confirmedByUserId ?? null,

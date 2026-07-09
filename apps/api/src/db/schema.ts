@@ -315,6 +315,7 @@ export const productMappings = sqliteTable(
     wdtSpecNo: text("wdt_spec_no").notNull(),
     wdtSpecName: text("wdt_spec_name").notNull().default(""),
     wdtBarcode: text("wdt_barcode").notNull().default(""),
+    wdtMakeOrderCode: text("wdt_make_order_code").notNull().default(""),
     status: text("status", { enum: ["confirmed", "disabled", "needs_review"] }).notNull(),
     sourceBatchId: text("source_batch_id").notNull().default(""),
     confirmedByUserId: text("confirmed_by_user_id"),
