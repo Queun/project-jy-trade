@@ -208,7 +208,7 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
       externalGoodsCode: candidate.externalGoodsCode,
       externalGoodsName: candidate.externalGoodsName,
       wdtSpecNo: candidate.wdtSpecNo,
-      note: `候选确认：score=${candidate.score} basis=${candidate.basis}`,
+      note: `智能候选确认：${candidateBasisLabel(candidate.basis)}，分数 ${candidate.score}`,
     });
     setSpecQuery(candidate.wdtSpecNo);
   }
@@ -271,7 +271,7 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
         </div>
       ) : null}
       <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
-        库存查询和名称候选只用于人工判断，不会自动改订单；只有手动保存后的编号映射会在后续批次优先命中。
+        智能候选和手动查询都只辅助人工判断，不会自动改订单；只有手动保存后的编号映射会在后续批次优先命中。
       </div>
       <div className="mt-4 flex flex-wrap gap-2">
         <button
@@ -330,7 +330,8 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
 
       {activeView === "current" ? <div className="mt-4 grid gap-3 xl:grid-cols-[1fr_1fr]">
         <div className="rounded-md border border-border p-3">
-          <h3 className="text-sm font-semibold">候选查询</h3>
+          <h3 className="text-sm font-semibold">手动查询</h3>
+          <p className="mt-1 text-sm text-muted-foreground">输入名称、条码或编码搜索旺店通商品和可发库存。</p>
           <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto]">
             <input
               aria-label="旺店通商品搜索"
@@ -376,13 +377,16 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
       {activeView === "current" ? (
         <div className="mb-4 rounded-md border border-border p-3">
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-            <h3 className="text-sm font-semibold">待确认候选</h3>
+            <div>
+              <h3 className="text-sm font-semibold">智能候选</h3>
+              <p className="mt-1 text-sm text-muted-foreground">系统按条码、编码和名称相似度给出的候选；名称类候选需要人工确认。</p>
+            </div>
             <Button
               className="h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80"
               onClick={() => void refreshCandidates()}
             >
               <Search className="h-4 w-4" />
-              刷新候选
+              刷新智能候选
             </Button>
           </div>
           <div className="grid gap-2 lg:grid-cols-2">
@@ -394,8 +398,9 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
               >
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="font-medium">{candidate.externalGoodsName || "未填名称"}</span>
-                  <Badge tone="warn">{candidate.score}</Badge>
-                  <Badge tone="info">{candidate.basis}</Badge>
+                  <Badge tone="warn">智能分 {candidate.score}</Badge>
+                  <Badge tone="info">{candidateBasisLabel(candidate.basis)}</Badge>
+                  <Badge tone="neutral">{candidateSourceLabel(candidate.source)}</Badge>
                   <StockBadge stockError={candidate.stockError} stockTotalAvailable={candidate.stockTotalAvailable} />
                 </div>
                 <div className="mt-1 text-muted-foreground">
@@ -407,7 +412,7 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
                 <StockRows id={candidate.id} rows={candidate.stockRows} stockError={candidate.stockError} />
               </button>
             ))}
-            {candidates.length === 0 ? <div className="text-sm text-muted-foreground">暂无待确认候选</div> : null}
+            {candidates.length === 0 ? <div className="text-sm text-muted-foreground">暂无智能候选，可使用上方手动查询继续查找。</div> : null}
           </div>
         </div>
       ) : null}
@@ -426,8 +431,14 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
               <Search className="h-4 w-4" />
               查询
             </Button>
-            <Button className="h-9 bg-muted text-muted-foreground hover:bg-muted/80" onClick={() => void refreshCandidates()}>
-              候选
+            <Button
+              className="h-9 bg-muted text-muted-foreground hover:bg-muted/80"
+              onClick={() => {
+                setActiveView("current");
+                void refreshCandidates();
+              }}
+            >
+              查智能候选
             </Button>
           </div>
         </div>
@@ -547,6 +558,21 @@ function StockBadge({ stockError, stockTotalAvailable }: { stockError?: string; 
       {stockError ? "库存未查到" : stockTotalAvailable === undefined ? "库存未查询" : `可发 ${stockTotalAvailable}`}
     </Badge>
   );
+}
+
+function candidateBasisLabel(basis: ProductMatchCandidateDto["basis"]) {
+  const labels: Record<ProductMatchCandidateDto["basis"], string> = {
+    barcode: "条码命中",
+    code: "编码命中",
+    exact_name: "名称完全一致",
+    contains_name: "名称包含",
+    fuzzy_name: "名称相似",
+  };
+  return labels[basis];
+}
+
+function candidateSourceLabel(source: ProductMatchCandidateDto["source"]) {
+  return source === "suite" ? "组合装" : "商品";
 }
 
 function StockRows({

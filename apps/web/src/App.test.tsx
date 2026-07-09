@@ -698,8 +698,8 @@ describe("App", () => {
     expect(await screen.findByText("库存查询")).toBeInTheDocument();
     expect(await screen.findByText("商品映射确认")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "当前行映射" }));
-    expect(await screen.findByText("待确认候选")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "刷新候选" }));
+    expect(await screen.findByText("智能候选")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "刷新智能候选" }));
     await waitFor(() => expect(screen.getAllByText("雅漾专研保湿修护面膜25ml*5片").length).toBeGreaterThan(0));
     expect(screen.getByText("可发 15")).toBeInTheDocument();
     expect(screen.getByText("001 /主仓: 12")).toBeInTheDocument();

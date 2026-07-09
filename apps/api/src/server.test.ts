@@ -2575,17 +2575,35 @@ describe("api server", () => {
         source: "goods",
         createdAt: "2026-07-03T00:02:00.000Z",
       },
+      {
+        id: `candidate-${randomUUID()}`,
+        batchId: "diagnosis-order",
+        reviewLineId: "line-4",
+        externalBarcode: "2153722460015",
+        externalGoodsName: "雅漾专研保湿修护面膜25ml*5片",
+        externalGoodsCode: "5372246",
+        wdtSpecNo: "LOW-STOCK-SPEC",
+        wdtGoodsNo: "LOW-STOCK-GOODS",
+        wdtGoodsName: "雅漾专研保湿修护面膜",
+        wdtSpecName: "低库存规格",
+        wdtBarcode: "LOW-STOCK-BARCODE",
+        score: 82,
+        basis: "contains_name",
+        source: "goods",
+        createdAt: "2026-07-03T00:03:00.000Z",
+      },
     ]);
     await database.close();
     const stockClient: StockLookupClient = {
       async queryStock(specNo) {
+        const availableStock = specNo === "LOW-STOCK-SPEC" ? 0 : 12;
         return {
           status: 0,
           data: {
             total_count: 3,
             detail_list: [
-              { spec_no: specNo, warehouse_no: "001", warehouse_name: "主仓", available_send_stock: 12 },
-              { spec_no: specNo, warehouse_no: "LINQI", warehouse_name: "临期仓", available_send_stock: 3 },
+              { spec_no: specNo, warehouse_no: "001", warehouse_name: "主仓", available_send_stock: availableStock },
+              { spec_no: specNo, warehouse_no: "LINQI", warehouse_name: "临期仓", available_send_stock: specNo === "LOW-STOCK-SPEC" ? 0 : 3 },
               { spec_no: specNo, warehouse_no: "CIPIN", warehouse_name: "次品仓", available_send_stock: 99 },
             ],
           },
@@ -2602,7 +2620,9 @@ describe("api server", () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toHaveLength(2);
+    expect(response.json()).toHaveLength(3);
+    expect(response.json()[0]).toMatchObject({ wdtSpecNo: "3282770392869", score: 82, stockTotalAvailable: 15 });
+    expect(response.json()[1]).toMatchObject({ wdtSpecNo: "LOW-STOCK-SPEC", score: 82, stockTotalAvailable: 0 });
     expect(response.json()).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -2622,6 +2642,12 @@ describe("api server", () => {
           wdtSpecNo: "OTHER-SPEC",
           score: 70,
           basis: "contains_name",
+        }),
+        expect.objectContaining({
+          externalBarcode: "2153722460015",
+          wdtSpecNo: "LOW-STOCK-SPEC",
+          score: 82,
+          stockTotalAvailable: 0,
         }),
       ]),
     );

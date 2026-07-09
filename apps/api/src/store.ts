@@ -1276,8 +1276,10 @@ export function createSqliteStore(options: StoreOptions = {}) {
       const confirmedMappings = await database.db.select().from(productMappings).where(eq(productMappings.status, "confirmed"));
       const candidates = dedupeProductMatchCandidates(
         rows.map(toProductMatchCandidateDto).filter((candidate) => !confirmedMappings.some((mapping) => productCandidateMatchesMapping(candidate, mapping))),
-      ).slice(0, 50);
-      return attachProductCandidateStock(candidates, database, stockClient);
+      )
+        .sort(compareProductMatchCandidates)
+        .slice(0, 50);
+      return (await attachProductCandidateStock(candidates, database, stockClient)).sort(compareProductMatchCandidates);
     },
 
     async updateProductMappingStatus(
@@ -2091,6 +2093,20 @@ function dedupeProductMatchCandidates(candidates: ProductMatchCandidateDto[]): P
     }
   }
   return [...byKey.values()];
+}
+
+function compareProductMatchCandidates(left: ProductMatchCandidateDto, right: ProductMatchCandidateDto): number {
+  return (
+    right.score - left.score
+    || candidateStockSortValue(right) - candidateStockSortValue(left)
+    || left.externalGoodsName.localeCompare(right.externalGoodsName, "zh-Hans")
+    || left.wdtSpecNo.localeCompare(right.wdtSpecNo)
+  );
+}
+
+function candidateStockSortValue(candidate: ProductMatchCandidateDto): number {
+  if (candidate.stockTotalAvailable === undefined) return -1;
+  return candidate.stockTotalAvailable;
 }
 
 function productMatchCandidateKey(
