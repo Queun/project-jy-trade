@@ -19,7 +19,7 @@ export type MatchStatus = z.infer<typeof MatchStatusSchema>;
 export const confirmedProductMappingMatchMessage = "Matched by confirmed product mapping";
 
 export function isConfirmedProductMappingMatch(message: string) {
-  return message === confirmedProductMappingMatchMessage;
+  return message.split("；").map((part) => part.trim()).includes(confirmedProductMappingMatchMessage);
 }
 
 export const ReviewStatusSchema = z.enum(["库存充足", "部分满足", "库存不足", "未匹配"]);

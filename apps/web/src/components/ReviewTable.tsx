@@ -70,6 +70,13 @@ function isManualMappingLine(line: ReviewLineDto) {
   return isConfirmedProductMappingMatch(line.matchMessage);
 }
 
+function confirmedOrderSystemNotice(line: ReviewLineDto) {
+  return line.matchMessage
+    .split("；")
+    .map((part) => part.trim())
+    .find((part) => part.startsWith("确定单")) ?? "";
+}
+
 function reviewRowTone(line: ReviewLineDto, decision: ReviewDecision) {
   if (decision === "do_not_ship") {
     return {
@@ -172,12 +179,16 @@ export function ReviewTable({
     },
     {
       header: "状态",
-      cell: ({ row }) => (
-        <div className="flex min-w-28 flex-col items-start gap-2">
-          <Badge tone={statusTone(row.original.status, confirmedOrderMode)}>{statusText(row.original.status, confirmedOrderMode)}</Badge>
-          <Badge tone={row.original.matchStatus === "matched" ? "info" : "warn"}>{matchStatusText(row.original.matchStatus, confirmedOrderMode)}</Badge>
-        </div>
-      ),
+      cell: ({ row }) => {
+        const notice = confirmedOrderMode ? confirmedOrderSystemNotice(row.original) : "";
+        return (
+          <div className="flex min-w-40 flex-col items-start gap-2">
+            <Badge tone={statusTone(row.original.status, confirmedOrderMode)}>{statusText(row.original.status, confirmedOrderMode)}</Badge>
+            <Badge tone={row.original.matchStatus === "matched" ? "info" : "warn"}>{matchStatusText(row.original.matchStatus, confirmedOrderMode)}</Badge>
+            {notice ? <div className="max-w-64 text-xs leading-5 text-amber-800">{notice}</div> : null}
+          </div>
+        );
+      },
     },
     {
       header: confirmedOrderMode ? "做单处理" : "审核",

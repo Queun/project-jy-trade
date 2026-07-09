@@ -907,6 +907,30 @@ describe("App", () => {
     await waitFor(() => expect(lines.every((line) => line.matchStatus === "matched" && line.decision === "ship")).toBe(true));
   });
 
+  it("shows confirmed-order stock warnings outside the editable remark field", async () => {
+    currentBatch = { ...currentBatch, mode: "production_api", sourceType: "confirmed_order", status: "reviewed" };
+    lines = [
+      reviewLine({
+        id: "line-confirmed-stock-warning",
+        externalGoodsName: "确定单缺货提示商品",
+        matchStatus: "matched",
+        matchMessage: "Matched by barcode；确定单库存可能不足：本批该商品需 40，可发 16。仅提示，不调整做单数量",
+        status: "部分满足",
+        decision: "ship",
+        suggestedShipQty: 40,
+        approvedShipQty: 40,
+        reason: "",
+      }),
+    ];
+    render(<App />);
+    await clickBatch();
+    switchToReviewTab();
+
+    const row = await rowFor("确定单缺货提示商品");
+    expect(within(row).getByText("确定单库存可能不足：本批该商品需 40，可发 16。仅提示，不调整做单数量")).toBeInTheDocument();
+    expect(within(row).getByLabelText("审核原因 line-confirmed-stock-warning")).toHaveValue("");
+  });
+
   it("lets users manually recheck confirmed-order batches", async () => {
     currentBatch = { ...currentBatch, mode: "production_api", sourceType: "confirmed_order", status: "reviewed" };
     lines = [

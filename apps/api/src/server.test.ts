@@ -982,7 +982,8 @@ describe("api server", () => {
         status: "部分满足",
         mainAvailableBefore: 4,
         nearExpiryAvailableBefore: 0,
-        reason: "确定单库存可能不足：本批该商品需 5，可发 4。仅提示，不调整做单数量",
+        matchMessage: expect.stringContaining("确定单库存可能不足：本批该商品需 5，可发 4。仅提示，不调整做单数量"),
+        reason: "",
       });
     }
     expect(linesResponse.json().map((line: { suggestedShipQty: number; approvedShipQty: number }) => [line.suggestedShipQty, line.approvedShipQty])).toEqual([[2, 2], [3, 3]]);

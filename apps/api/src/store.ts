@@ -1555,6 +1555,7 @@ async function buildConfirmedOrderReview(options: {
     const demandedQty = specNo ? demandBySpecNo.get(specNo) ?? line.shipQty : line.shipQty;
     const suggestedShipQty = matched ? line.shipQty : 0;
     const status = confirmedOrderStatusFor(decision.status, demandedQty, stock);
+    const systemMessage = confirmedOrderSystemMessageFor({ matched, status, demandedQty, stock, stockError });
     const reviewDecision: ReviewLineDto["decision"] = matched ? "ship" : "pending";
     reviewLines.push({
       id,
@@ -1600,7 +1601,7 @@ async function buildConfirmedOrderReview(options: {
       wdtSpecNo: specNo,
       wdtMakeOrderCode: decision.candidate?.makeOrderCode ?? specNo,
       matchStatus: decision.status,
-      matchMessage: decision.message,
+      matchMessage: [decision.message, systemMessage].filter(Boolean).join("；"),
       orderQty: line.orderQty,
       mainAvailableBefore: stock?.mainAvailableStock ?? 0,
       nearExpiryAvailableBefore: stock?.nearExpiryAvailableStock ?? 0,
@@ -1608,7 +1609,7 @@ async function buildConfirmedOrderReview(options: {
       status,
       decision: reviewDecision,
       approvedShipQty: matched ? line.shipQty : 0,
-      reason: confirmedOrderReasonFor({ matched, status, demandedQty, stock, stockError }),
+      reason: "",
       priority: false,
       priorityReason: "",
     });
@@ -1629,7 +1630,7 @@ function confirmedOrderStatusFor(
   return "库存不足";
 }
 
-function confirmedOrderReasonFor(options: {
+function confirmedOrderSystemMessageFor(options: {
   matched: boolean;
   status: ReviewLineDto["status"];
   demandedQty: number;
