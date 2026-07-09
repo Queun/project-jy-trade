@@ -722,6 +722,53 @@ describe("App", () => {
     });
   });
 
+  it("clears spec search results when locating another product mapping", async () => {
+    lines = [
+      reviewLine({
+        id: "line-map-1",
+        externalBarcode: "2153722460015",
+        externalGoodsCode: "5372246",
+        externalGoodsName: "雅漾专研保湿修护面膜25ml*5片",
+        goodsName: "",
+        wdtSpecNo: "",
+        matchStatus: "ambiguous",
+        matchMessage: "Name candidate needs human confirmation",
+        status: "未匹配",
+        suggestedShipQty: 0,
+      }),
+      reviewLine({
+        id: "line-map-2",
+        externalBarcode: "2153659220010",
+        externalGoodsCode: "5365922",
+        externalGoodsName: "爱马仕巴赫尼香水7.5ml",
+        goodsName: "",
+        wdtSpecNo: "",
+        matchStatus: "ambiguous",
+        matchMessage: "Name candidate needs human confirmation",
+        status: "未匹配",
+        suggestedShipQty: 0,
+      }),
+    ];
+    render(<App />);
+    await clickBatch();
+    fireEvent.click(screen.getByRole("checkbox", { name: "开发者模式" }));
+    switchToReviewTab();
+
+    const firstRow = await rowFor("雅漾专研保湿修护面膜25ml*5片");
+    fireEvent.click(within(firstRow).getByRole("button", { name: "定位映射" }));
+    fireEvent.click(await screen.findByRole("button", { name: "搜索规格" }));
+    await waitFor(() => expect(screen.getByText("3282770392869 / 25ml*5 / 3282770392869")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /雅漾专研保湿修护面膜25ml/ }));
+    expect(screen.getByLabelText("旺店通 spec_no")).toHaveValue("3282770392869");
+
+    const secondRow = await rowFor("爱马仕巴赫尼香水7.5ml");
+    fireEvent.click(within(secondRow).getByRole("button", { name: "定位映射" }));
+
+    expect(screen.getByLabelText("旺店通商品搜索")).toHaveValue("爱马仕巴赫尼香水7.5ml");
+    await waitFor(() => expect(screen.getByText("输入名称、条码或规格编码搜索")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByLabelText("旺店通 spec_no")).toHaveValue(""));
+  });
+
   it("deletes long-term product mappings from the mapping panel", async () => {
     render(<App />);
     await clickBatch();

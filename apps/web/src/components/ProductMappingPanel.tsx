@@ -155,14 +155,15 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
     if (!focusQuery) return;
     setQuery(focusQuery);
     setSpecQuery(focusProduct?.externalGoodsName || focusQuery);
+    setSpecs([]);
     if (focusProduct) {
-      setDraft((current) => ({
-        ...current,
+      setDraft({
         externalBarcode: focusProduct.externalBarcode,
         externalGoodsCode: focusProduct.externalGoodsCode,
         externalGoodsName: focusProduct.externalGoodsName,
-        note: current.note || "审核异常行保存为长期映射",
-      }));
+        wdtSpecNo: "",
+        note: "审核异常行保存为长期映射",
+      });
     }
     void refreshMappings(focusQuery);
     void refreshCandidates(focusQuery);
