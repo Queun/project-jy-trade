@@ -697,7 +697,13 @@ describe("App", () => {
     expect(screen.getByText("可发 15")).toBeInTheDocument();
     expect(screen.getByText("001 /主仓: 12")).toBeInTheDocument();
     expect(screen.getByText("LINQI /临期仓: 3")).toBeInTheDocument();
-    expect(screen.getByText("CIPIN /次品仓: 99（未计入）")).toBeInTheDocument();
+    expect(screen.queryByText(/CIPIN/)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "搜索规格" }));
+    await waitFor(() => expect(screen.getByText("3282770392869 / 25ml*5 / 3282770392869")).toBeInTheDocument());
+    expect(screen.getAllByText("可发 15").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText("001 /主仓: 12").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText("LINQI /临期仓: 3").length).toBeGreaterThanOrEqual(2);
 
     fireEvent.click(screen.getByRole("button", { name: /雅漾专研保湿修护面膜25ml/ }));
     expect(screen.getByLabelText("旺店通 spec_no")).toHaveValue("3282770392869");
@@ -1529,6 +1535,12 @@ function wdtSpec(patch: Partial<WdtGoodsSpecSearchResultDto> = {}): WdtGoodsSpec
     barcodes: ["3282770392869"],
     deleted: 0,
     modified: "2026-07-01 00:00:00",
+    stockTotalAvailable: 15,
+    stockRows: [
+      { warehouseNo: "001", warehouseName: "主仓", availableSendStock: 12, included: true },
+      { warehouseNo: "LINQI", warehouseName: "临期仓", availableSendStock: 3, included: true },
+      { warehouseNo: "CIPIN", warehouseName: "次品仓", availableSendStock: 99, included: false },
+    ],
     syncedAt: "2026-07-03T00:00:00.000Z",
     ...patch,
   };

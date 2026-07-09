@@ -369,6 +369,20 @@ export const WdtGoodsSyncRunDtoSchema = z.object({
 });
 export type WdtGoodsSyncRunDto = z.infer<typeof WdtGoodsSyncRunDtoSchema>;
 
+export const WdtStockAvailabilityRowDtoSchema = z.object({
+  warehouseNo: z.string(),
+  warehouseName: z.string(),
+  availableSendStock: z.number(),
+  included: z.boolean(),
+});
+export type WdtStockAvailabilityRowDto = z.infer<typeof WdtStockAvailabilityRowDtoSchema>;
+
+const WdtStockAvailabilityFieldsSchema = {
+  stockTotalAvailable: z.number().optional(),
+  stockRows: z.array(WdtStockAvailabilityRowDtoSchema).optional(),
+  stockError: z.string().optional(),
+};
+
 export const WdtGoodsSpecSearchResultDtoSchema = z.object({
   id: z.string(),
   goodsNo: z.string(),
@@ -381,6 +395,7 @@ export const WdtGoodsSpecSearchResultDtoSchema = z.object({
   deleted: z.number(),
   modified: z.string(),
   syncedAt: z.string(),
+  ...WdtStockAvailabilityFieldsSchema,
 });
 export type WdtGoodsSpecSearchResultDto = z.infer<typeof WdtGoodsSpecSearchResultDtoSchema>;
 
@@ -422,14 +437,7 @@ export const ProductMatchCandidateDtoSchema = z.object({
   score: z.number(),
   basis: z.string(),
   source: z.string(),
-  stockTotalAvailable: z.number().optional(),
-  stockRows: z.array(z.object({
-    warehouseNo: z.string(),
-    warehouseName: z.string(),
-    availableSendStock: z.number(),
-    included: z.boolean(),
-  })).optional(),
-  stockError: z.string().optional(),
+  ...WdtStockAvailabilityFieldsSchema,
   createdAt: z.string(),
 });
 export type ProductMatchCandidateDto = z.infer<typeof ProductMatchCandidateDtoSchema>;

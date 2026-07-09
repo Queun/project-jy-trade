@@ -1123,7 +1123,7 @@ export function createSqliteStore(options: StoreOptions = {}) {
           ),
         )
         .limit(20);
-      return rows.map(toWdtGoodsSpecSearchResultDto);
+      return attachWdtGoodsSpecSearchStock(rows.map(toWdtGoodsSpecSearchResultDto), database, stockClient);
     },
 
     async confirmProductMapping(input: ConfirmProductMappingRequest, actor?: AuthUserDto): Promise<ProductMappingDto> {
@@ -2563,9 +2563,28 @@ async function attachProductCandidateStock(
   stockClient: StockLookupClient | undefined,
 ): Promise<ProductMatchCandidateDto[]> {
   if (!stockClient || candidates.length === 0) return candidates;
+  const stockBySpecNo = await queryStockBySpecNo(candidates.map((candidate) => candidate.wdtSpecNo), database, stockClient);
+  return candidates.map((candidate) => ({ ...candidate, ...(stockBySpecNo.get(candidate.wdtSpecNo) ?? {}) }));
+}
+
+async function attachWdtGoodsSpecSearchStock(
+  specs: WdtGoodsSpecSearchResultDto[],
+  database: DatabaseContext,
+  stockClient: StockLookupClient | undefined,
+): Promise<WdtGoodsSpecSearchResultDto[]> {
+  if (!stockClient || specs.length === 0) return specs;
+  const stockBySpecNo = await queryStockBySpecNo(specs.map((spec) => spec.specNo), database, stockClient);
+  return specs.map((spec) => ({ ...spec, ...(stockBySpecNo.get(spec.specNo) ?? {}) }));
+}
+
+async function queryStockBySpecNo(
+  specNos: string[],
+  database: DatabaseContext,
+  stockClient: StockLookupClient,
+): Promise<Map<string, Pick<ProductMatchCandidateDto, "stockTotalAvailable" | "stockRows" | "stockError">>> {
   const settings = toWarehouseUsageSettingsDto(await getWarehouseUsageSettingsRow(database));
   const stockBySpecNo = new Map<string, Pick<ProductMatchCandidateDto, "stockTotalAvailable" | "stockRows" | "stockError">>();
-  await Promise.all([...new Set(candidates.map((candidate) => candidate.wdtSpecNo).filter(Boolean))].map(async (specNo) => {
+  await Promise.all([...new Set(specNos.filter(Boolean))].map(async (specNo) => {
     try {
       const response = await stockClient.queryStock(specNo);
       if (response.status && response.status !== 0) {
@@ -2586,8 +2605,7 @@ async function attachProductCandidateStock(
       stockBySpecNo.set(specNo, { stockError: error instanceof Error ? error.message : "库存查询失败" });
     }
   }));
-
-  return candidates.map((candidate) => ({ ...candidate, ...(stockBySpecNo.get(candidate.wdtSpecNo) ?? {}) }));
+  return stockBySpecNo;
 }
 
 function isIncludedWarehouseStock(row: WdtStockRow, settings: WarehouseUsageSettingsDto) {
