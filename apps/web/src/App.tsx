@@ -50,10 +50,13 @@ const filters: Array<{ key: FilterKey; label: string }> = [
   { key: "over_suggested", label: "超建议数" },
 ];
 
-const workTabs: Array<{ key: WorkTab; label: string; icon: typeof FileSpreadsheet }> = [
+const workflowTabs: Array<{ key: WorkTab; label: string; icon: typeof FileSpreadsheet }> = [
   { key: "import", label: "导入订单", icon: FileSpreadsheet },
   { key: "review", label: "审核发货", icon: ClipboardList },
   { key: "export", label: "做单", icon: PackageCheck },
+];
+
+const maintenanceTabs: Array<{ key: WorkTab; label: string; icon: typeof FileSpreadsheet }> = [
   { key: "addresses", label: "地址维护", icon: MapPin },
   { key: "external-products", label: "商品维护", icon: PackageSearch },
 ];
@@ -728,34 +731,57 @@ export function App() {
           />
         ) : null}
 
-        <section className={activeTab === "addresses" ? "grid gap-4" : "grid gap-4 xl:grid-cols-[300px_minmax(0,1fr)]"}>
-          {activeTab === "addresses" ? null : <BatchList batches={batches} activeBatchId={activeBatch?.id} canDelete={permissions.canDeleteBatch} onDelete={(batch) => void deleteBatch(batch)} onSelect={(batch) => void loadBatch(batch)} />}
+        <section className="grid gap-4 xl:grid-cols-[300px_minmax(0,1fr)]">
+          <BatchList batches={batches} activeBatchId={activeBatch?.id} canDelete={permissions.canDeleteBatch} onDelete={(batch) => void deleteBatch(batch)} onSelect={(batch) => void loadBatch(batch)} />
 
           <section className="min-w-0">
             {showHelp ? <HelpPanel onDismiss={dismissHelp} /> : null}
-            {activeTab === "addresses" ? null : <CurrentBatchPanel batch={activeBatch} message={message} reviewLines={reviewLines} />}
+            <CurrentBatchPanel batch={activeBatch} message={message} reviewLines={reviewLines} />
 
-            <nav className={activeTab === "addresses" ? "grid gap-2 rounded-md border border-border bg-card p-1 sm:grid-cols-2 lg:grid-cols-5" : "mt-4 grid gap-2 rounded-md border border-border bg-card p-1 sm:grid-cols-2 lg:grid-cols-5"} aria-label="业务步骤">
-              {workTabs.map((tab) => {
-                const Icon = tab.icon;
-                const active = tab.key === activeTab;
-                return (
-                  <button
-                    key={tab.key}
-                    className={
-                      active
-                        ? "inline-flex h-10 items-center justify-center gap-2 rounded bg-primary px-3 text-sm font-medium text-primary-foreground"
-                        : "inline-flex h-10 items-center justify-center gap-2 rounded px-3 text-sm font-medium text-muted-foreground transition hover:bg-muted"
-                    }
-                    data-testid={`work-tab-${tab.key}`}
-                    onClick={() => setActiveTab(tab.key)}
-                  >
-                    <Icon className="h-4 w-4" />
-                    {tab.label}
-                  </button>
-                );
-              })}
-            </nav>
+            <div className="mt-4 grid gap-3 2xl:grid-cols-[minmax(0,1fr)_auto]">
+              <nav className="grid gap-2 rounded-md border border-border bg-card p-1 sm:grid-cols-3" aria-label="业务步骤">
+                {workflowTabs.map((tab) => {
+                  const Icon = tab.icon;
+                  const active = tab.key === activeTab;
+                  return (
+                    <button
+                      key={tab.key}
+                      className={
+                        active
+                          ? "inline-flex h-10 items-center justify-center gap-2 rounded bg-primary px-3 text-sm font-medium text-primary-foreground"
+                          : "inline-flex h-10 items-center justify-center gap-2 rounded px-3 text-sm font-medium text-muted-foreground transition hover:bg-muted"
+                      }
+                      data-testid={`work-tab-${tab.key}`}
+                      onClick={() => setActiveTab(tab.key)}
+                    >
+                      <Icon className="h-4 w-4" />
+                      {tab.label}
+                    </button>
+                  );
+                })}
+              </nav>
+              <nav className="grid gap-2 rounded-md border border-border bg-muted/30 p-1 sm:grid-cols-2 2xl:min-w-[260px]" aria-label="基础资料">
+                {maintenanceTabs.map((tab) => {
+                  const Icon = tab.icon;
+                  const active = tab.key === activeTab;
+                  return (
+                    <button
+                      key={tab.key}
+                      className={
+                        active
+                          ? "inline-flex h-10 items-center justify-center gap-2 rounded border border-primary/20 bg-card px-3 text-sm font-medium text-primary shadow-sm"
+                          : "inline-flex h-10 items-center justify-center gap-2 rounded px-3 text-sm font-medium text-muted-foreground transition hover:bg-card"
+                      }
+                      data-testid={`maintenance-tab-${tab.key}`}
+                      onClick={() => setActiveTab(tab.key)}
+                    >
+                      <Icon className="h-4 w-4" />
+                      {tab.label}
+                    </button>
+                  );
+                })}
+              </nav>
+            </div>
 
             {activeTab === "import" ? (
               <ImportTab
@@ -819,7 +845,6 @@ export function App() {
             {activeTab === "addresses" ? (
               <AddressTab
                 canEdit={permissions.canExport}
-                message={message}
                 missingStores={makeOrderReadiness?.missingStores ?? []}
                 onMessage={setMessage}
                 onSaved={() => {
@@ -831,7 +856,6 @@ export function App() {
             {activeTab === "external-products" ? (
               <ExternalProductTab
                 canEdit={permissions.canExport}
-                message={message}
                 onMessage={setMessage}
               />
             ) : null}
@@ -1049,20 +1073,17 @@ function SettingsPanel({
 
 function AddressTab({
   canEdit,
-  message,
   missingStores,
   onMessage,
   onSaved,
 }: {
   canEdit: boolean;
-  message: string;
   missingStores: MakeOrderReadinessDto["missingStores"];
   onMessage: (message: string) => void;
   onSaved: () => void;
 }) {
   return (
     <section className="mt-4">
-      {message ? <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">{message}</div> : null}
       <StoreAddressPanel canEdit={canEdit} missingStores={missingStores} onMessage={onMessage} onSaved={onSaved} />
     </section>
   );
@@ -1070,16 +1091,13 @@ function AddressTab({
 
 function ExternalProductTab({
   canEdit,
-  message,
   onMessage,
 }: {
   canEdit: boolean;
-  message: string;
   onMessage: (message: string) => void;
 }) {
   return (
     <section className="mt-4">
-      {message ? <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">{message}</div> : null}
       <ExternalProductPanel canEdit={canEdit} onMessage={onMessage} />
     </section>
   );

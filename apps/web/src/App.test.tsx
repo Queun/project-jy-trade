@@ -513,8 +513,10 @@ describe("App", () => {
     switchToExportTab();
 
     fireEvent.click(await screen.findByRole("button", { name: "去地址维护" }));
-    expect(screen.getByTestId("work-tab-addresses")).toHaveTextContent("地址维护");
+    expect(screen.getByTestId("maintenance-tab-addresses")).toHaveTextContent("地址维护");
     expect(await screen.findByText("门店地址维护")).toBeInTheDocument();
+    expect(screen.getByText("历史批次")).toBeInTheDocument();
+    expect(screen.getAllByText("订货通知单 .xls").length).toBeGreaterThanOrEqual(2);
     fireEvent.click(screen.getByRole("button", { name: "测试门店" }));
     fireEvent.change(screen.getByLabelText("收件人"), { target: { value: "张三" } });
     fireEvent.change(screen.getByLabelText("手机"), { target: { value: "18800000000" } });
@@ -587,7 +589,7 @@ describe("App", () => {
       },
     });
 
-    expect(await screen.findAllByText("已解析 2 个维护商品，新增 1 个，更新 1 个，需复查 1 个")).toHaveLength(2);
+    expect(await screen.findByText("已解析 2 个维护商品，新增 1 个，更新 1 个，需复查 1 个")).toBeInTheDocument();
     expect(screen.getByText("商品维护导入预览")).toBeInTheDocument();
     expect(screen.getByText("导入套盒")).toBeInTheDocument();
     expect(screen.getByText("主件：690000000002")).toBeInTheDocument();
@@ -595,7 +597,7 @@ describe("App", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "确认导入维护表" }));
 
-    expect(await screen.findAllByText("已导入 2 个维护商品、3 个组件，需复查 1 个")).toHaveLength(2);
+    expect(await screen.findByText("已导入 2 个维护商品、3 个组件，需复查 1 个")).toBeInTheDocument();
     expect(screen.getByLabelText("商品维护查询")).toHaveValue("");
     expect(await screen.findByText("导入小样")).toBeInTheDocument();
     expect(screen.getByText("导入套盒")).toBeInTheDocument();
@@ -762,7 +764,7 @@ function switchToExportTab() {
 }
 
 function switchToExternalProductsTab() {
-  fireEvent.click(screen.getByTestId("work-tab-external-products"));
+  fireEvent.click(screen.getByTestId("maintenance-tab-external-products"));
 }
 
 async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
