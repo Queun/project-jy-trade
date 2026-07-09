@@ -38,7 +38,7 @@ function statusTone(status: ReviewLineDto["status"], confirmedOrderMode = false)
 function statusText(status: ReviewLineDto["status"], confirmedOrderMode = false) {
   if (!confirmedOrderMode) return status;
   if (status === "库存充足") return "可做单";
-  if (status === "未匹配") return "待补做单码";
+  if (status === "未匹配") return "缺商家编码";
   if (status === "库存不足") return "需复核";
   return "待确认数量";
 }
@@ -58,8 +58,8 @@ function decisionText(decision: ReviewDecision, confirmedOrderMode = false) {
 function matchStatusText(matchStatus: ReviewLineDto["matchStatus"], confirmedOrderMode = false) {
   if (confirmedOrderMode) {
     if (matchStatus === "matched") return "字段已补全";
-    if (matchStatus === "ambiguous") return "需选做单码";
-    if (matchStatus === "not_found") return "缺做单码";
+    if (matchStatus === "ambiguous") return "需选择商家编码";
+    if (matchStatus === "not_found") return "缺商家编码";
     return "校验异常";
   }
   if (matchStatus === "matched") return "已匹配";

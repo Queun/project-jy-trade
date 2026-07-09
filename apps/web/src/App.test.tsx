@@ -533,7 +533,7 @@ describe("App", () => {
     expect(screen.getByText("可做单 2 行 / 缺地址 1 个门店")).toBeInTheDocument();
     expect(screen.getByText("测试门店")).toBeInTheDocument();
     expect(screen.getByText("2 行待做单")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "去地址维护" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "补地址/修正" })).toBeInTheDocument();
   });
 
   it("saves store addresses from the address maintenance tab opened by the export tab", async () => {
@@ -542,12 +542,14 @@ describe("App", () => {
     await clickBatch();
     switchToExportTab();
 
-    fireEvent.click(await screen.findByRole("button", { name: "去地址维护" }));
+    fireEvent.click(await screen.findByRole("button", { name: "补地址/修正" }));
     expect(screen.getByTestId("maintenance-tab-addresses")).toHaveTextContent("地址维护");
     expect(await screen.findByText("门店地址维护")).toBeInTheDocument();
+    expect(screen.getByText("已带入缺地址门店；如果确定单里的门店编码或名称有误，可以在保存前直接修正。")).toBeInTheDocument();
+    expect(screen.getByLabelText("门店编码")).toHaveValue("STORE");
+    expect(screen.getByLabelText("门店名称")).toHaveValue("测试门店");
     expect(screen.getByText("历史批次")).toBeInTheDocument();
     expect(screen.getAllByText("订货通知单 .xls").length).toBeGreaterThanOrEqual(2);
-    fireEvent.click(screen.getByRole("button", { name: "测试门店" }));
     fireEvent.change(screen.getByLabelText("收件人"), { target: { value: "张三" } });
     fireEvent.change(screen.getByLabelText("手机"), { target: { value: "18800000000" } });
     fireEvent.change(screen.getByLabelText("地址"), { target: { value: "深圳市南山区测试地址" } });
@@ -564,7 +566,7 @@ describe("App", () => {
     await clickBatch();
     switchToExportTab();
 
-    fireEvent.click(await screen.findByRole("button", { name: "去地址维护" }));
+    fireEvent.click(screen.getByTestId("maintenance-tab-addresses"));
     expect(await screen.findByText("门店地址维护")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("门店地址查询"), { target: { value: "不匹配的旧查询" } });
     fireEvent.click(screen.getByRole("button", { name: "查询" }));
@@ -595,8 +597,10 @@ describe("App", () => {
     await clickBatch();
     switchToExportTab();
 
-    fireEvent.click(await screen.findByRole("button", { name: "去地址维护" }));
+    fireEvent.click(await screen.findByRole("button", { name: "补地址/修正" }));
     expect(await screen.findByText("门店地址维护")).toBeInTheDocument();
+    expect(screen.getByLabelText("门店编码")).toHaveValue("STORE");
+    expect(screen.getByLabelText("门店名称")).toHaveValue("测试门店");
     expect(screen.getByText("当前账号只能查看门店地址。")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "保存地址" })).toBeDisabled();
   });
@@ -803,8 +807,8 @@ describe("App", () => {
     expect(await screen.findByText("确定单校验")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "提交审核完成" })).not.toBeInTheDocument();
     const confirmedOrderRow = await rowFor("雅漾专研保湿修护面膜25ml*5片");
-    expect(within(confirmedOrderRow).getByText("待补做单码")).toBeInTheDocument();
-    expect(within(confirmedOrderRow).getByText("需选做单码")).toBeInTheDocument();
+    expect(within(confirmedOrderRow).getByText("缺商家编码")).toBeInTheDocument();
+    expect(within(confirmedOrderRow).getByText("需选择商家编码")).toBeInTheDocument();
     expect(within(confirmedOrderRow).queryByText("未匹配")).not.toBeInTheDocument();
     expect(within(confirmedOrderRow).queryByText("待确认")).not.toBeInTheDocument();
     fireEvent.click(await screen.findByRole("button", { name: /雅漾专研保湿修护面膜25ml/ }));

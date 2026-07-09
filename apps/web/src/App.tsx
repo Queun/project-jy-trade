@@ -107,6 +107,10 @@ export function App() {
   const [developerMode, setDeveloperMode] = useState(false);
   const [mappingFocusQuery, setMappingFocusQuery] = useState("");
   const [mappingFocusProduct, setMappingFocusProduct] = useState<ProductMappingFocusProduct | null>(null);
+  const [addressFocus, setAddressFocus] = useState<{
+    store: MakeOrderReadinessDto["missingStores"][number];
+    requestId: number;
+  } | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [showHelp, setShowHelp] = useState(() => localStorage.getItem(helpDismissedStorageKey) !== "true");
 
@@ -885,13 +889,19 @@ export function App() {
                 exports={exports}
                 makeOrderReadiness={makeOrderReadiness}
                 onCreateExport={(type) => void createExport(type)}
-                onOpenAddressTab={() => setActiveTab("addresses")}
+                onRepairMissingStore={(store) => {
+                  setAddressFocus((current) => ({ store, requestId: (current?.requestId ?? 0) + 1 }));
+                  setActiveTab("addresses");
+                  setMessage("已带入缺地址门店，请补齐或修正门店信息后保存");
+                }}
               />
             ) : null}
 
             {activeTab === "addresses" ? (
               <AddressTab
                 canEdit={permissions.canExport}
+                focusMissingStore={addressFocus?.store ?? null}
+                focusMissingStoreRequestId={addressFocus?.requestId ?? 0}
                 missingStores={makeOrderReadiness?.missingStores ?? []}
                 onMessage={setMessage}
                 onSaved={() => {
@@ -1131,18 +1141,29 @@ function SettingsPanel({
 
 function AddressTab({
   canEdit,
+  focusMissingStore,
+  focusMissingStoreRequestId,
   missingStores,
   onMessage,
   onSaved,
 }: {
   canEdit: boolean;
+  focusMissingStore: MakeOrderReadinessDto["missingStores"][number] | null;
+  focusMissingStoreRequestId: number;
   missingStores: MakeOrderReadinessDto["missingStores"];
   onMessage: (message: string) => void;
   onSaved: () => void;
 }) {
   return (
     <section className="mt-4">
-      <StoreAddressPanel canEdit={canEdit} missingStores={missingStores} onMessage={onMessage} onSaved={onSaved} />
+      <StoreAddressPanel
+        canEdit={canEdit}
+        focusMissingStore={focusMissingStore}
+        focusMissingStoreRequestId={focusMissingStoreRequestId}
+        missingStores={missingStores}
+        onMessage={onMessage}
+        onSaved={onSaved}
+      />
     </section>
   );
 }
@@ -1354,8 +1375,8 @@ function ReviewTab({
       </div>
       <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
         <Stat label={confirmedOrderMode ? "可做单" : "已匹配"} value={stats.matched} />
-        <Stat label={confirmedOrderMode ? "需选做单码" : "需确认"} value={stats.ambiguous} />
-        <Stat label={confirmedOrderMode ? "缺做单码" : "未找到"} value={stats.notFound} />
+        <Stat label={confirmedOrderMode ? "需选择商家编码" : "需确认"} value={stats.ambiguous} />
+        <Stat label={confirmedOrderMode ? "缺商家编码" : "未找到"} value={stats.notFound} />
         <Stat label={confirmedOrderMode ? "校验异常" : "库存异常"} value={stats.inventoryException} />
       </div>
       <section className="rounded-md border border-border bg-card p-4">
@@ -1440,14 +1461,14 @@ function ExportTab({
   exports,
   makeOrderReadiness,
   onCreateExport,
-  onOpenAddressTab,
+  onRepairMissingStore,
 }: {
   activeBatch: BatchSummary | null;
   canExport: boolean;
   exports: ExportDto[];
   makeOrderReadiness: MakeOrderReadinessDto | null;
   onCreateExport: (type: ExportDto["type"]) => void;
-  onOpenAddressTab: () => void;
+  onRepairMissingStore: (store: MakeOrderReadinessDto["missingStores"][number]) => void;
 }) {
   const batchReadyForExport = activeBatch?.status === "reviewed" || activeBatch?.status === "exported";
   const makeOrderReady = makeOrderReadiness?.canExport === true;
@@ -1522,16 +1543,18 @@ function ExportTab({
                     <span className="font-medium">{store.storeName || store.storeNo}</span>
                     {store.storeNo ? <span className="ml-2 text-muted-foreground">{store.storeNo}</span> : null}
                   </div>
-                  <span className="text-muted-foreground">{store.shippableLineCount} 行待做单</span>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-muted-foreground">{store.shippableLineCount} 行待做单</span>
+                    <Button className="h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80" onClick={() => onRepairMissingStore(store)}>
+                      <MapPin className="h-4 w-4" />
+                      补地址/修正
+                    </Button>
+                  </div>
                 </div>
               ))}
               {makeOrderReadiness.missingStores.length > 5 ? (
                 <div className="text-sm text-muted-foreground">还有 {makeOrderReadiness.missingStores.length - 5} 个缺地址门店</div>
               ) : null}
-              <Button className="h-8 px-2" onClick={onOpenAddressTab}>
-                <MapPin className="h-4 w-4" />
-                去地址维护
-              </Button>
             </div>
           ) : null}
         </div>

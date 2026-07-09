@@ -7,6 +7,8 @@ import { Button } from "./ui/button.js";
 
 interface StoreAddressPanelProps {
   canEdit: boolean;
+  focusMissingStore?: MissingMakeOrderStoreDto | null;
+  focusMissingStoreRequestId?: number;
   missingStores: MissingMakeOrderStoreDto[];
   onMessage: (message: string) => void;
   onSaved: () => void;
@@ -22,7 +24,14 @@ const emptyDraft: UpsertStoreAddressRequest = {
   note: "",
 };
 
-export function StoreAddressPanel({ canEdit, missingStores, onMessage, onSaved }: StoreAddressPanelProps) {
+export function StoreAddressPanel({
+  canEdit,
+  focusMissingStore,
+  focusMissingStoreRequestId = 0,
+  missingStores,
+  onMessage,
+  onSaved,
+}: StoreAddressPanelProps) {
   const [query, setQuery] = useState("");
   const [addresses, setAddresses] = useState<StoreAddressDto[]>([]);
   const [draft, setDraft] = useState<UpsertStoreAddressRequest>(emptyDraft);
@@ -146,6 +155,12 @@ export function StoreAddressPanel({ canEdit, missingStores, onMessage, onSaved }
   useEffect(() => {
     void refreshAddresses();
   }, []);
+
+  useEffect(() => {
+    if (!focusMissingStore) return;
+    useMissingStore(focusMissingStore);
+    setError("");
+  }, [focusMissingStoreRequestId]);
 
   const canSave = canEdit && draft.storeName.trim() && draft.receiver.trim() && draft.phone.trim() && draft.address.trim();
   const hasImportChanges = Boolean(importPreview && (importPreview.createCount > 0 || importPreview.updateCount > 0));
@@ -324,6 +339,11 @@ export function StoreAddressPanel({ canEdit, missingStores, onMessage, onSaved }
               新建地址
             </Button>
           </div>
+          {focusMissingStore ? (
+            <div className="mt-2 rounded-md border border-amber-200 bg-amber-50/70 px-2 py-1.5 text-xs text-amber-950">
+              已带入缺地址门店；如果确定单里的门店编码或名称有误，可以在保存前直接修正。
+            </div>
+          ) : null}
           <div className="mt-3 grid gap-2">
             <Field label="门店编码" value={draft.storeNo} onChange={(value) => setDraft((current) => ({ ...current, storeNo: value }))} />
             <Field label="门店名称" value={draft.storeName} onChange={(value) => setDraft((current) => ({ ...current, storeName: value }))} />
