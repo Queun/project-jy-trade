@@ -71,6 +71,7 @@ export interface WdtStockRow {
 
 export interface WdtStockResponse {
   status?: number;
+  message?: string;
   data?: {
     total_count?: number;
     detail_list?: WdtStockRow[];

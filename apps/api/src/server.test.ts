@@ -1006,6 +1006,50 @@ describe("api server", () => {
     await app.close();
   });
 
+  it("keeps confirmed-order stock error details separate from user-facing messages", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await seedSuccessfulGoodsCache(database);
+    await database.close();
+
+    const stockClient: StockLookupClient = {
+      async queryStock() {
+        return {
+          status: 100,
+          message: "超过每分钟最大调用频率限制，请稍后重试",
+          data: { total_count: 0, detail_list: [] },
+        };
+      },
+    };
+    const app = buildTestServer(databaseUrl, undefined, stockClient);
+    const cookie = await loginCookie(app);
+    const imported = await app.inject({
+      method: "POST",
+      url: "/api/v1/confirmed-orders/import",
+      payload: {
+        fileName: "确定单-库存失败.xlsx",
+        contentBase64: confirmedOrderWorkbookBase64(),
+      },
+      headers: { cookie },
+    });
+    expect(imported.statusCode).toBe(201);
+
+    const linesResponse = await app.inject({
+      method: "GET",
+      url: `/api/v1/batches/${imported.json().batch.id}/review-lines`,
+      headers: { cookie },
+    });
+    expect(linesResponse.statusCode).toBe(200);
+    expect(linesResponse.json()).toHaveLength(2);
+    for (const line of linesResponse.json()) {
+      expect(line.matchMessage).toContain("确定单库存查询失败。仅提示，不调整做单数量");
+      expect(line.matchMessage).not.toContain("超过每分钟最大调用频率限制");
+      expect(line.stockErrorDetail).toContain("status=100 message=超过每分钟最大调用频率限制，请稍后重试");
+    }
+    await app.close();
+  });
+
   it("corrects store fields on the current batch without changing maintained addresses", async () => {
     const databaseUrl = testDatabaseUrl();
     const database = createDatabaseContext(databaseUrl);

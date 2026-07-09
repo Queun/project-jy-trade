@@ -114,6 +114,7 @@ export const ReviewLineDtoSchema = z.object({
   wdtMakeOrderCode: z.string(),
   matchStatus: MatchStatusSchema,
   matchMessage: z.string(),
+  stockErrorDetail: z.string().optional(),
   orderQty: z.number(),
   mainAvailableBefore: z.number(),
   nearExpiryAvailableBefore: z.number(),

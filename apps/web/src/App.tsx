@@ -1495,6 +1495,7 @@ function ReviewTab({
                 onQuickDecision={onQuickDecision}
                 onSave={onSave}
                 confirmedOrderMode={confirmedOrderMode}
+                isDeveloperMode={isDeveloperMode}
               />
             ) : (
               <EmptyState title="当前筛选没有明细" description="切换筛选条件，或检查本批次是否已经生成初审明细。" />

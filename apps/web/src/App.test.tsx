@@ -931,6 +931,36 @@ describe("App", () => {
     expect(within(row).getByLabelText("审核原因 line-confirmed-stock-warning")).toHaveValue("");
   });
 
+  it("shows confirmed-order stock error details only in developer mode", async () => {
+    currentBatch = { ...currentBatch, mode: "production_api", sourceType: "confirmed_order", status: "reviewed" };
+    lines = [
+      reviewLine({
+        id: "line-confirmed-stock-error",
+        externalGoodsName: "确定单库存查询失败商品",
+        matchStatus: "matched",
+        matchMessage: "Matched by barcode；确定单库存查询失败。仅提示，不调整做单数量",
+        stockErrorDetail: "status=100 message=超过每分钟最大调用频率限制，请稍后重试",
+        status: "库存充足",
+        decision: "ship",
+        suggestedShipQty: 2,
+        approvedShipQty: 2,
+        reason: "",
+      }),
+    ];
+    render(<App />);
+    await clickBatch();
+    switchToReviewTab();
+
+    const row = await rowFor("确定单库存查询失败商品");
+    expect(within(row).getByText("确定单库存查询失败。仅提示，不调整做单数量")).toBeInTheDocument();
+    expect(screen.queryByText(/库存查询详情/)).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("超过每分钟最大调用频率限制");
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "开发者模式" }));
+
+    expect(await screen.findByText("库存查询详情：status=100 message=超过每分钟最大调用频率限制，请稍后重试")).toBeInTheDocument();
+  });
+
   it("lets users manually recheck confirmed-order batches", async () => {
     currentBatch = { ...currentBatch, mode: "production_api", sourceType: "confirmed_order", status: "reviewed" };
     lines = [

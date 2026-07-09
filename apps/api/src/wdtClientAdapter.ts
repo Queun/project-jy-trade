@@ -42,6 +42,6 @@ function assertWdtGoodsSuccess(response: WdtGoodsResponse): void {
 
 function assertWdtStockSuccess(response: WdtStockResponse): void {
   if (response.status && response.status !== 0) {
-    throw new Error(`WDT stock query failed: status=${response.status}`);
+    throw new Error(`WDT stock query failed: status=${response.status} message=${response.message ?? ""}`);
   }
 }

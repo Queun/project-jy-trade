@@ -11,6 +11,7 @@ interface ReviewTableProps {
   draftById: Record<string, ReviewDraft>;
   errorsById: Record<string, string>;
   confirmedOrderMode?: boolean;
+  isDeveloperMode?: boolean;
   readOnly?: boolean;
   onDraftChange: (lineId: string, patch: Partial<ReviewDraft>) => void;
   onLocateMapping: (line: ReviewLineDto) => void;
@@ -125,6 +126,7 @@ export function ReviewTable({
   draftById,
   errorsById,
   confirmedOrderMode = false,
+  isDeveloperMode = false,
   readOnly = false,
   onDraftChange,
   onLocateMapping,
@@ -181,11 +183,13 @@ export function ReviewTable({
       header: "状态",
       cell: ({ row }) => {
         const notice = confirmedOrderMode ? confirmedOrderSystemNotice(row.original) : "";
+        const stockErrorDetail = confirmedOrderMode && isDeveloperMode ? row.original.stockErrorDetail?.trim() ?? "" : "";
         return (
           <div className="flex min-w-40 flex-col items-start gap-2">
             <Badge tone={statusTone(row.original.status, confirmedOrderMode)}>{statusText(row.original.status, confirmedOrderMode)}</Badge>
             <Badge tone={row.original.matchStatus === "matched" ? "info" : "warn"}>{matchStatusText(row.original.matchStatus, confirmedOrderMode)}</Badge>
             {notice ? <div className="max-w-64 text-xs leading-5 text-amber-800">{notice}</div> : null}
+            {stockErrorDetail ? <div className="max-w-64 text-xs leading-5 text-muted-foreground">库存查询详情：{stockErrorDetail}</div> : null}
           </div>
         );
       },

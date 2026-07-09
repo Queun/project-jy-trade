@@ -1534,7 +1534,7 @@ async function buildConfirmedOrderReview(options: {
   const specNos = matchedInputs.map((input) => input.decision.candidate?.specNo ?? "").filter(Boolean);
   const stockLookup = options.stockClient
     ? await queryWarehouseStockSummaries(specNos, options.stockClient, options.warehouseSettings)
-    : { stockBySpecNo: new Map<string, WarehouseStockSummary>(), stockErrorsBySpecNo: new Map<string, string>(), stockQueriedCount: 0 };
+    : { stockBySpecNo: new Map<string, WarehouseStockSummary>(), stockErrorsBySpecNo: new Map<string, StockLookupError>(), stockQueriedCount: 0 };
   const demandBySpecNo = new Map<string, number>();
 
   for (const input of matchedInputs) {
@@ -1602,6 +1602,7 @@ async function buildConfirmedOrderReview(options: {
       wdtMakeOrderCode: decision.candidate?.makeOrderCode ?? specNo,
       matchStatus: decision.status,
       matchMessage: [decision.message, systemMessage].filter(Boolean).join("；"),
+      stockErrorDetail: stockError?.developerDetail ?? "",
       orderQty: line.orderQty,
       mainAvailableBefore: stock?.mainAvailableStock ?? 0,
       nearExpiryAvailableBefore: stock?.nearExpiryAvailableStock ?? 0,
@@ -1635,10 +1636,10 @@ function confirmedOrderSystemMessageFor(options: {
   status: ReviewLineDto["status"];
   demandedQty: number;
   stock: WarehouseStockSummary | undefined;
-  stockError: string | undefined;
+  stockError: StockLookupError | undefined;
 }) {
   if (!options.matched) return "确定单导入时商品未匹配，需补充商品映射";
-  if (options.stockError) return `确定单库存查询失败：${options.stockError}。仅提示，不调整做单数量`;
+  if (options.stockError) return options.stockError.userMessage;
   if (!options.stock || options.status === "库存充足") return "";
   return `确定单库存可能不足：本批该商品需 ${options.demandedQty}，可发 ${options.stock.usableAvailableStock}。仅提示，不调整做单数量`;
 }
@@ -2004,6 +2005,7 @@ async function replaceBatchReviewLines(database: DatabaseContext, batchId: strin
       wdtMakeOrderCode: line.wdtMakeOrderCode || line.wdtSpecNo,
       matchStatus: line.matchStatus,
       matchMessage: line.matchMessage,
+      stockErrorDetail: line.stockErrorDetail ?? "",
       orderQty: line.orderQty,
       mainAvailableBefore: line.mainAvailableBefore,
       nearExpiryAvailableBefore: line.nearExpiryAvailableBefore,
@@ -2311,28 +2313,40 @@ async function queryWarehouseStockSummaries(
   settings: WarehouseUsageSettingsDto,
 ): Promise<{
   stockBySpecNo: Map<string, WarehouseStockSummary>;
-  stockErrorsBySpecNo: Map<string, string>;
+  stockErrorsBySpecNo: Map<string, StockLookupError>;
   stockQueriedCount: number;
 }> {
   const stockBySpecNo = new Map<string, WarehouseStockSummary>();
-  const stockErrorsBySpecNo = new Map<string, string>();
+  const stockErrorsBySpecNo = new Map<string, StockLookupError>();
   let stockQueriedCount = 0;
 
   await Promise.all([...new Set(specNos.filter(Boolean))].map(async (specNo) => {
     try {
       const response = await stockClient.queryStock(specNo);
       if (response.status && response.status !== 0) {
-        stockErrorsBySpecNo.set(specNo, `status=${response.status}`);
+        stockErrorsBySpecNo.set(specNo, buildStockLookupError(`status=${response.status} message=${response.message ?? ""}`));
         return;
       }
       stockBySpecNo.set(specNo, summarizeWarehouseStock(response.data?.detail_list ?? [], settings));
       stockQueriedCount += 1;
     } catch (error) {
-      stockErrorsBySpecNo.set(specNo, error instanceof Error ? error.message : "库存查询失败");
+      stockErrorsBySpecNo.set(specNo, buildStockLookupError(error instanceof Error ? error.message : "库存查询失败"));
     }
   }));
 
   return { stockBySpecNo, stockErrorsBySpecNo, stockQueriedCount };
+}
+
+interface StockLookupError {
+  userMessage: string;
+  developerDetail: string;
+}
+
+function buildStockLookupError(developerDetail: string): StockLookupError {
+  return {
+    userMessage: "确定单库存查询失败。仅提示，不调整做单数量",
+    developerDetail,
+  };
 }
 
 type WarehouseStockType = "main" | "near_expiry" | "defect" | "other";
@@ -2491,6 +2505,7 @@ function toReviewLineDto(line: ReviewLineRow, decision?: ReviewDecisionRow): Rev
     wdtMakeOrderCode: line.wdtMakeOrderCode || line.wdtSpecNo,
     matchStatus: line.matchStatus,
     matchMessage: line.matchMessage,
+    stockErrorDetail: line.stockErrorDetail,
     orderQty: line.orderQty,
     mainAvailableBefore: line.mainAvailableBefore,
     nearExpiryAvailableBefore: line.nearExpiryAvailableBefore,

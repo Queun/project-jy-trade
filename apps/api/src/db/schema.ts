@@ -84,6 +84,7 @@ export const reviewLines = sqliteTable(
     wdtMakeOrderCode: text("wdt_make_order_code").notNull().default(""),
     matchStatus: text("match_status", { enum: ["matched", "not_found", "ambiguous", "api_error"] }).notNull(),
     matchMessage: text("match_message").notNull().default(""),
+    stockErrorDetail: text("stock_error_detail").notNull().default(""),
     orderQty: real("order_qty").notNull(),
     mainAvailableBefore: real("main_available_before").notNull().default(0),
     nearExpiryAvailableBefore: real("near_expiry_available_before").notNull().default(0),
