@@ -18,6 +18,7 @@ const emptyDraft: UpsertStoreAddressRequest = {
   receiver: "",
   phone: "",
   address: "",
+  isVip: false,
   note: "",
 };
 
@@ -131,6 +132,7 @@ export function StoreAddressPanel({ canEdit, missingStores, onMessage, onSaved }
       receiver: address.receiver,
       phone: address.phone,
       address: address.address,
+      isVip: address.isVip,
       note: address.note,
     });
   }
@@ -278,7 +280,10 @@ export function StoreAddressPanel({ canEdit, missingStores, onMessage, onSaved }
                   >
                     <td className="px-3 py-3 align-top">
                       <div className="font-medium">{address.storeName}</div>
-                      <div className="mt-1 text-muted-foreground">{address.storeNo || "无门店编码"}</div>
+                      <div className="mt-1 flex flex-wrap items-center gap-2 text-muted-foreground">
+                        <span>{address.storeNo || "无门店编码"}</span>
+                        {address.isVip ? <Badge tone="warn">VIP</Badge> : null}
+                      </div>
                     </td>
                     <td className="px-3 py-3 align-top">
                       <div>{address.receiver} / {address.phone}</div>
@@ -332,6 +337,17 @@ export function StoreAddressPanel({ canEdit, missingStores, onMessage, onSaved }
                 value={draft.address}
                 onChange={(event) => setDraft((current) => ({ ...current, address: event.target.value }))}
               />
+            </label>
+            <label className="inline-flex items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm">
+              <input
+                aria-label="VIP门店"
+                checked={draft.isVip}
+                className="h-4 w-4"
+                disabled={!canEdit}
+                type="checkbox"
+                onChange={(event) => setDraft((current) => ({ ...current, isVip: event.target.checked }))}
+              />
+              VIP 门店优先分货
             </label>
             <Field label="备注" value={draft.note ?? ""} onChange={(value) => setDraft((current) => ({ ...current, note: value }))} />
           </div>

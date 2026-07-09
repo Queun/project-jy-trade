@@ -170,6 +170,7 @@ export const storeAddresses = sqliteTable(
     receiver: text("receiver").notNull().default(""),
     phone: text("phone").notNull().default(""),
     address: text("address").notNull(),
+    isVip: integer("is_vip").notNull().default(0),
     note: text("note").notNull().default(""),
     sourceSheet: text("source_sheet").notNull().default(""),
     sourceRow: integer("source_row").notNull().default(0),

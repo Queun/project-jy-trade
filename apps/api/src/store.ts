@@ -322,12 +322,14 @@ export function createSqliteStore(options: StoreOptions = {}) {
       const goodsSpecs = (await database.db.select().from(wdtGoodsSpecs)).map(toLocalGoodsSpecCandidate);
       const mappings = (await database.db.select().from(productMappings).where(eq(productMappings.status, "confirmed"))).map(toProductMappingCandidate);
       const warehouseSettings = toWarehouseUsageSettingsDto(await getWarehouseUsageSettingsRow(database));
+      const vipStoreIndex = await loadVipStoreIndex(database);
       const result = await buildRealReview(stockClient, {
         batchId,
         orderFile: batch.filePath,
         goodsSpecs,
         mappings,
         warehouseSettings,
+        vipStoreIndex,
       });
       const now = new Date().toISOString();
 
@@ -419,6 +421,7 @@ export function createSqliteStore(options: StoreOptions = {}) {
         receiver: input.receiver.trim(),
         phone: input.phone.trim(),
         address: input.address.trim(),
+        isVip: input.isVip ? 1 : 0,
         note: input.note.trim(),
         sourceSheet: "手工维护",
         sourceRow: 0,
@@ -485,6 +488,7 @@ export function createSqliteStore(options: StoreOptions = {}) {
           receiver: address.receiver,
           phone: address.phone,
           address: address.address,
+          isVip: existing?.isVip ?? 0,
           note: address.note,
           sourceSheet: address.sourceSheet,
           sourceRow: address.sourceRow,
@@ -1127,6 +1131,12 @@ interface RealReviewBuildOptions {
   goodsSpecs: LocalGoodsSpecCandidate[];
   mappings: ProductMappingCandidate[];
   warehouseSettings: WarehouseUsageSettingsDto;
+  vipStoreIndex: VipStoreIndex;
+}
+
+interface VipStoreIndex {
+  byStoreNo: Set<string>;
+  byStoreName: Set<string>;
 }
 
 interface RealReviewCandidateRow {
@@ -1165,11 +1175,7 @@ interface GoodsCacheStatus {
 async function buildRealReview(client: StockLookupClient, options: RealReviewBuildOptions): Promise<RealReviewBuildResult> {
   const orderLines = loadOrderLines(options.orderFile);
   const stockBySpecNo = new Map<string, WarehouseStockSummary>();
-  const remainingMain = new Map<string, number>();
-  const remainingNearExpiry = new Map<string, number>();
-  const remainingDefect = new Map<string, number>();
-  const remainingOther = new Map<string, number>();
-  const reviewLines: ReviewLineDto[] = [];
+  const lineInputs: RealReviewLineInput[] = [];
   const candidateRows: RealReviewCandidateRow[] = [];
   let stockQueriedCount = 0;
 
@@ -1200,10 +1206,6 @@ async function buildRealReview(client: StockLookupClient, options: RealReviewBui
         } else {
           stock = summarizeWarehouseStock(response.data?.detail_list ?? [], options.warehouseSettings);
           stockBySpecNo.set(specNo, stock);
-          remainingMain.set(specNo, stock.mainAvailableStock);
-          remainingNearExpiry.set(specNo, stock.nearExpiryAvailableStock);
-          remainingDefect.set(specNo, stock.defectAvailableStock);
-          remainingOther.set(specNo, stock.otherAvailableStock);
           stockQueriedCount += 1;
         }
       }
@@ -1213,7 +1215,7 @@ async function buildRealReview(client: StockLookupClient, options: RealReviewBui
       candidateRows.push(...toRealReviewCandidateRows(id, line, decision));
     }
 
-    const reviewLine = buildRealReviewLine({
+    lineInputs.push({
       batchId: options.batchId,
       id,
       sortOrder: index + 1,
@@ -1222,14 +1224,11 @@ async function buildRealReview(client: StockLookupClient, options: RealReviewBui
       matchStatus,
       matchMessage,
       stock,
-      remainingMain,
-      remainingNearExpiry,
-      remainingDefect,
-      remainingOther,
-      warehouseSettings: options.warehouseSettings,
     });
-    reviewLines.push(reviewLine);
   }
+
+  const allocations = allocateRealReviewShipQuantities(lineInputs, options.warehouseSettings, options.vipStoreIndex);
+  const reviewLines = lineInputs.map((input) => buildRealReviewLine(input, allocations.get(input.id) ?? 0));
 
   return {
     orderLineCount: orderLines.length,
@@ -1243,7 +1242,7 @@ async function buildRealReview(client: StockLookupClient, options: RealReviewBui
   };
 }
 
-function buildRealReviewLine(input: {
+interface RealReviewLineInput {
   batchId: string;
   id: string;
   sortOrder: number;
@@ -1252,46 +1251,12 @@ function buildRealReviewLine(input: {
   matchStatus: ReviewLineDto["matchStatus"];
   matchMessage: string;
   stock: WarehouseStockSummary | undefined;
-  remainingMain: Map<string, number>;
-  remainingNearExpiry: Map<string, number>;
-  remainingDefect: Map<string, number>;
-  remainingOther: Map<string, number>;
-  warehouseSettings: WarehouseUsageSettingsDto;
-}): ReviewLineDto {
-  const specNo = input.matchStatus === "matched" ? input.decision.candidate?.specNo ?? "" : "";
-  const mainBefore = specNo ? input.remainingMain.get(specNo) ?? 0 : 0;
-  const nearExpiryBefore = specNo ? input.remainingNearExpiry.get(specNo) ?? 0 : 0;
-  const defectBefore = specNo ? input.remainingDefect.get(specNo) ?? 0 : 0;
-  const otherBefore = specNo ? input.remainingOther.get(specNo) ?? 0 : 0;
-  const usableBefore =
-    (input.warehouseSettings.includeMainWarehouse ? mainBefore : 0)
-    + (input.warehouseSettings.includeNearExpiryWarehouse ? nearExpiryBefore : 0)
-    + (input.warehouseSettings.includeDefectWarehouse ? defectBefore : 0)
-    + (input.warehouseSettings.includeOtherWarehouses ? otherBefore : 0);
-  const suggestedShipQty = input.matchStatus === "matched" ? Math.min(input.orderLine.orderQty, usableBefore) : 0;
+}
 
-  if (specNo) {
-    let remainingToAllocate = suggestedShipQty;
-    if (input.warehouseSettings.includeMainWarehouse) {
-      const used = Math.min(remainingToAllocate, mainBefore);
-      input.remainingMain.set(specNo, mainBefore - used);
-      remainingToAllocate -= used;
-    }
-    if (input.warehouseSettings.includeNearExpiryWarehouse) {
-      const used = Math.min(remainingToAllocate, nearExpiryBefore);
-      input.remainingNearExpiry.set(specNo, nearExpiryBefore - used);
-      remainingToAllocate -= used;
-    }
-    if (input.warehouseSettings.includeDefectWarehouse) {
-      const used = Math.min(remainingToAllocate, defectBefore);
-      input.remainingDefect.set(specNo, defectBefore - used);
-      remainingToAllocate -= used;
-    }
-    if (input.warehouseSettings.includeOtherWarehouses) {
-      const used = Math.min(remainingToAllocate, otherBefore);
-      input.remainingOther.set(specNo, otherBefore - used);
-    }
-  }
+function buildRealReviewLine(input: RealReviewLineInput, suggestedShipQty: number): ReviewLineDto {
+  const specNo = input.matchStatus === "matched" ? input.decision.candidate?.specNo ?? "" : "";
+  const mainBefore = input.stock?.mainAvailableStock ?? 0;
+  const nearExpiryBefore = input.stock?.nearExpiryAvailableStock ?? 0;
 
   const status = reviewStatusFor(input.matchStatus, input.orderLine.orderQty, suggestedShipQty);
   const decision = status === "库存充足" ? "ship" : "pending";
@@ -1351,6 +1316,89 @@ function buildRealReviewLine(input: {
     priority: false,
     priorityReason: "",
   };
+}
+
+function allocateRealReviewShipQuantities(
+  inputs: RealReviewLineInput[],
+  warehouseSettings: WarehouseUsageSettingsDto,
+  vipStoreIndex: VipStoreIndex,
+): Map<string, number> {
+  const allocations = new Map(inputs.map((input) => [input.id, 0]));
+  const matchedBySpecNo = new Map<string, RealReviewLineInput[]>();
+  for (const input of inputs) {
+    const specNo = input.matchStatus === "matched" ? input.decision.candidate?.specNo ?? "" : "";
+    if (!specNo || !input.stock) continue;
+    const rows = matchedBySpecNo.get(specNo) ?? [];
+    rows.push(input);
+    matchedBySpecNo.set(specNo, rows);
+  }
+
+  for (const rows of matchedBySpecNo.values()) {
+    const stock = rows[0]?.stock;
+    if (!stock) continue;
+    let remainingAvailable = usableStockForSettings(stock, warehouseSettings);
+    const vipRows = rows.filter((row) => isVipReviewLine(row, vipStoreIndex));
+    const regularRows = rows.filter((row) => !isVipReviewLine(row, vipStoreIndex));
+
+    const vipAllocations = allocateFairlyByDemand(vipRows, remainingAvailable);
+    for (const [id, quantity] of vipAllocations) {
+      allocations.set(id, quantity);
+      remainingAvailable -= quantity;
+    }
+
+    const regularAllocations = allocateFairlyByDemand(regularRows, remainingAvailable);
+    for (const [id, quantity] of regularAllocations) {
+      allocations.set(id, quantity);
+    }
+  }
+
+  return allocations;
+}
+
+function allocateFairlyByDemand(rows: RealReviewLineInput[], available: number): Map<string, number> {
+  const allocations = new Map(rows.map((row) => [row.id, 0]));
+  let remainingAvailable = Math.max(0, Math.floor(available));
+  let activeRows = rows.filter((row) => row.orderLine.orderQty > 0);
+
+  while (remainingAvailable > 0 && activeRows.length > 0) {
+    const share = Math.floor(remainingAvailable / activeRows.length);
+    const extraCount = remainingAvailable % activeRows.length;
+    let consumed = 0;
+    const nextRows: RealReviewLineInput[] = [];
+
+    for (const [index, row] of activeRows.entries()) {
+      const current = allocations.get(row.id) ?? 0;
+      const remainingDemand = Math.max(0, row.orderLine.orderQty - current);
+      const fairShare = share + (index < extraCount ? 1 : 0);
+      const quantity = Math.min(remainingDemand, fairShare);
+      allocations.set(row.id, current + quantity);
+      consumed += quantity;
+      if (remainingDemand - quantity > 0) {
+        nextRows.push(row);
+      }
+    }
+
+    remainingAvailable = Math.max(0, remainingAvailable - consumed);
+    activeRows = nextRows;
+  }
+
+  return allocations;
+}
+
+function usableStockForSettings(stock: WarehouseStockSummary, settings: WarehouseUsageSettingsDto): number {
+  return (
+    (settings.includeMainWarehouse ? stock.mainAvailableStock : 0)
+    + (settings.includeNearExpiryWarehouse ? stock.nearExpiryAvailableStock : 0)
+    + (settings.includeDefectWarehouse ? stock.defectAvailableStock : 0)
+    + (settings.includeOtherWarehouses ? stock.otherAvailableStock : 0)
+  );
+}
+
+function isVipReviewLine(input: RealReviewLineInput, vipStoreIndex: VipStoreIndex): boolean {
+  return Boolean(
+    (input.orderLine.storeNo && vipStoreIndex.byStoreNo.has(input.orderLine.storeNo))
+      || (input.orderLine.storeName && vipStoreIndex.byStoreName.has(normalizeStoreName(input.orderLine.storeName))),
+  );
 }
 
 function reviewStatusFor(matchStatus: ReviewLineDto["matchStatus"], orderQty: number, suggestedShipQty: number): ReviewLineDto["status"] {
@@ -1729,6 +1777,7 @@ function toStoreAddressDto(row: StoreAddressRow): StoreAddressDto {
     receiver: row.receiver,
     phone: row.phone,
     address: row.address,
+    isVip: Boolean(row.isVip),
     note: row.note,
     sourceSheet: row.sourceSheet,
     sourceRow: row.sourceRow,
@@ -2145,6 +2194,7 @@ async function ensureStoreAddresses(database: DatabaseContext) {
       receiver text not null default '',
       phone text not null default '',
       address text not null,
+      is_vip integer not null default 0,
       note text not null default '',
       source_sheet text not null default '',
       source_row integer not null default 0,
@@ -2168,6 +2218,9 @@ async function ensureStoreAddresses(database: DatabaseContext) {
   }
   if (!columns.includes("raw_json")) {
     await database.client.execute("alter table store_addresses add column raw_json text not null default '{}'");
+  }
+  if (!columns.includes("is_vip")) {
+    await database.client.execute("alter table store_addresses add column is_vip integer not null default 0");
   }
   await database.client.execute("create index if not exists store_addresses_store_no_idx on store_addresses (store_no)");
   await database.client.execute("create index if not exists store_addresses_normalized_store_name_idx on store_addresses (normalized_store_name)");
@@ -3214,6 +3267,14 @@ async function loadMakeOrderAddressIndex(database: DatabaseContext): Promise<Mak
   return index;
 }
 
+async function loadVipStoreIndex(database: DatabaseContext): Promise<VipStoreIndex> {
+  const rows = await database.db.select().from(storeAddresses).where(eq(storeAddresses.isVip, 1));
+  return {
+    byStoreNo: new Set(rows.map((row) => row.storeNo).filter(Boolean)),
+    byStoreName: new Set(rows.map((row) => normalizeStoreName(row.storeName)).filter(Boolean)),
+  };
+}
+
 function parseStoreAddressImportInput(input: ImportStoreAddressesRequest) {
   const workbook = XLSX.read(Buffer.from(input.contentBase64, "base64"), { type: "buffer", cellDates: false });
   return { workbookSheetCount: workbook.SheetNames.length, ...parseStoreAddressWorkbook(workbook) };
@@ -3230,6 +3291,7 @@ async function buildStoreAddressImportPreview(database: DatabaseContext, address
           receiver: existing.receiver,
           phone: existing.phone,
           address: existing.address,
+          isVip: Boolean(existing.isVip),
         }
       : null;
     const action: StoreAddressImportPreviewItem["action"] = !existing
@@ -3244,6 +3306,7 @@ async function buildStoreAddressImportPreview(database: DatabaseContext, address
       receiver: address.receiver,
       phone: address.phone,
       address: address.address,
+      isVip: Boolean(existing?.isVip),
       sourceSheet: address.sourceSheet,
       sourceRow: address.sourceRow,
       existing: existingPreview,

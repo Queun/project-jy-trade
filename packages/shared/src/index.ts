@@ -172,6 +172,7 @@ export const StoreAddressDtoSchema = z.object({
   receiver: z.string(),
   phone: z.string(),
   address: z.string(),
+  isVip: z.boolean(),
   note: z.string(),
   sourceSheet: z.string(),
   sourceRow: z.number(),
@@ -190,6 +191,7 @@ export const UpsertStoreAddressRequestSchema = z.object({
   receiver: z.string().min(1),
   phone: z.string().min(1),
   address: z.string().min(1),
+  isVip: z.boolean().default(false),
   note: z.string().max(500).default(""),
 });
 export type UpsertStoreAddressRequest = z.infer<typeof UpsertStoreAddressRequestSchema>;
@@ -207,6 +209,7 @@ export const StoreAddressImportPreviewItemSchema = z.object({
   receiver: z.string(),
   phone: z.string(),
   address: z.string(),
+  isVip: z.boolean(),
   sourceSheet: z.string(),
   sourceRow: z.number(),
   existing: z
@@ -216,6 +219,7 @@ export const StoreAddressImportPreviewItemSchema = z.object({
       receiver: z.string(),
       phone: z.string(),
       address: z.string(),
+      isVip: z.boolean(),
     })
     .nullable(),
 });

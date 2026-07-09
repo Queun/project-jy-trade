@@ -2087,6 +2087,106 @@ describe("api server", () => {
     await app.close();
   });
 
+  it("allocates scarce stock fairly among VIP stores before regular stores", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await seedVipAllocationGoodsCache(database);
+    await seedVipStoreAddress(database, "VIP-1", "VIP一店");
+    await seedVipStoreAddress(database, "VIP-2", "VIP二店");
+    await database.close();
+
+    const stockClient: StockLookupClient = {
+      async queryStock(specNo) {
+        return {
+          status: 0,
+          data: {
+            total_count: 1,
+            detail_list: [{ spec_no: specNo, warehouse_no: "001", warehouse_name: "主仓", available_send_stock: 6 }],
+          },
+        };
+      },
+    };
+    const app = buildTestServer(databaseUrl, undefined, stockClient);
+    const cookie = await loginCookie(app);
+    const orderFilePath = createVipAllocationOrderFile("vip-short");
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/v1/batches",
+      payload: { filePath: orderFilePath, mode: "production_api" },
+      headers: { cookie },
+    });
+    const review = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${created.json().id}/actions/run-real-review`,
+      payload: {},
+      headers: { cookie },
+    });
+    expect(review.statusCode).toBe(200);
+
+    const linesResponse = await app.inject({
+      method: "GET",
+      url: `/api/v1/batches/${created.json().id}/review-lines`,
+      headers: { cookie },
+    });
+    const byStore = reviewLinesByStore(linesResponse.json());
+    expect(byStore.get("VIP-1")).toMatchObject({ suggestedShipQty: 3, status: "部分满足" });
+    expect(byStore.get("VIP-2")).toMatchObject({ suggestedShipQty: 3, status: "部分满足" });
+    expect(byStore.get("REG-1")).toMatchObject({ suggestedShipQty: 0, status: "库存不足" });
+    expect(byStore.get("REG-2")).toMatchObject({ suggestedShipQty: 0, status: "库存不足" });
+    await app.close();
+  });
+
+  it("shares remaining stock fairly among regular stores after VIP stores are filled", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await seedVipAllocationGoodsCache(database);
+    await seedVipStoreAddress(database, "VIP-1", "VIP一店");
+    await seedVipStoreAddress(database, "VIP-2", "VIP二店");
+    await database.close();
+
+    const stockClient: StockLookupClient = {
+      async queryStock(specNo) {
+        return {
+          status: 0,
+          data: {
+            total_count: 1,
+            detail_list: [{ spec_no: specNo, warehouse_no: "001", warehouse_name: "主仓", available_send_stock: 10 }],
+          },
+        };
+      },
+    };
+    const app = buildTestServer(databaseUrl, undefined, stockClient);
+    const cookie = await loginCookie(app);
+    const orderFilePath = createVipAllocationOrderFile("regular-short");
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/v1/batches",
+      payload: { filePath: orderFilePath, mode: "production_api" },
+      headers: { cookie },
+    });
+    const review = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${created.json().id}/actions/run-real-review`,
+      payload: {},
+      headers: { cookie },
+    });
+    expect(review.statusCode).toBe(200);
+
+    const linesResponse = await app.inject({
+      method: "GET",
+      url: `/api/v1/batches/${created.json().id}/review-lines`,
+      headers: { cookie },
+    });
+    const byStore = reviewLinesByStore(linesResponse.json());
+    expect(byStore.get("VIP-1")).toMatchObject({ suggestedShipQty: 4, status: "库存充足" });
+    expect(byStore.get("VIP-2")).toMatchObject({ suggestedShipQty: 4, status: "库存充足" });
+    expect(byStore.get("REG-1")).toMatchObject({ suggestedShipQty: 1, status: "部分满足" });
+    expect(byStore.get("REG-2")).toMatchObject({ suggestedShipQty: 1, status: "部分满足" });
+    await app.close();
+  });
+
   it("applies warehouse usage settings to real review suggestions", async () => {
     const databaseUrl = testDatabaseUrl();
     const database = createDatabaseContext(databaseUrl);
@@ -2329,6 +2429,93 @@ async function seedSuccessfulGoodsCache(database: ReturnType<typeof createDataba
     rawJson: "{}",
     syncedAt: now,
   });
+}
+
+async function seedVipAllocationGoodsCache(database: ReturnType<typeof createDatabaseContext>) {
+  const now = "2026-07-03T00:00:00.000Z";
+  await database.db.insert(wdtGoodsSyncRuns).values({
+    id: "wdt-goods-sync-vip-allocation",
+    mode: "full",
+    status: "success",
+    startedAt: now,
+    finishedAt: now,
+    rangeStart: "2026-06-01T00:00:00.000Z",
+    rangeEnd: now,
+    windowCount: 1,
+    pageCount: 1,
+    fetchedCount: 1,
+    upsertedCount: 1,
+    errorMessage: "",
+  });
+  await database.db.insert(wdtGoodsSpecs).values({
+    id: "wdt-goods-spec-vip-allocation",
+    goodsNo: "VIP-GOODS",
+    goodsName: "VIP分货测试商品",
+    specNo: "VIP-SPEC",
+    specName: "单支",
+    specCode: "VIP-CODE",
+    barcode: "VIP-BARCODE",
+    barcodesJson: JSON.stringify(["VIP-BARCODE"]),
+    deleted: 0,
+    modified: now,
+    rawJson: "{}",
+    syncedAt: now,
+  });
+}
+
+async function seedVipStoreAddress(database: ReturnType<typeof createDatabaseContext>, storeNo: string, storeName: string) {
+  const now = "2026-07-03T00:00:00.000Z";
+  await database.db.insert(storeAddresses).values({
+    id: `store-address-${storeNo}`,
+    storeNo,
+    storeName,
+    normalizedStoreName: storeName,
+    receiver: `收货人-${storeNo}`,
+    phone: "18800000000",
+    address: `测试地址-${storeName}`,
+    isVip: 1,
+    note: "VIP分货测试",
+    sourceSheet: "手工维护",
+    sourceRow: 0,
+    importedAt: "",
+    rawJson: "{}",
+    createdAt: now,
+    updatedAt: now,
+  });
+}
+
+function createVipAllocationOrderFile(name: string) {
+  const outputPath = resolve(projectRoot, "outputs/fixtures", `vip-allocation-${name}.xlsx`);
+  mkdirSync(resolve(projectRoot, "outputs/fixtures"), { recursive: true });
+  const rows = [
+    [
+      "订货通知单号",
+      "订货审批单号",
+      "门店",
+      "门店名称",
+      "订货日期",
+      "截止日期",
+      "商品编码",
+      "商品名称",
+      "商品条码",
+      "规格",
+      "运输规格",
+      "订货箱数",
+      "订货数",
+    ],
+    ["VIP-ORDER-1", "VIP-APPROVAL-1", "VIP-1", "VIP一店", "2026-07-03", "2026-07-10", "VIP-GOODS", "VIP分货测试商品", "VIP-BARCODE", "单支", "1", "4", "4"],
+    ["VIP-ORDER-2", "VIP-APPROVAL-2", "VIP-2", "VIP二店", "2026-07-03", "2026-07-10", "VIP-GOODS", "VIP分货测试商品", "VIP-BARCODE", "单支", "1", "4", "4"],
+    ["REG-ORDER-1", "REG-APPROVAL-1", "REG-1", "普通一店", "2026-07-03", "2026-07-10", "VIP-GOODS", "VIP分货测试商品", "VIP-BARCODE", "单支", "1", "4", "4"],
+    ["REG-ORDER-2", "REG-APPROVAL-2", "REG-2", "普通二店", "2026-07-03", "2026-07-10", "VIP-GOODS", "VIP分货测试商品", "VIP-BARCODE", "单支", "1", "4", "4"],
+  ];
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(rows), "订货单");
+  XLSX.writeFile(workbook, outputPath);
+  return outputPath;
+}
+
+function reviewLinesByStore(lines: Array<{ storeNo: string }>) {
+  return new Map(lines.map((line) => [line.storeNo, line]));
 }
 
 async function seedExternalProductGoodsCache(database: ReturnType<typeof createDatabaseContext>) {
