@@ -1994,6 +1994,21 @@ describe("api server", () => {
       confirmedByUserId: expect.any(String),
     });
 
+    const nameOnly = await app.inject({
+      method: "POST",
+      url: "/api/v1/product-mappings",
+      payload: {
+        externalBarcode: "",
+        externalGoodsCode: "",
+        externalGoodsName: "名称只用于人工候选",
+        wdtSpecNo: "3282770392869",
+        note: "name-only mapping should not be persisted",
+      },
+      headers: { cookie },
+    });
+    expect(nameOnly.statusCode).toBe(400);
+    expect(nameOnly.json().message).toContain("External barcode or product code is required");
+
     const list = await app.inject({ method: "GET", url: "/api/v1/product-mappings?query=2153722460015", headers: { cookie } });
     expect(list.statusCode).toBe(200);
     expect(list.json()).toHaveLength(1);

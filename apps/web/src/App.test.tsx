@@ -153,8 +153,9 @@ describe("App", () => {
     fireEvent.click(within(unmatchedRow).getByRole("button", { name: "定位映射" }));
 
     expect(await screen.findByText("商品映射确认")).toBeInTheDocument();
-    expect(screen.getByText("已定位到商品映射面板，确认映射后会自动刷新当前正式批次")).toBeInTheDocument();
+    expect(screen.getByText("已定位到商品映射面板，保存长期映射后会自动刷新当前正式批次")).toBeInTheDocument();
     expect(screen.getByLabelText("映射搜索")).toHaveValue("BARCODE");
+    expect(screen.getByLabelText("外部条码")).toHaveValue("BARCODE");
   });
 
   it("shows dismissible first-run help and can reopen it", async () => {
@@ -667,9 +668,9 @@ describe("App", () => {
     fireEvent.change(screen.getByLabelText("外部条码"), { target: { value: "2153722460015" } });
     fireEvent.change(screen.getByLabelText("外部编码"), { target: { value: "5372246" } });
     fireEvent.change(screen.getByLabelText("外部商品名"), { target: { value: "雅漾专研保湿修护面膜25ml*5片" } });
-    fireEvent.click(screen.getByRole("button", { name: "确认映射" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存长期映射" }));
 
-    expect(await screen.findByText("商品映射已确认，正式订单重新初审后生效")).toBeInTheDocument();
+    expect(await screen.findByText("长期商品映射已保存，正式订单重新初审后生效")).toBeInTheDocument();
     expect(mappingRows[0]).toMatchObject({
       externalBarcode: "2153722460015",
       externalGoodsCode: "5372246",
@@ -715,7 +716,7 @@ describe("App", () => {
 
     expect(await screen.findByText("商品映射确认")).toBeInTheDocument();
     fireEvent.click(await screen.findByRole("button", { name: /雅漾专研保湿修护面膜25ml/ }));
-    fireEvent.click(screen.getByRole("button", { name: "确认映射" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存长期映射" }));
 
     await waitFor(() =>
       expect(fetch).toHaveBeenCalledWith("/api/v1/batches/batch-1/actions/run-real-review", {

@@ -10,8 +10,15 @@ import type {
 import { Badge } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
 
+export interface ProductMappingFocusProduct {
+  externalBarcode: string;
+  externalGoodsCode: string;
+  externalGoodsName: string;
+}
+
 interface ProductMappingPanelProps {
   focusQuery?: string;
+  focusProduct?: ProductMappingFocusProduct | null;
   sourceBatchId?: string;
   onMessage: (message: string) => void;
   onConfirmed?: (mapping: ProductMappingDto) => Promise<void> | void;
@@ -33,7 +40,7 @@ const emptyDraft: MappingDraft = {
   note: "",
 };
 
-export function ProductMappingPanel({ focusQuery = "", sourceBatchId = "", onMessage, onConfirmed }: ProductMappingPanelProps) {
+export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sourceBatchId = "", onMessage, onConfirmed }: ProductMappingPanelProps) {
   const [query, setQuery] = useState("2153722460015");
   const [specQuery, setSpecQuery] = useState("雅漾");
   const [draft, setDraft] = useState<MappingDraft>(emptyDraft);
@@ -80,7 +87,7 @@ export function ProductMappingPanel({ focusQuery = "", sourceBatchId = "", onMes
     });
     if (!response.ok) {
       const body = await response.json();
-      setError(body.message ?? "确认映射失败");
+      setError(body.message ?? "保存长期映射失败");
       return;
     }
     const mapping = (await response.json()) as ProductMappingDto;
@@ -88,7 +95,7 @@ export function ProductMappingPanel({ focusQuery = "", sourceBatchId = "", onMes
     setDraft(emptyDraft);
     await refreshMappings(mapping.externalBarcode || mapping.externalGoodsCode || mapping.externalGoodsName);
     await refreshCandidates(mapping.externalBarcode || mapping.externalGoodsCode || mapping.externalGoodsName);
-    onMessage("商品映射已确认");
+    onMessage("长期商品映射已保存");
     await onConfirmed?.(mapping);
   }
 
@@ -134,21 +141,34 @@ export function ProductMappingPanel({ focusQuery = "", sourceBatchId = "", onMes
   useEffect(() => {
     if (!focusQuery) return;
     setQuery(focusQuery);
-    setSpecQuery(focusQuery);
+    setSpecQuery(focusProduct?.externalGoodsName || focusQuery);
+    if (focusProduct) {
+      setDraft((current) => ({
+        ...current,
+        externalBarcode: focusProduct.externalBarcode,
+        externalGoodsCode: focusProduct.externalGoodsCode,
+        externalGoodsName: focusProduct.externalGoodsName,
+        note: current.note || "审核异常行保存为长期映射",
+      }));
+    }
     void refreshMappings(focusQuery);
     void refreshCandidates(focusQuery);
-  }, [focusQuery]);
+  }, [focusQuery, focusProduct]);
 
   const selectedSpec = useMemo(() => specs.find((spec) => spec.specNo === draft.wdtSpecNo), [draft.wdtSpecNo, specs]);
+  const canSaveMapping = Boolean(draft.wdtSpecNo && (draft.externalBarcode || draft.externalGoodsCode));
 
   return (
     <section className="mt-4 rounded-md border border-border bg-card p-4" id="product-mapping-panel">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold">商品映射确认</h2>
-          <p className="mt-1 text-sm text-muted-foreground">处理组合装、小样、客户侧条码和旺店通规格不一致的情况</p>
+          <p className="mt-1 text-sm text-muted-foreground">把已核实的客户侧编码、小样或组合装保存为可复用规则</p>
         </div>
-        <Badge tone="warn">人工确认后自动复用</Badge>
+        <Badge tone="warn">保存后长期复用</Badge>
+      </div>
+      <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+        名称候选只用于人工判断，不会自动通过；只有保存后的编号映射会在后续批次优先命中。
       </div>
 
       <div className="mt-4 grid gap-3 xl:grid-cols-[1fr_1fr]">
@@ -184,7 +204,7 @@ export function ProductMappingPanel({ focusQuery = "", sourceBatchId = "", onMes
         </div>
 
         <div className="rounded-md border border-border p-3">
-          <h3 className="text-sm font-semibold">确认映射</h3>
+          <h3 className="text-sm font-semibold">保存映射</h3>
           <div className="mt-3 grid gap-2 sm:grid-cols-2">
             <Field label="外部条码" value={draft.externalBarcode} onChange={(value) => setDraft((current) => ({ ...current, externalBarcode: value }))} />
             <Field label="外部编码" value={draft.externalGoodsCode} onChange={(value) => setDraft((current) => ({ ...current, externalGoodsCode: value }))} />
@@ -203,9 +223,9 @@ export function ProductMappingPanel({ focusQuery = "", sourceBatchId = "", onMes
             </div>
           ) : null}
           {error ? <div className="mt-3 text-sm text-rose-700">{error}</div> : null}
-          <Button className="mt-3" onClick={() => void confirmMapping()}>
+          <Button className="mt-3" disabled={!canSaveMapping} onClick={() => void confirmMapping()}>
             <Check className="h-4 w-4" />
-            确认映射
+            保存长期映射
           </Button>
         </div>
       </div>

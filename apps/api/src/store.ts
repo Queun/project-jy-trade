@@ -1051,8 +1051,8 @@ export function createSqliteStore(options: StoreOptions = {}) {
       if (!spec) {
         throw new StoreValidationError(`WDT goods spec not found: ${input.wdtSpecNo}`);
       }
-      if (!input.externalBarcode && !input.externalGoodsCode && !input.externalGoodsName) {
-        throw new StoreValidationError("At least one external product identifier is required");
+      if (!input.externalBarcode && !input.externalGoodsCode) {
+        throw new StoreValidationError("External barcode or product code is required for persistent product mapping");
       }
 
       const now = new Date().toISOString();

@@ -13,7 +13,7 @@ import type {
   WdtGoodsSyncRunDto,
 } from "@jy-trade/shared";
 
-import { ProductMappingPanel } from "./components/ProductMappingPanel.js";
+import { ProductMappingPanel, type ProductMappingFocusProduct } from "./components/ProductMappingPanel.js";
 import { ExternalProductPanel } from "./components/ExternalProductPanel.js";
 import { ReviewTable, type ReviewDraft } from "./components/ReviewTable.js";
 import { StoreAddressPanel } from "./components/StoreAddressPanel.js";
@@ -92,6 +92,7 @@ export function App() {
   const [pendingOrderUpload, setPendingOrderUpload] = useState<File | null>(null);
   const [developerMode, setDeveloperMode] = useState(false);
   const [mappingFocusQuery, setMappingFocusQuery] = useState("");
+  const [mappingFocusProduct, setMappingFocusProduct] = useState<ProductMappingFocusProduct | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [showHelp, setShowHelp] = useState(() => localStorage.getItem(helpDismissedStorageKey) !== "true");
 
@@ -385,10 +386,10 @@ export function App() {
 
   async function rerunActiveBatchAfterMapping(mapping: ProductMappingDto) {
     if (!activeBatch || activeBatch.mode !== "production_api") {
-      setMessage("商品映射已确认，正式订单重新初审后生效");
+      setMessage("长期商品映射已保存，正式订单重新初审后生效");
       return;
     }
-    setMessage("商品映射已确认，正在刷新当前批次初审...");
+    setMessage("长期商品映射已保存，正在刷新当前批次初审...");
     const reviewResponse = await fetch(`/api/v1/batches/${activeBatch.id}/actions/run-real-review`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -410,7 +411,7 @@ export function App() {
     await refreshExports(activeBatch.id);
     await refreshMakeOrderReadiness(activeBatch.id);
     await refreshBatches();
-    setMessage(`商品映射已确认，当前批次已刷新：${mapping.externalBarcode || mapping.externalGoodsCode || mapping.externalGoodsName}`);
+    setMessage(`长期商品映射已保存，当前批次已刷新：${mapping.externalBarcode || mapping.externalGoodsCode || mapping.externalGoodsName}`);
     setSuccessNotice("映射已应用到当前批次");
   }
 
@@ -599,7 +600,12 @@ export function App() {
     const query = line.externalBarcode || line.externalGoodsName || line.wdtSpecNo;
     setDeveloperMode(true);
     setMappingFocusQuery(query);
-    setMessage("已定位到商品映射面板，确认映射后会自动刷新当前正式批次");
+    setMappingFocusProduct({
+      externalBarcode: line.externalBarcode,
+      externalGoodsCode: line.externalGoodsCode,
+      externalGoodsName: line.externalGoodsName,
+    });
+    setMessage("已定位到商品映射面板，保存长期映射后会自动刷新当前正式批次");
     window.setTimeout(() => document.getElementById("product-mapping-panel")?.scrollIntoView?.({ behavior: "smooth", block: "start" }), 0);
   }
 
@@ -817,6 +823,7 @@ export function App() {
                 canReview={permissions.canReview}
                 stats={stats}
                 mappingFocusQuery={mappingFocusQuery}
+                mappingFocusProduct={mappingFocusProduct}
                 onBulkApprove={() => void bulkApprove()}
                 onDraftChange={updateDraft}
                 onFilterChange={setActiveFilter}
@@ -1216,6 +1223,7 @@ function ReviewTab({
   filteredLines,
   isDeveloperMode,
   mappingFocusQuery,
+  mappingFocusProduct,
   savingReasonById,
   canReview,
   stats,
@@ -1238,6 +1246,7 @@ function ReviewTab({
   filteredLines: ReviewLineDto[];
   isDeveloperMode: boolean;
   mappingFocusQuery: string;
+  mappingFocusProduct: ProductMappingFocusProduct | null;
   savingReasonById: Record<string, boolean>;
   canReview: boolean;
   stats: ReturnType<typeof buildStats>;
@@ -1330,6 +1339,7 @@ function ReviewTab({
       {isDeveloperMode ? (
         <ProductMappingPanel
           focusQuery={mappingFocusQuery}
+          focusProduct={mappingFocusProduct}
           sourceBatchId={activeBatch?.id ?? ""}
           onMessage={onMessage}
           onConfirmed={onMappingConfirmed}
