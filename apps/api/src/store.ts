@@ -1591,7 +1591,7 @@ function buildRealReviewLine(input: RealReviewLineInput, suggestedShipQty: numbe
   const nearExpiryBefore = input.stock?.nearExpiryAvailableStock ?? 0;
 
   const status = reviewStatusFor(input.matchStatus, input.orderLine.orderQty, suggestedShipQty);
-  const decision = status === "库存充足" ? "ship" : "pending";
+  const decision = suggestedShipQty > 0 ? "ship" : "pending";
 
   return {
     id: input.id,

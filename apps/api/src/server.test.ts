@@ -2298,6 +2298,8 @@ describe("api server", () => {
       mainAvailableBefore: 1,
       suggestedShipQty: 1,
       status: "部分满足",
+      decision: "ship",
+      approvedShipQty: 1,
     });
     expect(firstMatched.warehouseBreakdown ?? "").not.toContain("999");
     await app.close();
@@ -2346,8 +2348,8 @@ describe("api server", () => {
       headers: { cookie },
     });
     const byStore = reviewLinesByStore(linesResponse.json());
-    expect(byStore.get("VIP-1")).toMatchObject({ suggestedShipQty: 3, status: "部分满足" });
-    expect(byStore.get("VIP-2")).toMatchObject({ suggestedShipQty: 3, status: "部分满足" });
+    expect(byStore.get("VIP-1")).toMatchObject({ suggestedShipQty: 3, status: "部分满足", decision: "ship", approvedShipQty: 3 });
+    expect(byStore.get("VIP-2")).toMatchObject({ suggestedShipQty: 3, status: "部分满足", decision: "ship", approvedShipQty: 3 });
     expect(byStore.get("REG-1")).toMatchObject({ suggestedShipQty: 0, status: "库存不足" });
     expect(byStore.get("REG-2")).toMatchObject({ suggestedShipQty: 0, status: "库存不足" });
     await app.close();
@@ -2398,8 +2400,8 @@ describe("api server", () => {
     const byStore = reviewLinesByStore(linesResponse.json());
     expect(byStore.get("VIP-1")).toMatchObject({ suggestedShipQty: 4, status: "库存充足" });
     expect(byStore.get("VIP-2")).toMatchObject({ suggestedShipQty: 4, status: "库存充足" });
-    expect(byStore.get("REG-1")).toMatchObject({ suggestedShipQty: 1, status: "部分满足" });
-    expect(byStore.get("REG-2")).toMatchObject({ suggestedShipQty: 1, status: "部分满足" });
+    expect(byStore.get("REG-1")).toMatchObject({ suggestedShipQty: 1, status: "部分满足", decision: "ship", approvedShipQty: 1 });
+    expect(byStore.get("REG-2")).toMatchObject({ suggestedShipQty: 1, status: "部分满足", decision: "ship", approvedShipQty: 1 });
     await app.close();
   });
 

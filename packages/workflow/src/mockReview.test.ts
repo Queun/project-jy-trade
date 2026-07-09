@@ -23,4 +23,12 @@ describe("buildMockReview", () => {
     expect(result.matchCounts.ambiguous).toBe(1);
     expect(result.matchCounts.not_found).toBe(1);
   });
+
+  it("auto-approves partial shipments with the suggested quantity", () => {
+    const result = buildMockReview(orderFile, mixedMock, "batch-test");
+    const partial = result.reviewLines.find((line) => line.status === "部分满足");
+    expect(partial).toBeTruthy();
+    expect(partial?.decision).toBe("ship");
+    expect(partial?.approvedShipQty).toBe(partial?.suggestedShipQty);
+  });
 });

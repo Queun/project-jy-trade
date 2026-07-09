@@ -56,7 +56,7 @@ export function buildMockReview(orderFile: string, mockDataFile: string, batchId
   const reviewLines = buildReviewLines(orderLines, inventory);
   const dtos: ReviewLineDto[] = reviewLines.map((line, index) => {
     const match = matches.get(line.externalBarcode);
-    const decision: ReviewDecision = line.status === "库存充足" ? "ship" : "pending";
+    const decision: ReviewDecision = line.suggestedShipQty > 0 ? "ship" : "pending";
     return {
       id: `${batchId}-line-${index + 1}`,
       batchId,
