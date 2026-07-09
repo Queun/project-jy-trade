@@ -771,6 +771,42 @@ describe("App", () => {
     expect(screen.queryByText("肌肤未来光感透润美白面膜单片25ml")).not.toBeInTheDocument();
   });
 
+  it("does not flash unrelated long-term mappings when locating a product mapping", async () => {
+    lines = [
+      reviewLine({
+        id: "line-target-mapping",
+        externalBarcode: "TARGET-BARCODE",
+        externalGoodsCode: "TARGET-CODE",
+        externalGoodsName: "当前要处理的商品",
+        goodsName: "",
+        wdtSpecNo: "",
+        matchStatus: "ambiguous",
+        matchMessage: "Name candidate needs human confirmation",
+        status: "未匹配",
+        suggestedShipQty: 0,
+      }),
+    ];
+    mappingRows = [
+      productMapping({
+        id: "mapping-unrelated",
+        externalBarcode: "2153659120013",
+        externalGoodsCode: "5365912",
+        externalGoodsName: "肌肤之钥金致乳霜5ml",
+      }),
+    ];
+    render(<App />);
+    await clickBatch();
+    switchToReviewTab();
+
+    const targetRow = await rowFor("当前要处理的商品");
+    fireEvent.click(within(targetRow).getByRole("button", { name: "定位映射" }));
+
+    expect(await screen.findByText("商品映射确认")).toBeInTheDocument();
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/v1/product-mappings?query=TARGET-BARCODE"));
+    expect(fetch).not.toHaveBeenCalledWith("/api/v1/product-mappings?query=");
+    expect(screen.queryByText("肌肤之钥金致乳霜5ml")).not.toBeInTheDocument();
+  });
+
   it("uses the mapping dialog as a stock lookup tool", async () => {
     render(<App />);
     await clickBatch();
@@ -1556,7 +1592,7 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
     exportRows = [created];
     return json(created, 201);
   }
-  if (url.startsWith("/api/v1/product-mappings") && method === "GET") return json(mappingRows);
+  if (url.startsWith("/api/v1/product-mappings") && method === "GET") return json(filterProductMappings(url));
   if (url.startsWith("/api/v1/product-match-candidates") && method === "GET") return json(filterProductCandidates(url));
   if (url === "/api/v1/product-mappings" && method === "POST") {
     const body = JSON.parse(String(init?.body));
@@ -1635,6 +1671,20 @@ function productMapping(patch: Partial<ProductMappingDto> = {}): ProductMappingD
     updatedAt: "2026-07-03T00:00:00.000Z",
     ...patch,
   };
+}
+
+function filterProductMappings(url: string) {
+  const query = decodeURIComponent(url.split("query=")[1] ?? "").trim().toLowerCase();
+  if (!query) return mappingRows;
+  return mappingRows.filter((mapping) =>
+    [
+      mapping.externalBarcode,
+      mapping.externalGoodsCode,
+      mapping.externalGoodsName,
+      mapping.wdtSpecNo,
+      mapping.wdtGoodsName,
+    ].some((value) => value.toLowerCase().includes(query)),
+  );
 }
 
 function productCandidate(patch: Partial<ProductMatchCandidateDto> = {}): ProductMatchCandidateDto {

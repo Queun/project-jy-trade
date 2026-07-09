@@ -93,10 +93,14 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
   const [specs, setSpecs] = useState<WdtGoodsSpecSearchResultDto[]>([]);
   const [error, setError] = useState("");
   const [activeView, setActiveView] = useState<"lookup" | "current" | "library">(focusProduct ? "current" : "lookup");
+  const mappingRequestIdRef = useRef(0);
   const candidateRequestIdRef = useRef(0);
 
   async function refreshMappings(nextQuery = query) {
+    const requestId = mappingRequestIdRef.current + 1;
+    mappingRequestIdRef.current = requestId;
     const response = await fetch(`/api/v1/product-mappings?query=${encodeURIComponent(nextQuery)}`);
+    if (requestId !== mappingRequestIdRef.current) return;
     if (!response.ok) {
       setMappings([]);
       return;
@@ -216,13 +220,14 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
   }
 
   useEffect(() => {
-    void refreshMappings();
+    if (!focusQuery) void refreshMappings();
   }, []);
 
   useEffect(() => {
     if (!focusQuery) return;
     setQuery(focusQuery);
     setSpecQuery(focusProduct?.externalGoodsName || focusQuery);
+    setMappings([]);
     setCandidates([]);
     setSpecs([]);
     setActiveView("current");
