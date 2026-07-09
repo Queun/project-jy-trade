@@ -251,8 +251,8 @@ export class WdtClient {
     ) as Promise<WdtGoodsResponse>;
   }
 
-  querySuites(params: Record<string, unknown>): Promise<WdtSuiteResponse> {
-    return this.call("goods.Suite.search", params) as Promise<WdtSuiteResponse>;
+  querySuites(params: Record<string, unknown>, pageNo = 0, pageSize = 1000): Promise<WdtSuiteResponse> {
+    return this.call("goods.Suite.search", params, { pageNo, pageSize }) as Promise<WdtSuiteResponse>;
   }
 
   queryStock(specNo: string, warehouseNo?: string): Promise<WdtStockResponse> {

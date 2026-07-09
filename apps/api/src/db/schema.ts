@@ -234,6 +234,72 @@ export const wdtGoodsSyncRuns = sqliteTable(
   ],
 );
 
+export const wdtSuites = sqliteTable(
+  "wdt_suites",
+  {
+    id: text("id").primaryKey(),
+    suiteNo: text("suite_no").notNull(),
+    suiteName: text("suite_name").notNull().default(""),
+    barcode: text("barcode").notNull().default(""),
+    deleted: integer("deleted").notNull().default(0),
+    modified: text("modified").notNull().default(""),
+    rawJson: text("raw_json").notNull().default("{}"),
+    syncedAt: text("synced_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("wdt_suites_suite_no_unique").on(table.suiteNo),
+    index("wdt_suites_barcode_idx").on(table.barcode),
+    index("wdt_suites_modified_idx").on(table.modified),
+  ],
+);
+
+export const wdtSuiteComponents = sqliteTable(
+  "wdt_suite_components",
+  {
+    id: text("id").primaryKey(),
+    suiteNo: text("suite_no").notNull(),
+    sortOrder: integer("sort_order").notNull(),
+    specNo: text("spec_no").notNull().default(""),
+    goodsNo: text("goods_no").notNull().default(""),
+    goodsName: text("goods_name").notNull().default(""),
+    specName: text("spec_name").notNull().default(""),
+    specCode: text("spec_code").notNull().default(""),
+    barcode: text("barcode").notNull().default(""),
+    quantity: real("quantity").notNull().default(1),
+    ratio: real("ratio").notNull().default(1),
+    deleted: integer("deleted").notNull().default(0),
+    rawJson: text("raw_json").notNull().default("{}"),
+    syncedAt: text("synced_at").notNull(),
+  },
+  (table) => [
+    index("wdt_suite_components_suite_no_idx").on(table.suiteNo),
+    index("wdt_suite_components_spec_no_idx").on(table.specNo),
+    index("wdt_suite_components_barcode_idx").on(table.barcode),
+  ],
+);
+
+export const wdtSuiteSyncRuns = sqliteTable(
+  "wdt_suite_sync_runs",
+  {
+    id: text("id").primaryKey(),
+    mode: text("mode", { enum: ["full", "incremental"] }).notNull(),
+    status: text("status", { enum: ["running", "success", "failed"] }).notNull(),
+    startedAt: text("started_at").notNull(),
+    finishedAt: text("finished_at").notNull().default(""),
+    rangeStart: text("range_start").notNull(),
+    rangeEnd: text("range_end").notNull(),
+    windowCount: integer("window_count").notNull().default(0),
+    pageCount: integer("page_count").notNull().default(0),
+    fetchedCount: integer("fetched_count").notNull().default(0),
+    upsertedCount: integer("upserted_count").notNull().default(0),
+    errorMessage: text("error_message").notNull().default(""),
+  },
+  (table) => [
+    index("wdt_suite_sync_runs_started_at_idx").on(table.startedAt),
+    index("wdt_suite_sync_runs_status_idx").on(table.status),
+  ],
+);
+
 export const productMappings = sqliteTable(
   "product_mappings",
   {
