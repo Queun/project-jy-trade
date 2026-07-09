@@ -1330,7 +1330,7 @@ describe("api server", () => {
     await app.close();
   });
 
-  it("prefers earlier address sheets and makes repeated imports idempotent", async () => {
+  it("prefers warehouse part-time receiver sheet over manager sheets and makes repeated imports idempotent", async () => {
     const databaseUrl = testDatabaseUrl();
     const app = buildTestServer(databaseUrl);
     const cookie = await loginCookie(app);
@@ -1363,6 +1363,7 @@ describe("api server", () => {
       XLSX.utils.aoa_to_sheet([
         ["区域", "", "门店编码/群组", "门店名称", "门店地址", "经理", "联系方式"],
         ["西区采购区", "OLE", "207752", "Ole贵阳万象城", "贵阳市南明区遵义社区体育路一号", "唐林燕", "13043551369"],
+        ["西区采购区", "OLE", "207140", "重庆国金中心店", "重庆市江北城北大街38号重庆国金中心第一层L101及L102B号商铺", "潘婷婷", "18584810194"],
       ]),
       "2025.6.3经理新表（主要）",
     );
@@ -1371,6 +1372,7 @@ describe("api server", () => {
       XLSX.utils.aoa_to_sheet([
         ["序号", "区域", "", "地址", "收货人", "电话"],
         [85, "西区", "Ole贵阳万象城店", "贵州省贵阳市南明区遵义路328号贵阳万象城LG101、LG102号商铺", "王如芳", "18286145293"],
+        [65, "西区", "Ole重庆国金中心店", "重庆市江北城北大街38号重庆国金中心第一层L101及L102B号商铺（拒放快递柜   丢件快递责任自负）", "张玲", "15223265398"],
       ]),
       "OLE门店兼职收货人（仓库发货主要用的）",
     );
@@ -1379,6 +1381,7 @@ describe("api server", () => {
       XLSX.utils.aoa_to_sheet([
         ["区域", "区域", "业态", "门店编码/群组", "门店名称", "门店地址", "经理", "联系方式"],
         ["", "西区采购区", "OLE", "", "Ole贵阳万象城", "贵阳市南明区遵义社区体育路一号", "", ""],
+        ["", "西区采购区", "OLE", "207140", "重庆国金中心店", "重庆市江北城北大街38号重庆国金中心第一层L101及L102B号商铺", "潘婷婷", "18584810194"],
       ]),
       "2024.8.28后经理收货人电话",
     );
@@ -1395,29 +1398,38 @@ describe("api server", () => {
     });
     expect(preview.statusCode).toBe(200);
     expect(preview.json()).toMatchObject({
-      parsedRowCount: 3,
-      affectedStoreCount: 1,
+      parsedRowCount: 6,
+      affectedStoreCount: 2,
+      createCount: 1,
       updateCount: 1,
       unchangedCount: 0,
-      items: [
-        {
-          action: "update",
-          storeNo: "207752",
-          storeName: "Ole贵阳万象城",
-          receiver: "唐林燕",
-          phone: "13043551369",
-          address: "贵阳市南明区遵义社区体育路一号",
-          sourceSheet: "2025.6.3经理新表（主要）",
-          sourceRow: 2,
-          existing: {
-            storeNo: "",
-            storeName: "Ole贵阳万象城",
-            receiver: "",
-            phone: "",
-            address: "贵阳市南明区遵义社区体育路一号",
-          },
-        },
-      ],
+    });
+    expect(preview.json().items.find((item: { storeNo: string }) => item.storeNo === "207752")).toMatchObject({
+      action: "update",
+      storeNo: "207752",
+      storeName: "Ole贵阳万象城店",
+      receiver: "王如芳",
+      phone: "18286145293",
+      address: "贵州省贵阳市南明区遵义路328号贵阳万象城LG101、LG102号商铺",
+      sourceSheet: "OLE门店兼职收货人（仓库发货主要用的）",
+      sourceRow: 2,
+      existing: {
+        storeNo: "",
+        storeName: "Ole贵阳万象城",
+        receiver: "",
+        phone: "",
+        address: "贵阳市南明区遵义社区体育路一号",
+      },
+    });
+    expect(preview.json().items.find((item: { storeNo: string }) => item.storeNo === "207140")).toMatchObject({
+      action: "create",
+      storeNo: "207140",
+      storeName: "Ole重庆国金中心店",
+      receiver: "张玲",
+      phone: "15223265398",
+      address: "重庆市江北城北大街38号重庆国金中心第一层L101及L102B号商铺（拒放快递柜   丢件快递责任自负）",
+      sourceSheet: "OLE门店兼职收货人（仓库发货主要用的）",
+      sourceRow: 3,
     });
 
     const response = await app.inject({
@@ -1431,8 +1443,8 @@ describe("api server", () => {
     });
     expect(response.statusCode).toBe(201);
     expect(response.json()).toMatchObject({
-      parsedRowCount: 3,
-      importedAddressCount: 1,
+      parsedRowCount: 6,
+      importedAddressCount: 2,
     });
 
     const list = await app.inject({
@@ -1444,14 +1456,32 @@ describe("api server", () => {
     expect(list.json()).toHaveLength(1);
     expect(list.json()[0]).toMatchObject({
       storeNo: "207752",
-      storeName: "Ole贵阳万象城",
-      receiver: "唐林燕",
-      phone: "13043551369",
-      address: "贵阳市南明区遵义社区体育路一号",
-      sourceSheet: "2025.6.3经理新表（主要）",
+      storeName: "Ole贵阳万象城店",
+      receiver: "王如芳",
+      phone: "18286145293",
+      address: "贵州省贵阳市南明区遵义路328号贵阳万象城LG101、LG102号商铺",
+      sourceSheet: "OLE门店兼职收货人（仓库发货主要用的）",
       sourceRow: 2,
     });
     expect(JSON.parse(list.json()[0].rawJson).records).toHaveLength(3);
+
+    const chongqingList = await app.inject({
+      method: "GET",
+      url: `/api/v1/store-addresses?query=${encodeURIComponent("207140")}`,
+      headers: { cookie },
+    });
+    expect(chongqingList.statusCode).toBe(200);
+    expect(chongqingList.json()).toHaveLength(1);
+    expect(chongqingList.json()[0]).toMatchObject({
+      storeNo: "207140",
+      storeName: "Ole重庆国金中心店",
+      receiver: "张玲",
+      phone: "15223265398",
+      address: "重庆市江北城北大街38号重庆国金中心第一层L101及L102B号商铺（拒放快递柜   丢件快递责任自负）",
+      sourceSheet: "OLE门店兼职收货人（仓库发货主要用的）",
+      sourceRow: 3,
+    });
+    expect(JSON.parse(chongqingList.json()[0].rawJson).records).toHaveLength(3);
 
     const secondPreview = await app.inject({
       method: "POST",
@@ -1464,10 +1494,10 @@ describe("api server", () => {
     });
     expect(secondPreview.statusCode).toBe(200);
     expect(secondPreview.json()).toMatchObject({
-      affectedStoreCount: 1,
+      affectedStoreCount: 2,
       createCount: 0,
       updateCount: 0,
-      unchangedCount: 1,
+      unchangedCount: 2,
     });
 
     await app.close();

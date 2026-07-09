@@ -1181,11 +1181,11 @@ async function findStoreAddressRow(database: DatabaseContext, storeNo: string, n
     const [byStoreNo] = await database.db.select().from(storeAddresses).where(eq(storeAddresses.storeNo, storeNo)).limit(1);
     if (byStoreNo) return byStoreNo;
   }
-  if (normalizedStoreName) {
+  for (const nameKey of legacyCompatibleStoreNameKeys(normalizedStoreName)) {
     const [byName] = await database.db
       .select()
       .from(storeAddresses)
-      .where(eq(storeAddresses.normalizedStoreName, normalizedStoreName))
+      .where(eq(storeAddresses.normalizedStoreName, nameKey))
       .limit(1);
     if (byName) return byName;
   }
@@ -2904,6 +2904,7 @@ interface ParsedStoreAddress extends MakeOrderAddress {
   note: string;
   sourceSheet: string;
   sourceSheetIndex: number;
+  sourcePriority: number;
   sourceOrder: number;
   sourceRow: number;
   rawFields: Record<string, string>;
@@ -3791,7 +3792,7 @@ function mergeStoreAddressImportGroups(target: StoreAddressImportGroup, source: 
 }
 
 function mergeStoreAddressImportAddress(current: ParsedStoreAddress, next: ParsedStoreAddress): ParsedStoreAddress {
-  if (next.sourceSheetIndex < current.sourceSheetIndex || (next.sourceSheetIndex === current.sourceSheetIndex && next.sourceOrder > current.sourceOrder)) {
+  if (next.sourcePriority < current.sourcePriority || (next.sourcePriority === current.sourcePriority && next.sourceOrder > current.sourceOrder)) {
     return fillMissingStoreAddressFields(next, current);
   }
   return fillMissingStoreAddressFields(current, next);
@@ -3874,6 +3875,7 @@ function parseStoreAddressWorkbook(workbook: XLSX.WorkBook): { addresses: Parsed
         note: "",
         sourceSheet: sheetName,
         sourceSheetIndex: sheetIndex,
+        sourcePriority: storeAddressSheetPriority(sheetName, sheetIndex),
         sourceOrder: sourceOrder += 1,
         sourceRow: rowIndex + 1,
         rawFields: rawFieldsForRow(headerLabels, row),
@@ -3883,6 +3885,13 @@ function parseStoreAddressWorkbook(workbook: XLSX.WorkBook): { addresses: Parsed
   }
 
   return { addresses, sheetCount: parsedSheetNames.size, skippedRowCount };
+}
+
+function storeAddressSheetPriority(sheetName: string, sheetIndex: number) {
+  const normalizedSheetName = normalizeHeader(sheetName);
+  if (normalizedSheetName.includes("ole门店兼职收货人") || normalizedSheetName.includes("仓库发货主要用的")) return 0;
+  if (normalizedSheetName.includes("2025.6.3经理新表") || normalizedSheetName.includes("经理新表主要")) return 1;
+  return 2 + sheetIndex;
 }
 
 function findAddressHeaderRow(rows: Array<Array<string | number>>, sheetName: string) {
@@ -3991,9 +4000,30 @@ function normalizeStoreName(value: unknown) {
     .toLowerCase()
     .replace(/\s+/g, "")
     .replace(/[()（）]/g, "")
+    .replace(/^(ole|olé|blt)/g, "")
     .replace(/精品超市/g, "")
     .replace(/超市/g, "")
     .replace(/店$/g, "");
+}
+
+function normalizeStoreNameLegacy(value: unknown) {
+  return cellText(value)
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/[()（）]/g, "")
+    .replace(/精品超市/g, "")
+    .replace(/超市/g, "")
+    .replace(/店$/g, "");
+}
+
+function legacyCompatibleStoreNameKeys(normalizedStoreName: string) {
+  const keys = new Set<string>();
+  if (normalizedStoreName) keys.add(normalizedStoreName);
+  for (const prefix of ["ole", "olé", "blt"]) {
+    const legacyKey = normalizeStoreNameLegacy(`${prefix}${normalizedStoreName}`);
+    if (legacyKey) keys.add(legacyKey);
+  }
+  return [...keys];
 }
 
 function cellText(value: unknown) {
