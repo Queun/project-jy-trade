@@ -155,7 +155,7 @@ describe("App", () => {
     fireEvent.click(within(unmatchedRow).getByRole("button", { name: "定位映射" }));
 
     expect(await screen.findByText("商品映射确认")).toBeInTheDocument();
-    expect(screen.getByText("已定位到商品映射面板，保存长期映射后会自动刷新当前正式批次")).toBeInTheDocument();
+    expect(screen.getByText("已打开商品映射，保存长期映射后会自动刷新当前批次")).toBeInTheDocument();
     expect(screen.getByLabelText("映射搜索")).toHaveValue("BARCODE");
     expect(screen.getByLabelText("外部条码")).toHaveValue("BARCODE");
   });
@@ -222,7 +222,7 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: "开发者模式" }));
     switchToReviewTab();
 
-    expect(await screen.findByText("商品映射确认")).toBeInTheDocument();
+    expect(await screen.findByText("开发者模式已开启：商品映射现在通过“长期映射库”或明细行按钮打开。")).toBeInTheDocument();
     switchToImportTab();
     expect(screen.getByText("订货单路径")).toBeInTheDocument();
     expect(screen.getByText("演示数据文件")).toBeInTheDocument();
@@ -692,10 +692,11 @@ describe("App", () => {
   it("confirms product mappings from searched WDT specs", async () => {
     render(<App />);
     await clickBatch();
-    fireEvent.click(screen.getByRole("checkbox", { name: "开发者模式" }));
     switchToReviewTab();
 
+    fireEvent.click(screen.getByRole("button", { name: "长期映射库" }));
     expect(await screen.findByText("商品映射确认")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "当前行映射" }));
     expect(await screen.findByText("待确认候选")).toBeInTheDocument();
     await waitFor(() => expect(screen.getAllByText("雅漾专研保湿修护面膜25ml*5片").length).toBeGreaterThan(0));
     expect(screen.getByText("可发 15")).toBeInTheDocument();
@@ -755,7 +756,6 @@ describe("App", () => {
     ];
     render(<App />);
     await clickBatch();
-    fireEvent.click(screen.getByRole("checkbox", { name: "开发者模式" }));
     switchToReviewTab();
 
     const firstRow = await rowFor("雅漾专研保湿修护面膜25ml*5片");
@@ -776,9 +776,9 @@ describe("App", () => {
   it("deletes long-term product mappings from the mapping panel", async () => {
     render(<App />);
     await clickBatch();
-    fireEvent.click(screen.getByRole("checkbox", { name: "开发者模式" }));
     switchToReviewTab();
 
+    fireEvent.click(screen.getByRole("button", { name: "长期映射库" }));
     expect(await screen.findByText("已确认/待处理映射")).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText("人工确认")).toBeInTheDocument());
     const mappingRow = [...document.querySelectorAll("tr")].find((row) => row.textContent?.includes("人工确认"));
@@ -793,9 +793,9 @@ describe("App", () => {
   it("fills the mapping form when reviewing an existing product mapping", async () => {
     render(<App />);
     await clickBatch();
-    fireEvent.click(screen.getByRole("checkbox", { name: "开发者模式" }));
     switchToReviewTab();
 
+    fireEvent.click(screen.getByRole("button", { name: "长期映射库" }));
     expect(await screen.findByText("已确认/待处理映射")).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText("人工确认")).toBeInTheDocument());
     const mappingRow = [...document.querySelectorAll("tr")].find((row) => row.textContent?.includes("人工确认"));
@@ -844,9 +844,10 @@ describe("App", () => {
     ];
     render(<App />);
     await clickBatch();
-    fireEvent.click(screen.getByRole("checkbox", { name: "开发者模式" }));
     switchToReviewTab();
 
+    const mappingRow = await rowFor("雅漾专研保湿修护面膜25ml*5片");
+    fireEvent.click(within(mappingRow).getAllByRole("button", { name: "定位映射" })[0]);
     expect(await screen.findByText("商品映射确认")).toBeInTheDocument();
     fireEvent.click(await screen.findByRole("button", { name: /雅漾专研保湿修护面膜25ml/ }));
     fireEvent.click(screen.getByRole("button", { name: "保存长期映射" }));
@@ -884,7 +885,6 @@ describe("App", () => {
     ];
     render(<App />);
     await clickBatch();
-    fireEvent.click(screen.getByRole("checkbox", { name: "开发者模式" }));
     switchToReviewTab();
 
     expect(await screen.findByText("确定单校验")).toBeInTheDocument();
@@ -894,6 +894,7 @@ describe("App", () => {
     expect(within(confirmedOrderRow).getByText("需选择商家编码")).toBeInTheDocument();
     expect(within(confirmedOrderRow).queryByText("未匹配")).not.toBeInTheDocument();
     expect(within(confirmedOrderRow).queryByText("待确认")).not.toBeInTheDocument();
+    fireEvent.click(within(confirmedOrderRow).getByRole("button", { name: "定位映射" }));
     fireEvent.click(await screen.findByRole("button", { name: /雅漾专研保湿修护面膜25ml/ }));
     fireEvent.click(screen.getByRole("button", { name: "保存长期映射" }));
 
@@ -929,6 +930,10 @@ describe("App", () => {
     const row = await rowFor("确定单缺货提示商品");
     expect(within(row).getByText("确定单库存可能不足：本批该商品需 40，可发 16。仅提示，不调整做单数量")).toBeInTheDocument();
     expect(within(row).getByLabelText("审核原因 line-confirmed-stock-warning")).toHaveValue("");
+    fireEvent.click(within(row).getByRole("button", { name: "查替代编码" }));
+    expect(await screen.findByText("商品映射确认")).toBeInTheDocument();
+    expect(screen.getByText("当前编码 SPEC")).toBeInTheDocument();
+    expect(screen.getAllByText("可发 主 5 / 临 0").length).toBeGreaterThanOrEqual(1);
   });
 
   it("shows confirmed-order stock error details only in developer mode", async () => {

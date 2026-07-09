@@ -150,6 +150,9 @@ export function ReviewTable({
         const line = row.original;
         const needsMapping = line.matchStatus !== "matched";
         const manualMapping = isManualMappingLine(line);
+        const canReviewAlternative = confirmedOrderMode && line.matchStatus === "matched" && (line.status === "库存不足" || line.status === "部分满足");
+        const showMappingAction = needsMapping || manualMapping || canReviewAlternative;
+        const mappingActionLabel = canReviewAlternative ? "查替代编码" : manualMapping ? "复查映射" : "定位映射";
 
         return (
           <div className="min-w-60">
@@ -157,10 +160,10 @@ export function ReviewTable({
             <div className="mt-1 text-xs text-muted-foreground">{line.externalBarcode}</div>
             {line.wdtSpecNo ? <div className="mt-1 text-xs text-muted-foreground">{line.wdtSpecNo}</div> : null}
             {manualMapping ? <Badge className="mt-2" tone="info">长期映射</Badge> : null}
-            {needsMapping || manualMapping ? (
+            {showMappingAction ? (
               <Button className="mt-2 h-7 bg-muted px-2 text-xs text-muted-foreground hover:bg-muted/80" onClick={() => onLocateMapping(line)}>
                 <Search className="h-3.5 w-3.5" />
-                {manualMapping ? "复查映射" : "定位映射"}
+                {mappingActionLabel}
               </Button>
             ) : null}
           </div>

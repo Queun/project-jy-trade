@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check, Search, ShieldAlert, Trash2, XCircle } from "lucide-react";
+import { Check, Search, ShieldAlert, Trash2, X, XCircle } from "lucide-react";
 import type {
   ProductMappingDto,
   ProductMappingStatus,
@@ -14,14 +14,25 @@ export interface ProductMappingFocusProduct {
   externalBarcode: string;
   externalGoodsCode: string;
   externalGoodsName: string;
+  wdtSpecNo?: string;
+  wdtMakeOrderCode?: string;
+  status?: string;
+  mainAvailableBefore?: number;
+  nearExpiryAvailableBefore?: number;
 }
 
 interface ProductMappingPanelProps {
   focusQuery?: string;
   focusProduct?: ProductMappingFocusProduct | null;
   sourceBatchId?: string;
+  surface?: "panel" | "dialog";
   onMessage: (message: string) => void;
   onConfirmed?: (mapping: ProductMappingDto) => Promise<void> | void;
+}
+
+interface ProductMappingDialogProps extends Omit<ProductMappingPanelProps, "surface"> {
+  open: boolean;
+  onClose: () => void;
 }
 
 interface MappingDraft {
@@ -40,14 +51,48 @@ const emptyDraft: MappingDraft = {
   note: "",
 };
 
-export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sourceBatchId = "", onMessage, onConfirmed }: ProductMappingPanelProps) {
-  const [query, setQuery] = useState("2153722460015");
-  const [specQuery, setSpecQuery] = useState("雅漾");
+export function ProductMappingDialog({ open, onClose, ...props }: ProductMappingDialogProps) {
+  useEffect(() => {
+    if (!open) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-start justify-center bg-black/35 px-3 py-5 sm:px-6" role="dialog" aria-modal="true" aria-labelledby="product-mapping-title">
+      <div className="max-h-[calc(100vh-2.5rem)] w-full max-w-6xl overflow-hidden rounded-lg border border-border bg-background shadow-lg">
+        <div className="flex items-center justify-between border-b border-border px-4 py-3">
+          <div>
+            <h2 className="text-base font-semibold" id="product-mapping-title">商品映射确认</h2>
+            <p className="text-sm text-muted-foreground">查询库存、选择替代编码，并保存可复用映射</p>
+          </div>
+          <Button className="h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80" onClick={onClose}>
+            <X className="h-4 w-4" />
+            关闭
+          </Button>
+        </div>
+        <div className="max-h-[calc(100vh-7.5rem)] overflow-y-auto">
+          <ProductMappingPanel {...props} surface="dialog" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sourceBatchId = "", surface = "panel", onMessage, onConfirmed }: ProductMappingPanelProps) {
+  const [query, setQuery] = useState("");
+  const [specQuery, setSpecQuery] = useState("");
   const [draft, setDraft] = useState<MappingDraft>(emptyDraft);
   const [mappings, setMappings] = useState<ProductMappingDto[]>([]);
   const [candidates, setCandidates] = useState<ProductMatchCandidateDto[]>([]);
   const [specs, setSpecs] = useState<WdtGoodsSpecSearchResultDto[]>([]);
   const [error, setError] = useState("");
+  const [activeView, setActiveView] = useState<"current" | "library">(focusProduct ? "current" : "library");
 
   async function refreshMappings(nextQuery = query) {
     const response = await fetch(`/api/v1/product-mappings?query=${encodeURIComponent(nextQuery)}`);
@@ -115,6 +160,7 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
   }
 
   async function reviewMapping(mapping: ProductMappingDto) {
+    setActiveView("current");
     setDraft({
       externalBarcode: mapping.externalBarcode,
       externalGoodsCode: mapping.externalGoodsCode,
@@ -169,6 +215,7 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
     setQuery(focusQuery);
     setSpecQuery(focusProduct?.externalGoodsName || focusQuery);
     setSpecs([]);
+    setActiveView("current");
     if (focusProduct) {
       setDraft({
         externalBarcode: focusProduct.externalBarcode,
@@ -186,19 +233,47 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
   const canSaveMapping = Boolean(draft.wdtSpecNo && (draft.externalBarcode || draft.externalGoodsCode));
 
   return (
-    <section className="mt-4 rounded-md border border-border bg-card p-4" id="product-mapping-panel">
+    <section className={surface === "dialog" ? "p-4" : "mt-4 rounded-md border border-border bg-card p-4"} id="product-mapping-panel">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-lg font-semibold">商品映射确认</h2>
+          {surface === "panel" ? <h2 className="text-lg font-semibold">商品映射确认</h2> : null}
           <p className="mt-1 text-sm text-muted-foreground">把已核实的客户侧编码、小样或组合装保存为可复用规则</p>
         </div>
         <Badge tone="warn">保存后长期复用</Badge>
       </div>
+      {focusProduct ? (
+        <div className="mt-3 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
+          <div className="font-medium">{focusProduct.externalGoodsName || "当前订单行"}</div>
+          <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-muted-foreground">
+            <span>外部条码 {focusProduct.externalBarcode || "无"}</span>
+            <span>外部编码 {focusProduct.externalGoodsCode || "无"}</span>
+            {focusProduct.wdtMakeOrderCode || focusProduct.wdtSpecNo ? <span>当前编码 {focusProduct.wdtMakeOrderCode || focusProduct.wdtSpecNo}</span> : null}
+            {focusProduct.status ? <span>状态 {focusProduct.status}</span> : null}
+            {focusProduct.mainAvailableBefore !== undefined || focusProduct.nearExpiryAvailableBefore !== undefined ? (
+              <span>可发 主 {focusProduct.mainAvailableBefore ?? 0} / 临 {focusProduct.nearExpiryAvailableBefore ?? 0}</span>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
       <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
         名称候选只用于人工判断，不会自动通过；只有保存后的编号映射会在后续批次优先命中。
       </div>
+      <div className="mt-4 flex flex-wrap gap-2">
+        <button
+          className={activeView === "current" ? "rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground" : "rounded-md border border-border bg-card px-3 py-2 text-sm text-muted-foreground hover:bg-muted"}
+          onClick={() => setActiveView("current")}
+        >
+          当前行映射
+        </button>
+        <button
+          className={activeView === "library" ? "rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground" : "rounded-md border border-border bg-card px-3 py-2 text-sm text-muted-foreground hover:bg-muted"}
+          onClick={() => setActiveView("library")}
+        >
+          长期映射库
+        </button>
+      </div>
 
-      <div className="mt-4 grid gap-3 xl:grid-cols-[1fr_1fr]">
+      {activeView === "current" ? <div className="mt-4 grid gap-3 xl:grid-cols-[1fr_1fr]">
         <div className="rounded-md border border-border p-3">
           <h3 className="text-sm font-semibold">候选查询</h3>
           <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto]">
@@ -259,9 +334,9 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
             保存长期映射
           </Button>
         </div>
-      </div>
+      </div> : null}
 
-      <div className="mt-4">
+      {activeView === "current" ? (
         <div className="mb-4 rounded-md border border-border p-3">
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-semibold">待确认候选</h3>
@@ -298,7 +373,9 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
             {candidates.length === 0 ? <div className="text-sm text-muted-foreground">暂无待确认候选</div> : null}
           </div>
         </div>
+      ) : null}
 
+      <div className={activeView === "library" ? "mt-4" : "mt-4"}>
         <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
           <h3 className="text-sm font-semibold">已确认/待处理映射</h3>
           <div className="flex gap-2">

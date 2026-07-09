@@ -15,7 +15,7 @@ import type {
 } from "@jy-trade/shared";
 import { isConfirmedProductMappingMatch } from "@jy-trade/shared";
 
-import { ProductMappingPanel, type ProductMappingFocusProduct } from "./components/ProductMappingPanel.js";
+import { ProductMappingDialog, type ProductMappingFocusProduct } from "./components/ProductMappingPanel.js";
 import { ExternalProductPanel } from "./components/ExternalProductPanel.js";
 import { ReviewTable, type ReviewDraft } from "./components/ReviewTable.js";
 import { StoreAddressPanel } from "./components/StoreAddressPanel.js";
@@ -107,6 +107,7 @@ export function App() {
   const [developerMode, setDeveloperMode] = useState(false);
   const [mappingFocusQuery, setMappingFocusQuery] = useState("");
   const [mappingFocusProduct, setMappingFocusProduct] = useState<ProductMappingFocusProduct | null>(null);
+  const [mappingDialogOpen, setMappingDialogOpen] = useState(false);
   const [recheckingConfirmedOrder, setRecheckingConfirmedOrder] = useState(false);
   const [addressFocus] = useState<{
     store: MakeOrderReadinessDto["missingStores"][number];
@@ -696,15 +697,25 @@ export function App() {
 
   function locateProductMapping(line: ReviewLineDto) {
     const query = line.externalBarcode || line.externalGoodsName || line.wdtSpecNo;
-    setDeveloperMode(true);
     setMappingFocusQuery(query);
     setMappingFocusProduct({
       externalBarcode: line.externalBarcode,
       externalGoodsCode: line.externalGoodsCode,
       externalGoodsName: line.externalGoodsName,
+      wdtSpecNo: line.wdtSpecNo,
+      wdtMakeOrderCode: line.wdtMakeOrderCode,
+      status: line.status,
+      mainAvailableBefore: line.mainAvailableBefore,
+      nearExpiryAvailableBefore: line.nearExpiryAvailableBefore,
     });
-    setMessage("已定位到商品映射面板，保存长期映射后会自动刷新当前正式批次");
-    window.setTimeout(() => document.getElementById("product-mapping-panel")?.scrollIntoView?.({ behavior: "smooth", block: "start" }), 0);
+    setMappingDialogOpen(true);
+    setMessage("已打开商品映射，保存长期映射后会自动刷新当前批次");
+  }
+
+  function openProductMappingLibrary() {
+    setMappingFocusQuery("");
+    setMappingFocusProduct(null);
+    setMappingDialogOpen(true);
   }
 
   function updateDraft(lineId: string, patch: Partial<ReviewDraft>) {
@@ -919,14 +930,11 @@ export function App() {
                 isDeveloperMode={developerMode}
                 canReview={permissions.canReview}
                 stats={stats}
-                mappingFocusQuery={mappingFocusQuery}
-                mappingFocusProduct={mappingFocusProduct}
                 onBulkApprove={() => void bulkApprove()}
                 onDraftChange={updateDraft}
                 onFilterChange={setActiveFilter}
                 onLocateMapping={locateProductMapping}
-                onMappingConfirmed={rerunActiveBatchAfterMapping}
-                onMessage={setMessage}
+                onOpenMappingLibrary={openProductMappingLibrary}
                 onPriorityChange={togglePriority}
                 onQuickDecision={quickDecision}
                 onRecheckConfirmedOrder={() => void recheckConfirmedOrderBatch(activeBatch, { userTriggered: true })}
@@ -970,6 +978,15 @@ export function App() {
           </section>
         </section>
       </section>
+      <ProductMappingDialog
+        focusQuery={mappingFocusQuery}
+        focusProduct={mappingFocusProduct}
+        open={mappingDialogOpen}
+        sourceBatchId={activeBatch?.id ?? ""}
+        onClose={() => setMappingDialogOpen(false)}
+        onMessage={setMessage}
+        onConfirmed={rerunActiveBatchAfterMapping}
+      />
     </main>
   );
 }
@@ -1372,8 +1389,6 @@ function ReviewTab({
   errorsById,
   filteredLines,
   isDeveloperMode,
-  mappingFocusQuery,
-  mappingFocusProduct,
   canRecheckConfirmedOrder,
   canReview,
   recheckingConfirmedOrder,
@@ -1382,8 +1397,7 @@ function ReviewTab({
   onDraftChange,
   onFilterChange,
   onLocateMapping,
-  onMappingConfirmed,
-  onMessage,
+  onOpenMappingLibrary,
   onPriorityChange,
   onQuickDecision,
   onRecheckConfirmedOrder,
@@ -1396,8 +1410,6 @@ function ReviewTab({
   errorsById: Record<string, string>;
   filteredLines: ReviewLineDto[];
   isDeveloperMode: boolean;
-  mappingFocusQuery: string;
-  mappingFocusProduct: ProductMappingFocusProduct | null;
   canRecheckConfirmedOrder: boolean;
   canReview: boolean;
   recheckingConfirmedOrder: boolean;
@@ -1406,8 +1418,7 @@ function ReviewTab({
   onDraftChange: (lineId: string, patch: Partial<ReviewDraft>) => void;
   onFilterChange: (filter: FilterKey) => void;
   onLocateMapping: (line: ReviewLineDto) => void;
-  onMappingConfirmed: (mapping: ProductMappingDto) => Promise<void> | void;
-  onMessage: (message: string) => void;
+  onOpenMappingLibrary: () => void;
   onPriorityChange: (line: ReviewLineDto, priority: boolean) => void;
   onQuickDecision: (line: ReviewLineDto, decision: ReviewDecision) => void;
   onRecheckConfirmedOrder: () => void;
@@ -1442,6 +1453,10 @@ function ReviewTab({
           </div>
           {confirmedOrderMode ? (
             <div className="flex flex-wrap items-center gap-2">
+              <Button className="bg-muted text-muted-foreground hover:bg-muted/80" disabled={!activeBatch} onClick={onOpenMappingLibrary}>
+                <PackageSearch className="h-4 w-4" />
+                长期映射库
+              </Button>
               <Button disabled={!activeBatch || !canRecheckConfirmedOrder || recheckingConfirmedOrder} onClick={onRecheckConfirmedOrder}>
                 <RefreshCcw className={recheckingConfirmedOrder ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
                 {recheckingConfirmedOrder ? "校验中..." : "重新校验确定单"}
@@ -1449,6 +1464,10 @@ function ReviewTab({
             </div>
           ) : (
             <div className="flex flex-wrap items-center gap-2">
+              <Button className="bg-muted text-muted-foreground hover:bg-muted/80" disabled={!activeBatch} onClick={onOpenMappingLibrary}>
+                <PackageSearch className="h-4 w-4" />
+                长期映射库
+              </Button>
               <Button disabled={!activeBatch || !canReview} onClick={onBulkApprove}>
                 <CheckCheck className="h-4 w-4" />
                 批量通过可发项
@@ -1506,13 +1525,9 @@ function ReviewTab({
         )}
       </section>
       {isDeveloperMode ? (
-        <ProductMappingPanel
-          focusQuery={mappingFocusQuery}
-          focusProduct={mappingFocusProduct}
-          sourceBatchId={activeBatch?.id ?? ""}
-          onMessage={onMessage}
-          onConfirmed={onMappingConfirmed}
-        />
+        <div className="rounded-md border border-border bg-card p-3 text-sm text-muted-foreground">
+          开发者模式已开启：商品映射现在通过“长期映射库”或明细行按钮打开。
+        </div>
       ) : null}
     </section>
   );
