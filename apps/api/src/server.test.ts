@@ -817,6 +817,101 @@ describe("api server", () => {
     await app.close();
   });
 
+  it("imports confirmed orders as reviewed batches and exports make-order rows directly", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await seedSuccessfulGoodsCache(database);
+    await database.db.insert(storeAddresses).values({
+      id: "store-address-confirmed-order",
+      storeNo: "S001",
+      storeName: "Ole确定单门店",
+      normalizedStoreName: "ole确定单门店",
+      receiver: "确定单收件人",
+      phone: "18800005555",
+      address: "确定单测试地址",
+      isVip: 0,
+      note: "",
+      sourceSheet: "手工维护",
+      sourceRow: 0,
+      importedAt: "",
+      rawJson: "{}",
+      updatedByUserId: null,
+      updatedByUsername: null,
+      createdAt: "2026-07-03T00:00:00.000Z",
+      updatedAt: "2026-07-03T00:00:00.000Z",
+    });
+    await database.close();
+
+    const app = buildTestServer(databaseUrl);
+    const cookie = await loginCookie(app);
+    const imported = await app.inject({
+      method: "POST",
+      url: "/api/v1/confirmed-orders/import",
+      payload: {
+        fileName: "确定单.xlsx",
+        contentBase64: confirmedOrderWorkbookBase64(),
+      },
+      headers: { cookie },
+    });
+    expect(imported.statusCode).toBe(201);
+    expect(imported.json()).toMatchObject({
+      fileName: "确定单.xlsx",
+      sheetName: "确定单",
+      parsedRowCount: 2,
+      matchedRowCount: 2,
+      unmatchedRowCount: 0,
+      batch: { status: "reviewed", orderLineCount: 2 },
+    });
+
+    const linesResponse = await app.inject({
+      method: "GET",
+      url: `/api/v1/batches/${imported.json().batch.id}/review-lines`,
+      headers: { cookie },
+    });
+    expect(linesResponse.statusCode).toBe(200);
+    expect(linesResponse.json()).toHaveLength(2);
+    expect(linesResponse.json()[0]).toMatchObject({
+      orderNoticeNo: "NOTICE-1",
+      decision: "ship",
+      approvedShipQty: 2,
+      wdtSpecNo: "3282770392869",
+    });
+
+    const exportResponse = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${imported.json().batch.id}/exports`,
+      payload: { type: "wdt_import" },
+      headers: { cookie },
+    });
+    expect(exportResponse.statusCode).toBe(201);
+    expect(exportResponse.json()).toMatchObject({ type: "wdt_import", status: "ready" });
+
+    const downloadResponse = await app.inject({
+      method: "GET",
+      url: exportResponse.json().downloadUrl,
+      headers: { cookie },
+    });
+    const workbook = XLSX.read(downloadResponse.rawPayload, { type: "buffer" });
+    const rows = XLSX.utils.sheet_to_json<Record<string, string | number>>(workbook.Sheets["Sheet1"], { defval: "" });
+    expect(rows).toHaveLength(2);
+    expect(new Set(rows.map((row) => row["原始单号"]))).toHaveLength(2);
+    for (const row of rows) {
+      expect(String(row["原始单号"])).toMatch(/^JY\d{6}[A-Z0-9]{8}$/);
+      expect(row).toMatchObject({
+        收件人: "确定单收件人",
+        手机: "18800005555",
+        地址: "确定单测试地址",
+        客服备注: "NOTICE-1、NOTICE-2",
+        业务员: "admin",
+        商家编码: "3282770392869",
+      });
+    }
+    expect(rows.map((row) => row["货品数量"])).toEqual([2, 3]);
+    expect(rows.map((row) => row["货品价格"])).toEqual([12.5, 12.5]);
+    await app.close();
+  });
+
   it("reports make-order readiness from stored addresses", async () => {
     const app = buildTestServer();
     const { batch, lines, cookie } = await createReviewedBatch(app, "examples/mock_flow_mixed.json");
@@ -1002,9 +1097,8 @@ describe("api server", () => {
     const rows = XLSX.utils.sheet_to_json<Record<string, string | number>>(workbook.Sheets["Sheet1"], { defval: "" });
     const exportedLine = rows.find(
       (row) =>
-        row["原始单号"] === shipLine.orderNoticeNo
-        && row["商家编码"] === shipLine.wdtSpecNo
-        && row["平台货品名称"] === shipLine.externalGoodsName,
+        row["商家编码"] === shipLine.wdtSpecNo
+        && row["货品数量"] === 3,
     );
     expect(exportedLine).toMatchObject({
       收件人: "系统收货人更新",
@@ -1710,25 +1804,25 @@ describe("api server", () => {
 
     const exportedLine = rows.find(
       (row) =>
-        row["原始单号"] === shipLine.orderNoticeNo
-        && row["商家编码"] === shipLine.wdtSpecNo
-        && row["平台货品名称"] === shipLine.externalGoodsName,
+        row["商家编码"] === shipLine.wdtSpecNo
+        && row["货品数量"] === 3,
     );
+    expect(String(exportedLine?.["原始单号"] ?? "")).toMatch(/^JY\d{6}[A-Z0-9]{8}$/);
+    expect(exportedLine?.["原始单号"]).not.toBe(shipLine.orderNoticeNo);
+    expect(String(exportedLine?.["客服备注"] ?? "")).toContain(shipLine.orderNoticeNo);
     expect(exportedLine).toMatchObject({
       店铺名称: "KA运营B组",
-      原始单号: shipLine.orderNoticeNo,
       网名: "M7Z2OLE超市",
       发货条件: "挂账",
+      邮费: 0,
+      优惠金额: 0,
       仓库名称: "主仓",
       物流公司: "加密-京东",
-      客服备注: "门店优先处理",
-      打印备注: shipLine.orderNoticeNo,
       发票类型: "电子普通发票",
       发票抬头: "润家商业(深圳)有限公司",
+      业务员: "admin",
       商家编码: shipLine.wdtSpecNo,
       货品数量: 3,
-      平台货品名称: shipLine.externalGoodsName,
-      平台规格名称: shipLine.specName,
     });
     expect(exportedLine?.["收件人"]).not.toBe("");
     expect(exportedLine?.["手机"]).not.toBe("");
@@ -1736,9 +1830,8 @@ describe("api server", () => {
     expect(
       rows.some(
         (row) =>
-          row["原始单号"] === pendingLine.orderNoticeNo
-          && row["商家编码"] === pendingLine.wdtSpecNo
-          && row["平台货品名称"] === pendingLine.externalGoodsName,
+          row["商家编码"] === pendingLine.wdtSpecNo
+          && row["货品数量"] === pendingLine.approvedShipQty,
       ),
     ).toBe(false);
     await app.close();
@@ -2584,6 +2677,20 @@ function externalProductsWorkbookBase64() {
       ["命中套盒", "", "BUNDLE001", "690000000002", "1个", "99", "690000000003", "替换2个", "替换品", "10", "690000000004", "赠品1个"],
     ]),
     "套盒",
+  );
+  return (XLSX.write(workbook, { bookType: "xlsx", type: "buffer" }) as Buffer).toString("base64");
+}
+
+function confirmedOrderWorkbookBase64() {
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(
+    workbook,
+    XLSX.utils.aoa_to_sheet([
+      ["审批单号", "通知单号", "收货地编码", "收货地名称", "业务员", "截止日期", "商品编码", "商品条码", "商品名称", "规格", "订货数量", "实际发货数量", "合同进价", "主仓"],
+      ["APPROVAL-1", "NOTICE-1", "S001", "Ole确定单门店", "原业务员", "2026-07-12", "3282770392869", "2153722460015", "雅漾专研保湿修护面膜", "25ml*5", "2", "2", "12.5", ""],
+      ["APPROVAL-2", "NOTICE-2", "S001", "Ole确定单门店", "原业务员", "2026-07-12", "3282770392869", "2153722460015", "雅漾专研保湿修护面膜", "25ml*5", "3", "3", "12.5", ""],
+    ]),
+    "确定单",
   );
   return (XLSX.write(workbook, { bookType: "xlsx", type: "buffer" }) as Buffer).toString("base64");
 }

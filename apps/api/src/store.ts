@@ -13,6 +13,8 @@
   ImportExternalProductsRequest,
   ImportExternalProductsPreviewResponse,
   ImportExternalProductsResponse,
+  ImportConfirmedOrderRequest,
+  ImportConfirmedOrderResponse,
   ImportStoreAddressesRequest,
   ImportStoreAddressesPreviewResponse,
   ImportStoreAddressesResponse,
@@ -368,6 +370,71 @@ export function createSqliteStore(options: StoreOptions = {}) {
         statusCounts: result.statusCounts,
         matchCounts: result.matchCounts,
         stockQueriedCount: result.stockQueriedCount,
+      };
+    },
+
+    async importConfirmedOrder(input: ImportConfirmedOrderRequest, actor?: AuthUserDto): Promise<ImportConfirmedOrderResponse> {
+      await ready;
+      const extension = input.fileName.split(".").at(-1)?.toLowerCase() ?? "";
+      if (!["xls", "xlsx"].includes(extension)) {
+        throw new StoreValidationError("只支持导入 Excel 确定单文件");
+      }
+
+      const fileBuffer = Buffer.from(input.contentBase64, "base64");
+      const parsed = parseConfirmedOrderWorkbook(fileBuffer);
+      if (parsed.lines.length === 0) {
+        throw new StoreValidationError("确定单中没有可导入的发货明细");
+      }
+
+      await mkdir(configuredUploadDir, { recursive: true });
+      const storedName = `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID()}.${extension}`;
+      const filePath = resolve(configuredUploadDir, storedName);
+      await writeFile(filePath, fileBuffer);
+
+      const now = new Date().toISOString();
+      const goodsSpecs = (await database.db.select().from(wdtGoodsSpecs)).map(toLocalGoodsSpecCandidate);
+      const mappings = (await database.db.select().from(productMappings).where(eq(productMappings.status, "confirmed"))).map(toProductMappingCandidate);
+      const externalProductMatches = await loadExternalProductMatchIndex(database);
+      const buildResult = buildConfirmedOrderReview({
+        batchId: `batch-${randomUUID()}`,
+        lines: parsed.lines,
+        goodsSpecs,
+        mappings,
+        externalProductMatches,
+      });
+      const batch: BatchRow = {
+        id: buildResult.batchId,
+        filePath,
+        fileName: input.fileName.split(/[\\/]/).at(-1) ?? input.fileName,
+        mode: "production_api",
+        status: "reviewed",
+        orderLineCount: parsed.lines.length,
+        uniqueBarcodeCount: new Set(parsed.lines.map((line) => line.externalBarcode).filter(Boolean)).size,
+        matchedBarcodeCount: new Set(buildResult.reviewLines.filter((line) => line.matchStatus === "matched").map((line) => line.externalBarcode).filter(Boolean)).size,
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      await database.db.insert(batches).values(batch);
+      await replaceBatchReviewLines(database, batch.id, buildResult.reviewLines, now);
+      await replaceProductMatchCandidates(database, batch.id, buildResult.candidateRows, now);
+      await insertAuditLog(database, actor?.id ?? null, "confirmed_order.import", "batch", batch.id, {
+        fileName: batch.fileName,
+        sheetName: parsed.sheetName,
+        parsedRowCount: parsed.lines.length,
+        matchedRowCount: buildResult.reviewLines.filter((line) => line.matchStatus === "matched").length,
+        unmatchedRowCount: buildResult.reviewLines.filter((line) => line.matchStatus !== "matched").length,
+        skippedRowCount: parsed.skippedRowCount,
+      });
+
+      return {
+        batch: toBatchSummary(batch),
+        fileName: batch.fileName,
+        sheetName: parsed.sheetName,
+        parsedRowCount: parsed.lines.length,
+        matchedRowCount: buildResult.reviewLines.filter((line) => line.matchStatus === "matched").length,
+        unmatchedRowCount: buildResult.reviewLines.filter((line) => line.matchStatus !== "matched").length,
+        skippedRowCount: parsed.skippedRowCount,
       };
     },
 
@@ -865,7 +932,7 @@ export function createSqliteStore(options: StoreOptions = {}) {
             throw new StoreValidationError(makeOrderReadinessError(readiness));
           }
         }
-        const buffer = renderExportWorkbook(batch, type, lines, addressIndex);
+        const buffer = renderExportWorkbook(batch, type, lines, addressIndex, actor);
         await writeFile(filePath, buffer);
         await database.db
           .update(exportsTable)
@@ -1170,6 +1237,256 @@ interface GoodsCacheStatus {
   latestRunStatus: string;
   latestRunErrorMessage: string;
   allowStaleCache: boolean;
+}
+
+interface ParsedConfirmedOrderLine {
+  sourceFile: string;
+  sourceSheet: string;
+  excelRow: number;
+  orderApprovalNo: string;
+  orderNoticeNo: string;
+  storeNo: string;
+  storeName: string;
+  salesperson: string;
+  deadlineDate: string;
+  externalGoodsCode: string;
+  externalBarcode: string;
+  externalGoodsName: string;
+  spec: string;
+  orderQty: number;
+  shipQty: number;
+  contractPrice: string;
+  raw: Record<string, string>;
+}
+
+interface ConfirmedOrderParseResult {
+  sheetName: string;
+  lines: ParsedConfirmedOrderLine[];
+  skippedRowCount: number;
+}
+
+interface ExternalProductMatchCandidate {
+  type: ExternalProductDto["type"];
+  externalBarcode: string;
+  externalGoodsCode: string;
+  externalGoodsName: string;
+  wdtSpecNo: string;
+  wdtGoodsNo: string;
+  wdtGoodsName: string;
+  wdtSpecName: string;
+  wdtBarcode: string;
+}
+
+interface ConfirmedOrderReviewBuildResult {
+  batchId: string;
+  reviewLines: ReviewLineDto[];
+  candidateRows: RealReviewCandidateRow[];
+}
+
+function parseConfirmedOrderWorkbook(buffer: Buffer): ConfirmedOrderParseResult {
+  const workbook = XLSX.read(buffer, { type: "buffer", cellDates: false });
+  const sheetName = workbook.SheetNames.includes("确定单") ? "确定单" : workbook.SheetNames[0];
+  if (!sheetName) throw new StoreValidationError("确定单文件没有可读取的 Sheet");
+  const rows = XLSX.utils.sheet_to_json<Array<string | number>>(workbook.Sheets[sheetName], { header: 1, defval: "", raw: false });
+  if (rows.length < 2) throw new StoreValidationError("确定单文件没有明细行");
+
+  const headers = rows[0].map((value) => normalizeHeader(value));
+  const rawHeaders = buildRawHeaderLabels(rows[0]);
+  const indexes = {
+    orderApprovalNo: findHeaderIndex(headers, ["审批单号", "订货审批单号"]),
+    orderNoticeNo: findHeaderIndex(headers, ["通知单号", "订货通知单号"]),
+    storeNo: findHeaderIndex(headers, ["收货地编码", "门店", "门店编码"]),
+    storeName: findHeaderIndex(headers, ["收货地名称", "门店名称"]),
+    salesperson: findHeaderIndex(headers, ["业务员"]),
+    deadlineDate: findHeaderIndex(headers, ["截止日期"]),
+    externalGoodsCode: findHeaderIndex(headers, ["商品编码"]),
+    externalBarcode: findHeaderIndex(headers, ["商品条码"]),
+    externalGoodsName: findHeaderIndex(headers, ["商品名称"]),
+    spec: findHeaderIndex(headers, ["规格"]),
+    orderQty: findHeaderIndex(headers, ["订货数量", "订货数"]),
+    shipQty: findHeaderIndex(headers, ["实际发货数量", "发货数量"]),
+    contractPrice: findHeaderIndex(headers, ["合同进价", "含税合同进价"]),
+  };
+  const missing = [
+    ["通知单号", indexes.orderNoticeNo],
+    ["收货地名称", indexes.storeName],
+    ["商品编码", indexes.externalGoodsCode],
+    ["商品条码", indexes.externalBarcode],
+    ["商品名称", indexes.externalGoodsName],
+    ["实际发货数量", indexes.shipQty],
+  ].filter(([, index]) => Number(index) < 0).map(([name]) => name);
+  if (missing.length > 0) {
+    throw new StoreValidationError(`确定单缺少必要字段：${missing.join("、")}`);
+  }
+
+  const lines: ParsedConfirmedOrderLine[] = [];
+  let skippedRowCount = 0;
+  for (let rowIndex = 1; rowIndex < rows.length; rowIndex += 1) {
+    const row = rows[rowIndex];
+    if (!row.some((value) => cellText(value))) continue;
+    const shipQty = parseNumberCell(row[indexes.shipQty]);
+    if (!Number.isFinite(shipQty) || shipQty <= 0) {
+      skippedRowCount += 1;
+      continue;
+    }
+    const orderNoticeNo = cellText(row[indexes.orderNoticeNo]);
+    const externalBarcode = cellText(row[indexes.externalBarcode]);
+    const externalGoodsCode = cellText(row[indexes.externalGoodsCode]);
+    const externalGoodsName = cellText(row[indexes.externalGoodsName]);
+    const storeName = cellText(row[indexes.storeName]);
+    if (!orderNoticeNo || (!externalBarcode && !externalGoodsCode && !externalGoodsName) || !storeName) {
+      skippedRowCount += 1;
+      continue;
+    }
+    lines.push({
+      sourceFile: "",
+      sourceSheet: sheetName,
+      excelRow: rowIndex + 1,
+      orderApprovalNo: indexes.orderApprovalNo >= 0 ? cellText(row[indexes.orderApprovalNo]) : "",
+      orderNoticeNo,
+      storeNo: indexes.storeNo >= 0 ? cellText(row[indexes.storeNo]) : "",
+      storeName,
+      salesperson: indexes.salesperson >= 0 ? cellText(row[indexes.salesperson]) : "",
+      deadlineDate: indexes.deadlineDate >= 0 ? cellText(row[indexes.deadlineDate]) : "",
+      externalGoodsCode,
+      externalBarcode,
+      externalGoodsName,
+      spec: indexes.spec >= 0 ? cellText(row[indexes.spec]) : "",
+      orderQty: indexes.orderQty >= 0 ? parseNumberCell(row[indexes.orderQty]) : shipQty,
+      shipQty,
+      contractPrice: indexes.contractPrice >= 0 ? cellText(row[indexes.contractPrice]) : "",
+      raw: rawFieldsForRow(rawHeaders, row),
+    });
+  }
+
+  return { sheetName, lines, skippedRowCount };
+}
+
+function buildConfirmedOrderReview(options: {
+  batchId: string;
+  lines: ParsedConfirmedOrderLine[];
+  goodsSpecs: LocalGoodsSpecCandidate[];
+  mappings: ProductMappingCandidate[];
+  externalProductMatches: ExternalProductMatchCandidate[];
+}): ConfirmedOrderReviewBuildResult {
+  const reviewLines: ReviewLineDto[] = [];
+  const candidateRows: RealReviewCandidateRow[] = [];
+
+  for (const [index, line] of options.lines.entries()) {
+    const id = `${options.batchId}-line-${index + 1}`;
+    const decision = decideConfirmedOrderProductMatch(line, options);
+    if (decision.status === "ambiguous") {
+      candidateRows.push(...toRealReviewCandidateRows(id, confirmedLineToCandidateOrderLine(line), decision));
+    }
+    const matched = decision.status === "matched";
+    const suggestedShipQty = matched ? line.shipQty : 0;
+    const status: ReviewLineDto["status"] = matched ? "库存充足" : "未匹配";
+    const reviewDecision: ReviewLineDto["decision"] = matched ? "ship" : "pending";
+    reviewLines.push({
+      id,
+      batchId: options.batchId,
+      orderNoticeNo: line.orderNoticeNo,
+      excelRow: line.excelRow,
+      storeNo: line.storeNo,
+      storeName: line.storeName,
+      uploadTime: "",
+      orderApprovalNo: line.orderApprovalNo,
+      readingStatus: "",
+      deliveryMode: "",
+      orderStatus: "",
+      deliveryTarget: "",
+      category: "",
+      orderDate: "",
+      deadlineDate: line.deadlineDate,
+      salesperson: line.salesperson,
+      maker: "",
+      madeAt: "",
+      sourceReviewer: "",
+      externalGoodsCode: line.externalGoodsCode,
+      externalBarcode: line.externalBarcode,
+      externalGoodsName: line.externalGoodsName,
+      originalSpec: line.spec,
+      transportSpec: "",
+      orderBoxQty: "",
+      taxExcludedUnitPrice: "",
+      contractPrice: line.contractPrice,
+      taxIncludedUnitPrice: "",
+      discountRate: "",
+      shelfLifeDays: "",
+      receivedQty: "",
+      giftRate: "",
+      td: "",
+      da: "",
+      pd: "",
+      spd: "",
+      rebate: "",
+      orderRawJson: JSON.stringify(line.raw),
+      goodsName: decision.candidate?.goodsName ?? "",
+      specName: decision.candidate?.specName ?? "",
+      wdtSpecNo: decision.candidate?.specNo ?? "",
+      matchStatus: decision.status,
+      matchMessage: decision.message,
+      orderQty: line.orderQty,
+      mainAvailableBefore: 0,
+      nearExpiryAvailableBefore: 0,
+      suggestedShipQty,
+      status,
+      decision: reviewDecision,
+      approvedShipQty: matched ? line.shipQty : 0,
+      reason: matched ? "" : "确定单导入时商品未匹配，需补充商品映射",
+      priority: false,
+      priorityReason: "",
+    });
+  }
+
+  return { batchId: options.batchId, reviewLines, candidateRows };
+}
+
+function decideConfirmedOrderProductMatch(
+  line: ParsedConfirmedOrderLine,
+  sources: Pick<ConfirmedOrderReviewBuildResult, never> & {
+    goodsSpecs: LocalGoodsSpecCandidate[];
+    mappings: ProductMappingCandidate[];
+    externalProductMatches: ExternalProductMatchCandidate[];
+  },
+): ProductMatchDecision {
+  const input = {
+    barcode: line.externalBarcode,
+    goodsCode: line.externalGoodsCode,
+    goodsName: line.externalGoodsName,
+    specName: line.spec,
+  };
+  const direct = decideLocalProductMatch(input, { goodsSpecs: sources.goodsSpecs, mappings: sources.mappings });
+  if (direct.status === "matched") return direct;
+
+  const external = findExternalProductMatch(line, sources.externalProductMatches);
+  if (external) {
+    return {
+      status: "matched",
+      candidate: {
+        source: "suite",
+        goodsNo: external.wdtGoodsNo,
+        goodsName: external.wdtGoodsName || external.externalGoodsName,
+        specNo: external.wdtSpecNo,
+        specName: external.wdtSpecName,
+        barcodes: [external.wdtBarcode || external.externalBarcode].filter(Boolean),
+        score: 105,
+        basis: "code",
+      },
+      candidates: [],
+      message: `Matched by confirmed external ${external.type}`,
+    };
+  }
+
+  return direct;
+}
+
+function confirmedLineToCandidateOrderLine(line: ParsedConfirmedOrderLine) {
+  return {
+    externalBarcode: line.externalBarcode,
+    externalGoodsName: line.externalGoodsName,
+    externalGoodsCode: line.externalGoodsCode,
+  } as ReturnType<typeof loadOrderLines>[number];
 }
 
 async function buildRealReview(client: StockLookupClient, options: RealReviewBuildOptions): Promise<RealReviewBuildResult> {
@@ -1656,6 +1973,60 @@ function toProductMappingCandidate(row: ProductMappingRow): ProductMappingCandid
     wdtBarcode: row.wdtBarcode,
     status: row.status,
   };
+}
+
+async function loadExternalProductMatchIndex(database: DatabaseContext): Promise<ExternalProductMatchCandidate[]> {
+  const products = await database.db.select().from(externalProducts).where(eq(externalProducts.status, "confirmed"));
+  if (products.length === 0) return [];
+  const components = await database.db.select().from(externalProductComponents);
+  const componentsByProductId = new Map<string, ExternalProductComponentRow[]>();
+  for (const component of components) {
+    const rows = componentsByProductId.get(component.externalProductId) ?? [];
+    rows.push(component);
+    componentsByProductId.set(component.externalProductId, rows);
+  }
+
+  return products.map((product) => {
+    const primaryComponent = (componentsByProductId.get(product.id) ?? [])
+      .sort((a, b) => a.sortOrder - b.sortOrder)
+      .find((component) => component.role === "primary" && component.wdtSpecNo);
+    if (product.type === "bundle") {
+      const bundleCode = product.externalBarcode || product.externalGoodsCode;
+      return {
+        type: product.type,
+        externalBarcode: product.externalBarcode,
+        externalGoodsCode: product.externalGoodsCode,
+        externalGoodsName: product.externalGoodsName,
+        wdtSpecNo: bundleCode,
+        wdtGoodsNo: bundleCode,
+        wdtGoodsName: product.externalGoodsName,
+        wdtSpecName: "",
+        wdtBarcode: product.externalBarcode,
+      };
+    }
+    return {
+      type: product.type,
+      externalBarcode: product.externalBarcode,
+      externalGoodsCode: product.externalGoodsCode,
+      externalGoodsName: product.externalGoodsName,
+      wdtSpecNo: primaryComponent?.wdtSpecNo ?? product.externalBarcode ?? product.externalGoodsCode,
+      wdtGoodsNo: primaryComponent?.wdtGoodsNo ?? "",
+      wdtGoodsName: primaryComponent?.wdtGoodsName ?? product.externalGoodsName,
+      wdtSpecName: primaryComponent?.wdtSpecName ?? "",
+      wdtBarcode: primaryComponent?.wdtBarcode ?? product.externalBarcode,
+    };
+  }).filter((item) => item.wdtSpecNo);
+}
+
+function findExternalProductMatch(line: ParsedConfirmedOrderLine, candidates: ExternalProductMatchCandidate[]): ExternalProductMatchCandidate | undefined {
+  const barcode = normalizeIdentifier(line.externalBarcode);
+  const goodsCode = normalizeIdentifier(line.externalGoodsCode);
+  const goodsName = normalizeProductCandidateKeyPart(line.externalGoodsName);
+  return candidates.find((candidate) => {
+    if (barcode && barcode === normalizeIdentifier(candidate.externalBarcode)) return true;
+    if (goodsCode && goodsCode === normalizeIdentifier(candidate.externalGoodsCode)) return true;
+    return Boolean(goodsName && goodsName === normalizeProductCandidateKeyPart(candidate.externalGoodsName));
+  });
 }
 
 function summarizeWarehouseStock(rows: WdtStockRow[], settings: WarehouseUsageSettingsDto): WarehouseStockSummary {
@@ -2583,13 +2954,14 @@ interface MakeOrderAddressIndex {
 }
 
 function renderExportWorkbook(
-  _batch: BatchRow,
+  batch: BatchRow,
   type: ExportDto["type"],
   lines: ReviewLineDto[],
   addressIndex?: MakeOrderAddressIndex,
+  actor?: AuthUserDto,
 ) {
   if (type === "wdt_import") {
-    return renderWdtImportWorkbook(lines, addressIndex ?? emptyMakeOrderAddressIndex());
+    return renderWdtImportWorkbook(batch, lines, addressIndex ?? emptyMakeOrderAddressIndex(), actor);
   }
   if (type === "review") {
     return renderReviewExportWorkbook(lines);
@@ -2661,11 +3033,12 @@ function renderConfirmedExportRow(line: ReviewLineDto) {
   return CONFIRMED_EXPORT_HEADERS.map((header) => values[header] ?? "");
 }
 
-function renderWdtImportWorkbook(lines: ReviewLineDto[], addressIndex: MakeOrderAddressIndex) {
+function renderWdtImportWorkbook(batch: BatchRow, lines: ReviewLineDto[], addressIndex: MakeOrderAddressIndex, actor?: AuthUserDto) {
   const exportLines = lines.filter((line) => line.decision === "ship" && line.approvedShipQty > 0);
+  const context = buildWdtImportContext(batch, exportLines);
   const rows = [
     [...WDT_IMPORT_HEADERS],
-    ...exportLines.map((line) => renderWdtImportRow(line, addressIndex, WDT_IMPORT_HEADERS)),
+    ...exportLines.map((line) => renderWdtImportRow(line, addressIndex, WDT_IMPORT_HEADERS, context, actor)),
   ];
   const workbook = XLSX.utils.book_new();
   const sheet = XLSX.utils.aoa_to_sheet(rows);
@@ -2673,29 +3046,85 @@ function renderWdtImportWorkbook(lines: ReviewLineDto[], addressIndex: MakeOrder
   return XLSX.write(workbook, { bookType: "biff8", type: "buffer" }) as Buffer;
 }
 
-function renderWdtImportRow(line: ReviewLineDto, addressIndex: MakeOrderAddressIndex, headers: readonly string[]) {
+function renderWdtImportRow(
+  line: ReviewLineDto,
+  addressIndex: MakeOrderAddressIndex,
+  headers: readonly string[],
+  context: WdtImportContext,
+  actor?: AuthUserDto,
+) {
   const makeOrderAddress = findMakeOrderAddress(addressIndex, line);
   const values: Partial<Record<string, string | number>> = {
     店铺名称: WDT_IMPORT_DEFAULTS.shopName,
-    原始单号: line.orderNoticeNo,
+    原始单号: context.originalNoByLineId.get(line.id) ?? line.id,
     收件人: makeOrderAddress?.receiver ?? "",
     网名: WDT_IMPORT_DEFAULTS.customerName,
     地址: makeOrderAddress?.address ?? "",
     手机: makeOrderAddress?.phone ?? "",
     发货条件: WDT_IMPORT_DEFAULTS.deliveryCondition,
+    邮费: 0,
+    优惠金额: 0,
     仓库名称: WDT_IMPORT_DEFAULTS.warehouseName,
     物流公司: WDT_IMPORT_DEFAULTS.logisticsCompany,
-    客服备注: line.reason,
-    打印备注: line.orderNoticeNo,
+    客服备注: context.customerRemarkByStoreKey.get(makeOrderStoreKey(line)) ?? line.orderNoticeNo,
     发票类型: WDT_IMPORT_DEFAULTS.invoiceType,
     发票抬头: WDT_IMPORT_DEFAULTS.invoiceTitle,
+    业务员: actor?.username ?? "",
     商家编码: line.wdtSpecNo,
     货品数量: line.approvedShipQty,
-    平台货品名称: line.externalGoodsName,
-    平台规格名称: line.specName,
+    货品价格: numberOrBlank(line.contractPrice),
   };
 
   return headers.map((header) => values[header] ?? "");
+}
+
+interface WdtImportContext {
+  originalNoByLineId: Map<string, string>;
+  customerRemarkByStoreKey: Map<string, string>;
+}
+
+function buildWdtImportContext(batch: BatchRow, lines: ReviewLineDto[]): WdtImportContext {
+  const originalNoByLineId = new Map<string, string>();
+  const customerRemarkByStoreKey = new Map<string, string>();
+  const noticeNosByStoreKey = new Map<string, string[]>();
+
+  for (const [index, line] of lines.entries()) {
+    originalNoByLineId.set(line.id, buildWdtOriginalNo(batch, index + 1));
+    const storeKey = makeOrderStoreKey(line);
+    const noticeNos = noticeNosByStoreKey.get(storeKey) ?? [];
+    if (line.orderNoticeNo && !noticeNos.includes(line.orderNoticeNo)) {
+      noticeNos.push(line.orderNoticeNo);
+    }
+    noticeNosByStoreKey.set(storeKey, noticeNos);
+  }
+
+  for (const [storeKey, noticeNos] of noticeNosByStoreKey) {
+    customerRemarkByStoreKey.set(storeKey, noticeNos.join("、"));
+  }
+
+  return { originalNoByLineId, customerRemarkByStoreKey };
+}
+
+function buildWdtOriginalNo(batch: BatchRow, sequence: number) {
+  const datePart = compactDate(batch.createdAt);
+  const batchPart = batch.id.replace(/^batch-/, "").replace(/[^a-z0-9]/gi, "").slice(0, 4).toUpperCase().padEnd(4, "0");
+  const sequencePart = sequence.toString(36).toUpperCase().padStart(4, "0");
+  return `JY${datePart}${batchPart}${sequencePart}`.slice(0, 16);
+}
+
+function compactDate(isoTime: string) {
+  const date = new Date(isoTime);
+  if (Number.isNaN(date.getTime())) return new Date().toISOString().slice(2, 10).replaceAll("-", "");
+  return date.toISOString().slice(2, 10).replaceAll("-", "");
+}
+
+function makeOrderStoreKey(line: Pick<ReviewLineDto, "storeNo" | "storeName">) {
+  return line.storeNo ? `no:${normalizeStoreNo(line.storeNo)}` : `name:${normalizeStoreName(line.storeName)}`;
+}
+
+function numberOrBlank(value: string) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : "";
 }
 
 function buildMakeOrderReadiness(batchId: string, lines: ReviewLineDto[], addressIndex: MakeOrderAddressIndex): MakeOrderReadinessDto {
@@ -3569,6 +3998,11 @@ function normalizeStoreName(value: unknown) {
 
 function cellText(value: unknown) {
   return value === undefined || value === null ? "" : String(value).trim();
+}
+
+function parseNumberCell(value: unknown) {
+  const text = cellText(value).replaceAll(",", "");
+  return text ? Number(text) : 0;
 }
 
 function sheetNameFor(type: ExportDto["type"]) {

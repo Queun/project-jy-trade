@@ -11,6 +11,7 @@ import {
   ReviewDecisionDtoSchema,
   UpdateReviewLinePriorityRequestSchema,
   ImportStoreAddressesRequestSchema,
+  ImportConfirmedOrderRequestSchema,
   ImportExternalProductsRequestSchema,
   RunMockReviewRequestSchema,
   RunRealReviewRequestSchema,
@@ -23,6 +24,7 @@ import {
   type ExternalProductDto,
   type ImportExternalProductsPreviewResponse,
   type ImportExternalProductsResponse,
+  type ImportConfirmedOrderResponse,
   type MakeOrderReadinessDto,
   type ImportStoreAddressesPreviewResponse,
   type ImportStoreAddressesResponse,
@@ -163,6 +165,13 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     const result = await store.runRealReview(batchId, body, getCurrentUser(request));
     if (!result) return reply.code(404).send({ message: "Batch not found" });
     return result;
+  });
+
+  app.post("/api/v1/confirmed-orders/import", async (request, reply): Promise<ImportConfirmedOrderResponse> => {
+    requireRole(request, ["admin", "operator"]);
+    const body = ImportConfirmedOrderRequestSchema.parse(request.body ?? {});
+    const result = await store.importConfirmedOrder(body, getCurrentUser(request));
+    return reply.code(201).send(result);
   });
 
   app.post("/api/v1/batches/:batchId/actions/bulk-approve", async (request, reply) => {

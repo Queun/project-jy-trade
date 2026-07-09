@@ -4,6 +4,7 @@ import type {
   AuthUserDto,
   BatchSummary,
   ExportDto,
+  ImportConfirmedOrderResponse,
   MakeOrderReadinessDto,
   ProductMappingDto,
   ReviewDecision,
@@ -341,6 +342,42 @@ export function App() {
     setMessage(`真实初审已完成，已查询库存 ${review.stockQueriedCount ?? 0} 个规格`);
     setSuccessNotice("订单导入成功，已生成初审结果");
     await refreshBatches();
+  }
+
+  async function importConfirmedOrder() {
+    if (!pendingOrderUpload) {
+      setMessage("请先选择确定单文件");
+      return;
+    }
+    setMessage("正在导入确定单...");
+    const response = await fetch("/api/v1/confirmed-orders/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        fileName: pendingOrderUpload.name,
+        contentBase64: await fileToBase64(pendingOrderUpload),
+      }),
+    });
+    if (!response.ok) {
+      const error = await response.json();
+      setMessage(error.message ?? "确定单导入失败");
+      return;
+    }
+    const result = (await response.json()) as ImportConfirmedOrderResponse;
+    setPendingOrderUpload(null);
+    setSelectedOrderFileName("");
+    setActiveBatch(result.batch);
+    setActiveTab(result.unmatchedRowCount > 0 ? "review" : "export");
+    const lines = await fetchReviewLines(result.batch.id);
+    if (!lines) return;
+    setReviewLines(sortReviewLines(lines));
+    setDraftById(buildDrafts(lines));
+    setErrorsById({});
+    await refreshExports(result.batch.id);
+    await refreshMakeOrderReadiness(result.batch.id);
+    await refreshBatches();
+    setMessage(`确定单已导入：${result.parsedRowCount} 行，已匹配 ${result.matchedRowCount} 行，异常 ${result.unmatchedRowCount} 行`);
+    setSuccessNotice(result.unmatchedRowCount > 0 ? "确定单导入成功，请先处理商品异常" : "确定单导入成功，可以直接进入做单");
   }
 
   async function rerunActiveBatchAfterMapping(mapping: ProductMappingDto) {
@@ -737,6 +774,7 @@ export function App() {
                 onMockFileChange={setMockFile}
                 onOrderFileChange={setOrderFile}
                 onRunDemo={() => void runMockBatch()}
+                onRunConfirmed={() => void importConfirmedOrder()}
                 onRunReal={() => void runRealBatch()}
               />
             ) : null}
@@ -1059,6 +1097,7 @@ function ImportTab({
   onMockFileChange,
   onOrderFileChange,
   onRunDemo,
+  onRunConfirmed,
   onRunReal,
 }: {
   goodsSyncError: string;
@@ -1072,9 +1111,11 @@ function ImportTab({
   onMockFileChange: (value: string) => void;
   onOrderFileChange: (value: string) => void;
   onRunDemo: () => void;
+  onRunConfirmed: () => void;
   onRunReal: () => void;
 }) {
   const canRunReal = canImport && goodsSyncRun?.status === "success" && (isDeveloperMode || Boolean(selectedOrderFileName));
+  const canRunConfirmed = canImport && Boolean(selectedOrderFileName);
 
   return (
     <section className="mt-4">
@@ -1122,6 +1163,10 @@ function ImportTab({
             <FileSpreadsheet className="h-4 w-4" />
             导入新订单
           </Button>
+          <Button className="bg-muted text-muted-foreground hover:bg-muted/80" disabled={!canRunConfirmed} onClick={onRunConfirmed}>
+            <PackageCheck className="h-4 w-4" />
+            导入确定单
+          </Button>
           {isDeveloperMode ? (
             <Button className="bg-muted text-muted-foreground hover:bg-muted/80" onClick={onRunDemo}>
               <RefreshCcw className="h-4 w-4" />
@@ -1133,7 +1178,7 @@ function ImportTab({
           <PermissionHint message="当前账号不能导入订单，请联系管理员或切换到运营账号。" />
         ) : goodsSyncRun?.status !== "success" ? (
           <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
-            商品档案同步可用后才能导入新订单。请在设置中刷新状态，或先完成商品档案同步。
+            商品档案同步可用后才能导入新订单；确定单可先导入，但商品匹配依赖本地已有商品档案和人工映射。
           </div>
         ) : !selectedOrderFileName && !isDeveloperMode ? (
           <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">

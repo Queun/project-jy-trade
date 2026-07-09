@@ -276,6 +276,23 @@ export const RunRealReviewRequestSchema = z.object({
 });
 export type RunRealReviewRequest = z.infer<typeof RunRealReviewRequestSchema>;
 
+export const ImportConfirmedOrderRequestSchema = z.object({
+  fileName: z.string().min(1),
+  contentBase64: z.string().min(1),
+});
+export type ImportConfirmedOrderRequest = z.infer<typeof ImportConfirmedOrderRequestSchema>;
+
+export const ImportConfirmedOrderResponseSchema = z.object({
+  batch: BatchSummarySchema,
+  fileName: z.string(),
+  sheetName: z.string(),
+  parsedRowCount: z.number(),
+  matchedRowCount: z.number(),
+  unmatchedRowCount: z.number(),
+  skippedRowCount: z.number(),
+});
+export type ImportConfirmedOrderResponse = z.infer<typeof ImportConfirmedOrderResponseSchema>;
+
 export const WarehouseUsageSettingsDtoSchema = z.object({
   includeMainWarehouse: z.boolean(),
   includeNearExpiryWarehouse: z.boolean(),

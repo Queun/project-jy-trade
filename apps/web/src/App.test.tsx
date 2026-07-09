@@ -208,7 +208,7 @@ describe("App", () => {
     fireEvent.change(await screen.findByLabelText("选择文件"), { target: { files: [file] } });
     const importButton = await screen.findByRole("button", { name: "导入新订单" });
     expect(importButton).toBeDisabled();
-    expect(screen.getByText("商品档案同步可用后才能导入新订单。请在设置中刷新状态，或先完成商品档案同步。")).toBeInTheDocument();
+    expect(screen.getByText("商品档案同步可用后才能导入新订单；确定单可先导入，但商品匹配依赖本地已有商品档案和人工映射。")).toBeInTheDocument();
   });
 
   it("requires selecting an order file before import", async () => {
@@ -445,6 +445,20 @@ describe("App", () => {
     expect(currentBatch.mode).toBe("production_api");
   });
 
+  it("imports confirmed orders directly into make-order flow", async () => {
+    render(<App />);
+
+    const file = new File(["confirmed"], "确定单.xlsx", { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    fireEvent.change(await screen.findByLabelText("选择文件"), { target: { files: [file] } });
+    fireEvent.click(await screen.findByRole("button", { name: "导入确定单" }));
+
+    expect(await screen.findByText("确定单导入成功，可以直接进入做单")).toBeInTheDocument();
+    expect(screen.getByText(/确定单已导入/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "生成做单表格" })).toBeInTheDocument();
+    expect(currentBatch.status).toBe("reviewed");
+    expect(currentBatch.fileName).toBe("确定单.xlsx");
+  });
+
   it("blocks real review when latest goods sync failed", async () => {
     latestGoodsSyncRun = goodsSyncRun({ status: "failed", errorMessage: "fetch failed" });
     render(<App />);
@@ -453,7 +467,7 @@ describe("App", () => {
     const importButton = await screen.findByRole("button", { name: "导入新订单" });
 
     expect(importButton).toBeDisabled();
-    expect(screen.getByText("商品档案同步可用后才能导入新订单。请在设置中刷新状态，或先完成商品档案同步。")).toBeInTheDocument();
+    expect(screen.getByText("商品档案同步可用后才能导入新订单；确定单可先导入，但商品匹配依赖本地已有商品档案和人工映射。")).toBeInTheDocument();
     expect(fetch).not.toHaveBeenCalledWith(
       "/api/v1/batches",
       expect.objectContaining({
@@ -805,6 +819,29 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
   if (url === "/api/v1/order-files" && method === "POST") {
     const body = JSON.parse(String(init?.body));
     return json({ filePath: `inputs/uploads/${body.fileName}`, fileName: body.fileName }, 201);
+  }
+  if (url === "/api/v1/confirmed-orders/import" && method === "POST") {
+    if (!["admin", "operator"].includes(currentUser.role)) return json({ message: "Forbidden" }, 403);
+    const body = JSON.parse(String(init?.body));
+    currentBatch = {
+      ...currentBatch,
+      fileName: body.fileName,
+      mode: "production_api",
+      status: "reviewed",
+      orderLineCount: lines.length,
+      matchedBarcodeCount: lines.filter((line) => line.matchStatus === "matched").length,
+      uniqueBarcodeCount: new Set(lines.map((line) => line.externalBarcode)).size,
+    };
+    batchDeleted = false;
+    return json({
+      batch: currentBatch,
+      fileName: body.fileName,
+      sheetName: "确定单",
+      parsedRowCount: lines.length,
+      matchedRowCount: lines.length,
+      unmatchedRowCount: 0,
+      skippedRowCount: 0,
+    }, 201);
   }
   if (url.includes("/review-lines") && method === "GET") {
     return failReviewLines ? json({ message: "审核明细读取失败" }, 500) : json(lines);
