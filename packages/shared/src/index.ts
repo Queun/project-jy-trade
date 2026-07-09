@@ -10,6 +10,9 @@ export const BatchStatusSchema = z.enum([
 ]);
 export type BatchStatus = z.infer<typeof BatchStatusSchema>;
 
+export const BatchSourceTypeSchema = z.enum(["order", "confirmed_order"]);
+export type BatchSourceType = z.infer<typeof BatchSourceTypeSchema>;
+
 export const MatchStatusSchema = z.enum(["matched", "not_found", "ambiguous", "api_error"]);
 export type MatchStatus = z.infer<typeof MatchStatusSchema>;
 
@@ -56,6 +59,7 @@ export const BatchSummarySchema = z.object({
   id: z.string(),
   fileName: z.string(),
   mode: z.enum(["mock", "test_api", "production_api"]),
+  sourceType: BatchSourceTypeSchema.default("order"),
   status: BatchStatusSchema,
   orderLineCount: z.number(),
   uniqueBarcodeCount: z.number(),

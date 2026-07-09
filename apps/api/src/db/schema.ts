@@ -23,6 +23,7 @@ export const batches = sqliteTable(
     filePath: text("file_path").notNull(),
     fileName: text("file_name").notNull(),
     mode: text("mode", { enum: ["mock", "test_api", "production_api"] }).notNull(),
+    sourceType: text("source_type", { enum: ["order", "confirmed_order"] }).notNull().default("order"),
     status: text("status", {
       enum: ["uploaded", "matched", "inventory_synced", "review_generated", "reviewed", "exported"],
     }).notNull(),

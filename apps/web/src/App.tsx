@@ -388,7 +388,33 @@ export function App() {
   }
 
   async function rerunActiveBatchAfterMapping(mapping: ProductMappingDto) {
-    if (!activeBatch || activeBatch.mode !== "production_api") {
+    if (!activeBatch) {
+      setMessage("长期商品映射已保存，正式订单重新初审后生效");
+      return;
+    }
+    if (activeBatch.sourceType === "confirmed_order") {
+      setMessage("长期商品映射已保存，正在重新校验当前确定单...");
+      const rebuildResponse = await fetch(`/api/v1/batches/${activeBatch.id}/actions/rebuild-confirmed-order`, { method: "POST" });
+      if (!rebuildResponse.ok) {
+        const error = await rebuildResponse.json();
+        setMessage(error.message ?? "映射已保存，但当前确定单重新校验失败");
+        return;
+      }
+      const rebuild = (await rebuildResponse.json()) as ImportConfirmedOrderResponse;
+      setActiveBatch(rebuild.batch);
+      const lines = await fetchReviewLines(rebuild.batch.id);
+      if (!lines) return;
+      setReviewLines(sortReviewLines(lines));
+      setDraftById(buildDrafts(lines));
+      setErrorsById({});
+      await refreshExports(rebuild.batch.id);
+      await refreshMakeOrderReadiness(rebuild.batch.id);
+      await refreshBatches();
+      setMessage(`长期商品映射已保存，当前确定单已重新校验：${mapping.externalBarcode || mapping.externalGoodsCode || mapping.externalGoodsName}`);
+      setSuccessNotice(rebuild.unmatchedRowCount > 0 ? "确定单已重新校验，请处理做单字段提醒" : "映射已应用到当前确定单");
+      return;
+    }
+    if (activeBatch.mode !== "production_api") {
       setMessage("长期商品映射已保存，正式订单重新初审后生效");
       return;
     }
@@ -1302,6 +1328,7 @@ function ReviewTab({
   onSubmitReview: () => void;
 }) {
   const hasRows = filteredLines.length > 0;
+  const confirmedOrderMode = activeBatch?.sourceType === "confirmed_order";
 
   return (
     <section className="mt-4 min-w-0 space-y-4">
@@ -1321,19 +1348,23 @@ function ReviewTab({
       <section className="rounded-md border border-border bg-card p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h2 className="text-lg font-semibold">审核发货</h2>
-            <p className="text-sm text-muted-foreground">{activeBatch ? "确认本批次发货数量和原因" : "请先选择或导入批次"}</p>
+            <h2 className="text-lg font-semibold">{confirmedOrderMode ? "确定单校验" : "审核发货"}</h2>
+            <p className="text-sm text-muted-foreground">
+              {activeBatch ? (confirmedOrderMode ? "核对确定单做单字段和商品提醒" : "确认本批次发货数量和原因") : "请先选择或导入批次"}
+            </p>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button disabled={!activeBatch || !canReview} onClick={onBulkApprove}>
-              <CheckCheck className="h-4 w-4" />
-              批量通过可发项
-            </Button>
-            <Button disabled={!activeBatch || !canReview} onClick={onSubmitReview}>
-              <Send className="h-4 w-4" />
-              提交审核完成
-            </Button>
-          </div>
+          {confirmedOrderMode ? null : (
+            <div className="flex flex-wrap items-center gap-2">
+              <Button disabled={!activeBatch || !canReview} onClick={onBulkApprove}>
+                <CheckCheck className="h-4 w-4" />
+                批量通过可发项
+              </Button>
+              <Button disabled={!activeBatch || !canReview} onClick={onSubmitReview}>
+                <Send className="h-4 w-4" />
+                提交审核完成
+              </Button>
+            </div>
+          )}
         </div>
         {!canReview ? <PermissionHint className="mb-3" message="当前账号不能审核发货，请联系管理员或切换到审核账号。" /> : null}
         {activeBatch ? (

@@ -44,7 +44,7 @@ import { buildMockReview } from "@jy-trade/workflow";
 import { and, desc, eq, like, or } from "drizzle-orm";
 import * as XLSX from "xlsx";
 import { randomBytes, randomUUID, scrypt as scryptCallback } from "node:crypto";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 
@@ -218,6 +218,7 @@ export function createSqliteStore(options: StoreOptions = {}) {
         filePath,
         fileName: input.fileName ?? input.filePath.split(/[\\/]/).at(-1) ?? input.filePath,
         mode: input.mode,
+        sourceType: "order",
         status: "uploaded",
         orderLineCount: 0,
         uniqueBarcodeCount: 0,
@@ -317,11 +318,14 @@ export function createSqliteStore(options: StoreOptions = {}) {
 
     async runRealReview(batchId: string, input: RunRealReviewRequest, actor?: AuthUserDto) {
       await ready;
+      const batch = await getBatchRow(database, batchId);
+      if (!batch) return undefined;
+      if (batch.sourceType === "confirmed_order") {
+        throw new StoreValidationError("确定单批次不支持普通订单初审，请使用确定单重新校验");
+      }
       if (!stockClient) {
         throw new StoreValidationError("WDT stock client is not configured");
       }
-      const batch = await getBatchRow(database, batchId);
-      if (!batch) return undefined;
 
       const cacheStatus = await getGoodsCacheStatus(database, Boolean(input.allowStaleCache));
       assertReviewGoodsCacheUsable(cacheStatus);
@@ -416,6 +420,7 @@ export function createSqliteStore(options: StoreOptions = {}) {
         filePath,
         fileName: input.fileName.split(/[\\/]/).at(-1) ?? input.fileName,
         mode: "production_api",
+        sourceType: "confirmed_order",
         status: "reviewed",
         orderLineCount: parsed.lines.length,
         uniqueBarcodeCount: new Set(parsed.lines.map((line) => line.externalBarcode).filter(Boolean)).size,
@@ -438,6 +443,73 @@ export function createSqliteStore(options: StoreOptions = {}) {
 
       return {
         batch: toBatchSummary(batch),
+        fileName: batch.fileName,
+        sheetName: parsed.sheetName,
+        parsedRowCount: parsed.lines.length,
+        matchedRowCount: buildResult.reviewLines.filter((line) => line.matchStatus === "matched").length,
+        unmatchedRowCount: buildResult.reviewLines.filter((line) => line.matchStatus !== "matched").length,
+        skippedRowCount: parsed.skippedRowCount,
+      };
+    },
+
+    async rebuildConfirmedOrder(batchId: string, actor?: AuthUserDto): Promise<ImportConfirmedOrderResponse | undefined> {
+      await ready;
+      const batch = await getBatchRow(database, batchId);
+      if (!batch) return undefined;
+      if (batch.sourceType !== "confirmed_order") {
+        throw new StoreValidationError("当前批次不是确定单批次，不能使用确定单重新校验");
+      }
+
+      const parsed = parseConfirmedOrderWorkbook(await readFile(batch.filePath));
+      if (parsed.lines.length === 0) {
+        throw new StoreValidationError("确定单中没有可导入的发货明细");
+      }
+
+      const now = new Date().toISOString();
+      const goodsSpecs = (await database.db.select().from(wdtGoodsSpecs)).map(toLocalGoodsSpecCandidate);
+      const suites = await loadLocalSuiteCandidates(database);
+      const mappings = (await database.db.select().from(productMappings).where(eq(productMappings.status, "confirmed"))).map(toProductMappingCandidate);
+      const externalProductMatches = await loadExternalProductMatchIndex(database);
+      const buildResult = buildConfirmedOrderReview({
+        batchId: batch.id,
+        lines: parsed.lines,
+        goodsSpecs,
+        suites,
+        mappings,
+        externalProductMatches,
+      });
+      const updatedBatch: BatchRow = {
+        ...batch,
+        status: "reviewed",
+        orderLineCount: parsed.lines.length,
+        uniqueBarcodeCount: new Set(parsed.lines.map((line) => line.externalBarcode).filter(Boolean)).size,
+        matchedBarcodeCount: new Set(buildResult.reviewLines.filter((line) => line.matchStatus === "matched").map((line) => line.externalBarcode).filter(Boolean)).size,
+        updatedAt: now,
+      };
+
+      await database.db
+        .update(batches)
+        .set({
+          status: updatedBatch.status,
+          orderLineCount: updatedBatch.orderLineCount,
+          uniqueBarcodeCount: updatedBatch.uniqueBarcodeCount,
+          matchedBarcodeCount: updatedBatch.matchedBarcodeCount,
+          updatedAt: updatedBatch.updatedAt,
+        })
+        .where(eq(batches.id, batch.id));
+      await replaceBatchReviewLines(database, batch.id, buildResult.reviewLines, now);
+      await replaceProductMatchCandidates(database, batch.id, buildResult.candidateRows, now);
+      await insertAuditLog(database, actor?.id ?? null, "confirmed_order.rebuild", "batch", batch.id, {
+        fileName: batch.fileName,
+        sheetName: parsed.sheetName,
+        parsedRowCount: parsed.lines.length,
+        matchedRowCount: buildResult.reviewLines.filter((line) => line.matchStatus === "matched").length,
+        unmatchedRowCount: buildResult.reviewLines.filter((line) => line.matchStatus !== "matched").length,
+        skippedRowCount: parsed.skippedRowCount,
+      });
+
+      return {
+        batch: toBatchSummary(updatedBatch),
         fileName: batch.fileName,
         sheetName: parsed.sheetName,
         parsedRowCount: parsed.lines.length,
@@ -2181,6 +2253,7 @@ function toBatchSummary(batch: BatchRow): BatchSummary {
     id: batch.id,
     fileName: batch.fileName,
     mode: batch.mode,
+    sourceType: batch.sourceType,
     status: batch.status,
     orderLineCount: batch.orderLineCount,
     uniqueBarcodeCount: batch.uniqueBarcodeCount,
@@ -2536,11 +2609,20 @@ function isPathWithin(baseDir: string, targetPath: string): boolean {
 
 async function prepareDatabase(database: DatabaseContext, bootstrapUsers: Array<{ username: string; password: string; role: AuthUserDto["role"] }>) {
   await database.ready;
+  await ensureBatchColumns(database);
   await ensureReviewLineColumns(database);
   await ensureWarehouseUsageSettings(database);
   await ensureStoreAddresses(database);
   await ensureExternalProducts(database);
   await ensureBootstrapUsers(database, bootstrapUsers);
+}
+
+async function ensureBatchColumns(database: DatabaseContext) {
+  const columns = await getTableColumns(database, "batches");
+  if (columns.length === 0) return;
+  if (!columns.includes("source_type")) {
+    await database.client.execute("alter table batches add column source_type text not null default 'order'");
+  }
 }
 
 async function ensureReviewLineColumns(database: DatabaseContext) {

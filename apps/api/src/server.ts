@@ -176,6 +176,14 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     return reply.code(201).send(result);
   });
 
+  app.post("/api/v1/batches/:batchId/actions/rebuild-confirmed-order", async (request, reply): Promise<ImportConfirmedOrderResponse | unknown> => {
+    requireRole(request, ["admin", "operator"]);
+    const { batchId } = request.params as { batchId: string };
+    const result = await store.rebuildConfirmedOrder(batchId, getCurrentUser(request));
+    if (!result) return reply.code(404).send({ message: "Batch not found" });
+    return result;
+  });
+
   app.post("/api/v1/batches/:batchId/actions/bulk-approve", async (request, reply) => {
     requireRole(request, ["admin", "reviewer"]);
     const { batchId } = request.params as { batchId: string };

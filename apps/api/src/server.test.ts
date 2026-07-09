@@ -914,6 +914,87 @@ describe("api server", () => {
     await app.close();
   });
 
+  it("rebuilds confirmed-order batches with newly saved product mappings", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await seedSuccessfulGoodsCache(database);
+    await database.close();
+
+    const app = buildTestServer(databaseUrl);
+    const cookie = await loginCookie(app);
+    const imported = await app.inject({
+      method: "POST",
+      url: "/api/v1/confirmed-orders/import",
+      payload: {
+        fileName: "确定单-待映射.xlsx",
+        contentBase64: confirmedOrderWorkbookBase64({
+          goodsCode: "5372246",
+          barcode: "2153659180017",
+          goodsName: "待映射确定单商品",
+        }),
+      },
+      headers: { cookie },
+    });
+    expect(imported.statusCode).toBe(201);
+    expect(imported.json()).toMatchObject({
+      unmatchedRowCount: 2,
+      batch: { sourceType: "confirmed_order", status: "reviewed" },
+    });
+
+    const rejectedRealReview = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${imported.json().batch.id}/actions/run-real-review`,
+      payload: { allowStaleCache: false },
+      headers: { cookie },
+    });
+    expect(rejectedRealReview.statusCode).toBe(400);
+    expect(rejectedRealReview.json().message).toContain("确定单批次不支持普通订单初审");
+
+    const mapping = await app.inject({
+      method: "POST",
+      url: "/api/v1/product-mappings",
+      payload: {
+        externalBarcode: "2153659180017",
+        externalGoodsCode: "5372246",
+        externalGoodsName: "待映射确定单商品",
+        wdtSpecNo: "3282770392869",
+        sourceBatchId: imported.json().batch.id,
+        note: "确定单补映射",
+      },
+      headers: { cookie },
+    });
+    expect(mapping.statusCode).toBe(201);
+
+    const rebuilt = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${imported.json().batch.id}/actions/rebuild-confirmed-order`,
+      headers: { cookie },
+    });
+    expect(rebuilt.statusCode).toBe(200);
+    expect(rebuilt.json()).toMatchObject({
+      matchedRowCount: 2,
+      unmatchedRowCount: 0,
+      batch: { sourceType: "confirmed_order", status: "reviewed" },
+    });
+
+    const linesResponse = await app.inject({
+      method: "GET",
+      url: `/api/v1/batches/${imported.json().batch.id}/review-lines`,
+      headers: { cookie },
+    });
+    expect(linesResponse.statusCode).toBe(200);
+    expect(linesResponse.json()).toHaveLength(2);
+    expect(linesResponse.json()[0]).toMatchObject({
+      matchStatus: "matched",
+      decision: "ship",
+      approvedShipQty: 2,
+      wdtSpecNo: "3282770392869",
+    });
+
+    await app.close();
+  });
+
   it("reports make-order readiness from stored addresses", async () => {
     const app = buildTestServer();
     const { batch, lines, cookie } = await createReviewedBatch(app, "examples/mock_flow_mixed.json");
@@ -2898,14 +2979,19 @@ function externalProductsWorkbookBase64() {
   return (XLSX.write(workbook, { bookType: "xlsx", type: "buffer" }) as Buffer).toString("base64");
 }
 
-function confirmedOrderWorkbookBase64() {
+function confirmedOrderWorkbookBase64(
+  options: { goodsCode?: string; barcode?: string; goodsName?: string } = {},
+) {
+  const goodsCode = options.goodsCode ?? "3282770392869";
+  const barcode = options.barcode ?? "2153722460015";
+  const goodsName = options.goodsName ?? "雅漾专研保湿修护面膜";
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(
     workbook,
     XLSX.utils.aoa_to_sheet([
       ["审批单号", "通知单号", "收货地编码", "收货地名称", "业务员", "截止日期", "商品编码", "商品条码", "商品名称", "规格", "订货数量", "实际发货数量", "合同进价", "主仓"],
-      ["APPROVAL-1", "NOTICE-1", "S001", "Ole确定单门店", "原业务员", "2026-07-12", "3282770392869", "2153722460015", "雅漾专研保湿修护面膜", "25ml*5", "2", "2", "12.5", ""],
-      ["APPROVAL-2", "NOTICE-2", "S001", "Ole确定单门店", "原业务员", "2026-07-12", "3282770392869", "2153722460015", "雅漾专研保湿修护面膜", "25ml*5", "3", "3", "12.5", ""],
+      ["APPROVAL-1", "NOTICE-1", "S001", "Ole确定单门店", "原业务员", "2026-07-12", goodsCode, barcode, goodsName, "25ml*5", "2", "2", "12.5", ""],
+      ["APPROVAL-2", "NOTICE-2", "S001", "Ole确定单门店", "原业务员", "2026-07-12", goodsCode, barcode, goodsName, "25ml*5", "3", "3", "12.5", ""],
     ]),
     "确定单",
   );

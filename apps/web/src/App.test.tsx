@@ -22,6 +22,7 @@ const batch: BatchSummary = {
   id: "batch-1",
   fileName: "订货通知单 .xls",
   mode: "mock",
+  sourceType: "order",
   status: "review_generated",
   orderLineCount: 3,
   uniqueBarcodeCount: 3,
@@ -484,6 +485,7 @@ describe("App", () => {
     expect(screen.getByText(/确定单已导入/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "生成做单表格" })).toBeInTheDocument();
     expect(currentBatch.status).toBe("reviewed");
+    expect(currentBatch.sourceType).toBe("confirmed_order");
     expect(currentBatch.fileName).toBe("确定单.xlsx");
   });
 
@@ -724,7 +726,7 @@ describe("App", () => {
   });
 
   it("refreshes the active production batch after confirming a product mapping", async () => {
-    currentBatch = { ...currentBatch, mode: "production_api" };
+    currentBatch = { ...currentBatch, mode: "production_api", sourceType: "order" };
     mappingRows = [];
     lines = [
       reviewLine({
@@ -772,6 +774,45 @@ describe("App", () => {
     expect(await screen.findByText("映射已应用到当前批次")).toBeInTheDocument();
     await waitFor(() => expect(lines.every((line) => line.matchStatus === "matched")).toBe(true));
     expect(screen.queryByText("Name candidate needs human confirmation")).not.toBeInTheDocument();
+  });
+
+  it("rechecks confirmed-order batches after confirming a product mapping", async () => {
+    currentBatch = { ...currentBatch, mode: "production_api", sourceType: "confirmed_order", status: "reviewed" };
+    mappingRows = [];
+    lines = [
+      reviewLine({
+        id: "line-confirmed-order-1",
+        externalBarcode: "2153722460015",
+        externalGoodsCode: "5372246",
+        externalGoodsName: "雅漾专研保湿修护面膜25ml*5片",
+        goodsName: "",
+        wdtSpecNo: "",
+        matchStatus: "ambiguous",
+        matchMessage: "Name candidate needs human confirmation",
+        status: "未匹配",
+        decision: "pending",
+        suggestedShipQty: 0,
+        approvedShipQty: 0,
+      }),
+    ];
+    render(<App />);
+    await clickBatch();
+    fireEvent.click(screen.getByRole("checkbox", { name: "开发者模式" }));
+    switchToReviewTab();
+
+    expect(await screen.findByText("确定单校验")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "提交审核完成" })).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: /雅漾专研保湿修护面膜25ml/ }));
+    fireEvent.click(screen.getByRole("button", { name: "保存长期映射" }));
+
+    await waitFor(() =>
+      expect(fetch).toHaveBeenCalledWith("/api/v1/batches/batch-1/actions/rebuild-confirmed-order", {
+        method: "POST",
+      }),
+    );
+    expect(fetch).not.toHaveBeenCalledWith("/api/v1/batches/batch-1/actions/run-real-review", expect.anything());
+    expect(await screen.findByText("映射已应用到当前确定单")).toBeInTheDocument();
+    await waitFor(() => expect(lines.every((line) => line.matchStatus === "matched" && line.decision === "ship")).toBe(true));
   });
 });
 
@@ -854,7 +895,7 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
   if (url === "/api/v1/batches" && method === "GET") return json(batchDeleted ? [] : [currentBatch]);
   if (url === "/api/v1/batches" && method === "POST") {
     const body = JSON.parse(String(init?.body));
-    currentBatch = { ...currentBatch, fileName: body.fileName ?? currentBatch.fileName, mode: body.mode ?? currentBatch.mode };
+    currentBatch = { ...currentBatch, fileName: body.fileName ?? currentBatch.fileName, mode: body.mode ?? currentBatch.mode, sourceType: "order" };
     batchDeleted = false;
     return json(currentBatch, 201);
   }
@@ -874,6 +915,7 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
       ...currentBatch,
       fileName: body.fileName,
       mode: "production_api",
+      sourceType: "confirmed_order",
       status: "reviewed",
       orderLineCount: lines.length,
       matchedBarcodeCount: lines.filter((line) => line.matchStatus === "matched").length,
@@ -1166,6 +1208,37 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
     return json(saved, 201);
   }
   if (url.includes("/actions/run-mock-review")) return json({ batch: currentBatch });
+  if (url.includes("/actions/rebuild-confirmed-order")) {
+    const confirmed = mappingRows.find((mapping) => mapping.status === "confirmed");
+    if (confirmed) {
+      lines = lines.map((line) =>
+        reviewLineMatchesMapping(line, confirmed)
+          ? {
+              ...line,
+              goodsName: confirmed.wdtGoodsName,
+              specName: confirmed.wdtSpecName,
+              wdtSpecNo: confirmed.wdtSpecNo,
+              matchStatus: "matched",
+              matchMessage: confirmedProductMappingMatchMessage,
+              suggestedShipQty: line.orderQty,
+              status: "库存充足",
+              decision: "ship",
+              approvedShipQty: line.orderQty,
+              reason: "",
+            }
+          : line,
+      );
+    }
+    return json({
+      batch: currentBatch,
+      fileName: currentBatch.fileName,
+      sheetName: "确定单",
+      parsedRowCount: lines.length,
+      matchedRowCount: lines.filter((line) => line.matchStatus === "matched").length,
+      unmatchedRowCount: lines.filter((line) => line.matchStatus !== "matched").length,
+      skippedRowCount: 0,
+    });
+  }
   if (url.includes("/actions/run-real-review")) {
     const confirmed = mappingRows.find((mapping) => mapping.status === "confirmed");
     if (confirmed) {
