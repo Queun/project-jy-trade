@@ -914,6 +914,97 @@ describe("api server", () => {
     await app.close();
   });
 
+  it("checks confirmed-order stock without changing make-order quantities", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await seedSuccessfulGoodsCache(database);
+    await database.db.insert(storeAddresses).values({
+      id: "store-address-confirmed-order-stock",
+      storeNo: "S001",
+      storeName: "Ole确定单门店",
+      normalizedStoreName: "ole确定单门店",
+      receiver: "确定单收件人",
+      phone: "18800005555",
+      address: "确定单测试地址",
+      isVip: 0,
+      note: "",
+      sourceSheet: "手工维护",
+      sourceRow: 0,
+      importedAt: "",
+      rawJson: "{}",
+      updatedByUserId: null,
+      updatedByUsername: null,
+      createdAt: "2026-07-03T00:00:00.000Z",
+      updatedAt: "2026-07-03T00:00:00.000Z",
+    });
+    await database.close();
+
+    const queriedSpecNos: string[] = [];
+    const stockClient: StockLookupClient = {
+      async queryStock(specNo) {
+        queriedSpecNos.push(specNo);
+        return {
+          status: 0,
+          data: {
+            total_count: 1,
+            detail_list: [
+              { spec_no: specNo, warehouse_no: "MAIN-A", warehouse_name: "OLE主仓", available_stock: "4", stock_num: 999 },
+            ],
+          },
+        };
+      },
+    };
+    const app = buildTestServer(databaseUrl, undefined, stockClient);
+    const cookie = await loginCookie(app);
+    const imported = await app.inject({
+      method: "POST",
+      url: "/api/v1/confirmed-orders/import",
+      payload: {
+        fileName: "确定单-库存提示.xlsx",
+        contentBase64: confirmedOrderWorkbookBase64(),
+      },
+      headers: { cookie },
+    });
+    expect(imported.statusCode).toBe(201);
+    expect(queriedSpecNos).toEqual(["3282770392869"]);
+
+    const linesResponse = await app.inject({
+      method: "GET",
+      url: `/api/v1/batches/${imported.json().batch.id}/review-lines`,
+      headers: { cookie },
+    });
+    expect(linesResponse.statusCode).toBe(200);
+    expect(linesResponse.json()).toHaveLength(2);
+    for (const line of linesResponse.json()) {
+      expect(line).toMatchObject({
+        decision: "ship",
+        status: "部分满足",
+        mainAvailableBefore: 4,
+        nearExpiryAvailableBefore: 0,
+        reason: "确定单库存可能不足：本批该商品需 5，可发 4。仅提示，不调整做单数量",
+      });
+    }
+    expect(linesResponse.json().map((line: { suggestedShipQty: number; approvedShipQty: number }) => [line.suggestedShipQty, line.approvedShipQty])).toEqual([[2, 2], [3, 3]]);
+
+    const exportResponse = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${imported.json().batch.id}/exports`,
+      payload: { type: "wdt_import" },
+      headers: { cookie },
+    });
+    expect(exportResponse.statusCode).toBe(201);
+    const downloadResponse = await app.inject({
+      method: "GET",
+      url: exportResponse.json().downloadUrl,
+      headers: { cookie },
+    });
+    const workbook = XLSX.read(downloadResponse.rawPayload, { type: "buffer" });
+    const rows = XLSX.utils.sheet_to_json<Record<string, string | number>>(workbook.Sheets["Sheet1"], { defval: "" });
+    expect(rows.map((row) => row["货品数量"])).toEqual([2, 3]);
+    await app.close();
+  });
+
   it("rebuilds confirmed-order batches with newly saved product mappings", async () => {
     const databaseUrl = testDatabaseUrl();
     const database = createDatabaseContext(databaseUrl);
@@ -2399,7 +2490,7 @@ describe("api server", () => {
           data: {
             total_count: 1,
             detail_list: [
-              { spec_no: specNo, warehouse_no: "001", warehouse_name: "主仓", stock_num: 999, 可发库存: "1" },
+              { spec_no: specNo, warehouse_no: "MAIN-A", warehouse_name: "OLE主仓", stock_num: 999, available_stock: "1" },
             ],
           },
         };

@@ -54,8 +54,19 @@ export interface WdtStockRow {
   defect?: boolean;
   stock_num?: number;
   available_send_stock?: number;
+  available_send_num?: number | string;
+  available_stock?: number | string;
+  available_num?: number | string;
+  available_qty?: number | string;
+  available?: number | string;
+  avail_stock?: number | string;
+  avail_num?: number | string;
   库存?: number | string;
   可发库存?: number | string;
+  可发数?: number | string;
+  可发数量?: number | string;
+  可发?: number | string;
+  可发货量?: number | string;
 }
 
 export interface WdtStockResponse {
@@ -67,7 +78,21 @@ export interface WdtStockResponse {
 }
 
 export function getWdtAvailableSendStock(row: WdtStockRow): number {
-  return numberFromWdtCell(row.available_send_stock ?? row.可发库存);
+  return numberFromWdtCell(
+    row.available_send_stock
+      ?? row.available_send_num
+      ?? row.available_stock
+      ?? row.available_num
+      ?? row.available_qty
+      ?? row.available
+      ?? row.avail_stock
+      ?? row.avail_num
+      ?? row.可发库存
+      ?? row.可发数
+      ?? row.可发数量
+      ?? row.可发
+      ?? row.可发货量,
+  );
 }
 
 export function getWdtStockNum(row: WdtStockRow): number {

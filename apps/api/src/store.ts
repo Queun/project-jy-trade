@@ -407,13 +407,16 @@ export function createSqliteStore(options: StoreOptions = {}) {
       const suites = await loadLocalSuiteCandidates(database);
       const mappings = (await database.db.select().from(productMappings).where(eq(productMappings.status, "confirmed"))).map(toProductMappingCandidate);
       const externalProductMatches = await loadExternalProductMatchIndex(database);
-      const buildResult = buildConfirmedOrderReview({
+      const warehouseSettings = toWarehouseUsageSettingsDto(await getWarehouseUsageSettingsRow(database));
+      const buildResult = await buildConfirmedOrderReview({
         batchId: `batch-${randomUUID()}`,
         lines: parsed.lines,
         goodsSpecs,
         suites,
         mappings,
         externalProductMatches,
+        stockClient,
+        warehouseSettings,
       });
       const batch: BatchRow = {
         id: buildResult.batchId,
@@ -439,6 +442,7 @@ export function createSqliteStore(options: StoreOptions = {}) {
         matchedRowCount: buildResult.reviewLines.filter((line) => line.matchStatus === "matched").length,
         unmatchedRowCount: buildResult.reviewLines.filter((line) => line.matchStatus !== "matched").length,
         skippedRowCount: parsed.skippedRowCount,
+        stockQueriedCount: buildResult.stockQueriedCount,
       });
 
       return {
@@ -470,13 +474,16 @@ export function createSqliteStore(options: StoreOptions = {}) {
       const suites = await loadLocalSuiteCandidates(database);
       const mappings = (await database.db.select().from(productMappings).where(eq(productMappings.status, "confirmed"))).map(toProductMappingCandidate);
       const externalProductMatches = await loadExternalProductMatchIndex(database);
-      const buildResult = buildConfirmedOrderReview({
+      const warehouseSettings = toWarehouseUsageSettingsDto(await getWarehouseUsageSettingsRow(database));
+      const buildResult = await buildConfirmedOrderReview({
         batchId: batch.id,
         lines: parsed.lines,
         goodsSpecs,
         suites,
         mappings,
         externalProductMatches,
+        stockClient,
+        warehouseSettings,
       });
       const updatedBatch: BatchRow = {
         ...batch,
@@ -506,6 +513,7 @@ export function createSqliteStore(options: StoreOptions = {}) {
         matchedRowCount: buildResult.reviewLines.filter((line) => line.matchStatus === "matched").length,
         unmatchedRowCount: buildResult.reviewLines.filter((line) => line.matchStatus !== "matched").length,
         skippedRowCount: parsed.skippedRowCount,
+        stockQueriedCount: buildResult.stockQueriedCount,
       });
 
       return {
@@ -1373,6 +1381,7 @@ interface ConfirmedOrderReviewBuildResult {
   batchId: string;
   reviewLines: ReviewLineDto[];
   candidateRows: RealReviewCandidateRow[];
+  stockQueriedCount: number;
 }
 
 function parseConfirmedOrderWorkbook(buffer: Buffer): ConfirmedOrderParseResult {
@@ -1454,26 +1463,47 @@ function parseConfirmedOrderWorkbook(buffer: Buffer): ConfirmedOrderParseResult 
   return { sheetName, lines, skippedRowCount };
 }
 
-function buildConfirmedOrderReview(options: {
+async function buildConfirmedOrderReview(options: {
   batchId: string;
   lines: ParsedConfirmedOrderLine[];
   goodsSpecs: LocalGoodsSpecCandidate[];
   suites: LocalSuiteCandidate[];
   mappings: ProductMappingCandidate[];
   externalProductMatches: ExternalProductMatchCandidate[];
-}): ConfirmedOrderReviewBuildResult {
+  stockClient?: StockLookupClient;
+  warehouseSettings: WarehouseUsageSettingsDto;
+}): Promise<ConfirmedOrderReviewBuildResult> {
   const reviewLines: ReviewLineDto[] = [];
   const candidateRows: RealReviewCandidateRow[] = [];
+  const matchedInputs = options.lines.map((line, index) => ({
+    line,
+    id: `${options.batchId}-line-${index + 1}`,
+    decision: decideConfirmedOrderProductMatch(line, options),
+  }));
+  const specNos = matchedInputs.map((input) => input.decision.candidate?.specNo ?? "").filter(Boolean);
+  const stockLookup = options.stockClient
+    ? await queryWarehouseStockSummaries(specNos, options.stockClient, options.warehouseSettings)
+    : { stockBySpecNo: new Map<string, WarehouseStockSummary>(), stockErrorsBySpecNo: new Map<string, string>(), stockQueriedCount: 0 };
+  const demandBySpecNo = new Map<string, number>();
 
-  for (const [index, line] of options.lines.entries()) {
-    const id = `${options.batchId}-line-${index + 1}`;
-    const decision = decideConfirmedOrderProductMatch(line, options);
+  for (const input of matchedInputs) {
+    const specNo = input.decision.status === "matched" ? input.decision.candidate?.specNo ?? "" : "";
+    if (specNo) {
+      demandBySpecNo.set(specNo, (demandBySpecNo.get(specNo) ?? 0) + input.line.shipQty);
+    }
+  }
+
+  for (const { line, id, decision } of matchedInputs) {
     if (decision.status === "ambiguous") {
       candidateRows.push(...toRealReviewCandidateRows(id, confirmedLineToCandidateOrderLine(line), decision));
     }
     const matched = decision.status === "matched";
+    const specNo = matched ? decision.candidate?.specNo ?? "" : "";
+    const stock = specNo ? stockLookup.stockBySpecNo.get(specNo) : undefined;
+    const stockError = specNo ? stockLookup.stockErrorsBySpecNo.get(specNo) : undefined;
+    const demandedQty = specNo ? demandBySpecNo.get(specNo) ?? line.shipQty : line.shipQty;
     const suggestedShipQty = matched ? line.shipQty : 0;
-    const status: ReviewLineDto["status"] = matched ? "库存充足" : "未匹配";
+    const status = confirmedOrderStatusFor(decision.status, demandedQty, stock);
     const reviewDecision: ReviewLineDto["decision"] = matched ? "ship" : "pending";
     reviewLines.push({
       id,
@@ -1516,24 +1546,49 @@ function buildConfirmedOrderReview(options: {
       orderRawJson: JSON.stringify(line.raw),
       goodsName: decision.candidate?.goodsName ?? "",
       specName: decision.candidate?.specName ?? "",
-      wdtSpecNo: decision.candidate?.specNo ?? "",
-      wdtMakeOrderCode: decision.candidate?.makeOrderCode ?? decision.candidate?.specNo ?? "",
+      wdtSpecNo: specNo,
+      wdtMakeOrderCode: decision.candidate?.makeOrderCode ?? specNo,
       matchStatus: decision.status,
       matchMessage: decision.message,
       orderQty: line.orderQty,
-      mainAvailableBefore: 0,
-      nearExpiryAvailableBefore: 0,
+      mainAvailableBefore: stock?.mainAvailableStock ?? 0,
+      nearExpiryAvailableBefore: stock?.nearExpiryAvailableStock ?? 0,
       suggestedShipQty,
       status,
       decision: reviewDecision,
       approvedShipQty: matched ? line.shipQty : 0,
-      reason: matched ? "" : "确定单导入时商品未匹配，需补充商品映射",
+      reason: confirmedOrderReasonFor({ matched, status, demandedQty, stock, stockError }),
       priority: false,
       priorityReason: "",
     });
   }
 
-  return { batchId: options.batchId, reviewLines, candidateRows };
+  return { batchId: options.batchId, reviewLines, candidateRows, stockQueriedCount: stockLookup.stockQueriedCount };
+}
+
+function confirmedOrderStatusFor(
+  matchStatus: ReviewLineDto["matchStatus"],
+  demandedQty: number,
+  stock: WarehouseStockSummary | undefined,
+): ReviewLineDto["status"] {
+  if (matchStatus !== "matched") return "未匹配";
+  if (!stock) return "库存充足";
+  if (stock.usableAvailableStock >= demandedQty) return "库存充足";
+  if (stock.usableAvailableStock > 0) return "部分满足";
+  return "库存不足";
+}
+
+function confirmedOrderReasonFor(options: {
+  matched: boolean;
+  status: ReviewLineDto["status"];
+  demandedQty: number;
+  stock: WarehouseStockSummary | undefined;
+  stockError: string | undefined;
+}) {
+  if (!options.matched) return "确定单导入时商品未匹配，需补充商品映射";
+  if (options.stockError) return `确定单库存查询失败：${options.stockError}。仅提示，不调整做单数量`;
+  if (!options.stock || options.status === "库存充足") return "";
+  return `确定单库存可能不足：本批该商品需 ${options.demandedQty}，可发 ${options.stock.usableAvailableStock}。仅提示，不调整做单数量`;
 }
 
 function decideConfirmedOrderProductMatch(
@@ -2172,10 +2227,10 @@ function summarizeWarehouseStock(rows: WdtStockRow[], settings: WarehouseUsageSe
 
   for (const row of rows) {
     const available = getWdtAvailableSendStock(row);
-    const warehouseNo = row.warehouse_no ?? "";
-    if (warehouseNo === "001") mainAvailableStock += available;
-    else if (warehouseNo === "LINQI") nearExpiryAvailableStock += available;
-    else if (warehouseNo === "CIPIN" || row.defect === true) defectAvailableStock += available;
+    const warehouseType = classifyWdtWarehouse(row);
+    if (warehouseType === "main") mainAvailableStock += available;
+    else if (warehouseType === "near_expiry") nearExpiryAvailableStock += available;
+    else if (warehouseType === "defect") defectAvailableStock += available;
     else otherAvailableStock += available;
   }
 
@@ -2196,6 +2251,47 @@ function summarizeWarehouseStock(rows: WdtStockRow[], settings: WarehouseUsageSe
       .filter(Boolean)
       .join("; "),
   };
+}
+
+async function queryWarehouseStockSummaries(
+  specNos: string[],
+  stockClient: StockLookupClient,
+  settings: WarehouseUsageSettingsDto,
+): Promise<{
+  stockBySpecNo: Map<string, WarehouseStockSummary>;
+  stockErrorsBySpecNo: Map<string, string>;
+  stockQueriedCount: number;
+}> {
+  const stockBySpecNo = new Map<string, WarehouseStockSummary>();
+  const stockErrorsBySpecNo = new Map<string, string>();
+  let stockQueriedCount = 0;
+
+  await Promise.all([...new Set(specNos.filter(Boolean))].map(async (specNo) => {
+    try {
+      const response = await stockClient.queryStock(specNo);
+      if (response.status && response.status !== 0) {
+        stockErrorsBySpecNo.set(specNo, `status=${response.status}`);
+        return;
+      }
+      stockBySpecNo.set(specNo, summarizeWarehouseStock(response.data?.detail_list ?? [], settings));
+      stockQueriedCount += 1;
+    } catch (error) {
+      stockErrorsBySpecNo.set(specNo, error instanceof Error ? error.message : "库存查询失败");
+    }
+  }));
+
+  return { stockBySpecNo, stockErrorsBySpecNo, stockQueriedCount };
+}
+
+type WarehouseStockType = "main" | "near_expiry" | "defect" | "other";
+
+function classifyWdtWarehouse(row: WdtStockRow): WarehouseStockType {
+  const warehouseNo = (row.warehouse_no ?? "").trim().toUpperCase();
+  const warehouseName = (row.warehouse_name ?? "").trim();
+  if (warehouseNo === "001" || warehouseName.includes("主仓")) return "main";
+  if (warehouseNo === "LINQI" || warehouseName.includes("临期")) return "near_expiry";
+  if (warehouseNo === "CIPIN" || row.defect === true || warehouseName.includes("次品")) return "defect";
+  return "other";
 }
 
 function countBy(items: string[]): Record<string, number> {
@@ -2609,10 +2705,10 @@ async function queryStockBySpecNo(
 }
 
 function isIncludedWarehouseStock(row: WdtStockRow, settings: WarehouseUsageSettingsDto) {
-  const warehouseNo = row.warehouse_no ?? "";
-  if (warehouseNo === "001") return settings.includeMainWarehouse;
-  if (warehouseNo === "LINQI") return settings.includeNearExpiryWarehouse;
-  if (warehouseNo === "CIPIN" || row.defect === true) return settings.includeDefectWarehouse;
+  const warehouseType = classifyWdtWarehouse(row);
+  if (warehouseType === "main") return settings.includeMainWarehouse;
+  if (warehouseType === "near_expiry") return settings.includeNearExpiryWarehouse;
+  if (warehouseType === "defect") return settings.includeDefectWarehouse;
   return settings.includeOtherWarehouses;
 }
 

@@ -39,8 +39,8 @@ function statusText(status: ReviewLineDto["status"], confirmedOrderMode = false)
   if (!confirmedOrderMode) return status;
   if (status === "库存充足") return "可做单";
   if (status === "未匹配") return "缺商家编码";
-  if (status === "库存不足") return "需复核";
-  return "待确认数量";
+  if (status === "库存不足") return "库存不足";
+  return "库存可能不足";
 }
 
 function decisionTone(decision: ReviewDecision) {
@@ -73,12 +73,6 @@ function isManualMappingLine(line: ReviewLineDto) {
 }
 
 function reviewRowTone(line: ReviewLineDto, decision: ReviewDecision) {
-  if (decision === "ship") {
-    return {
-      key: "ship",
-      rowClass: "bg-emerald-50/70 hover:bg-emerald-50",
-    };
-  }
   if (decision === "do_not_ship") {
     return {
       key: "do_not_ship",
@@ -101,6 +95,12 @@ function reviewRowTone(line: ReviewLineDto, decision: ReviewDecision) {
     return {
       key: "partial",
       rowClass: "bg-amber-50/70 hover:bg-amber-50",
+    };
+  }
+  if (decision === "ship") {
+    return {
+      key: "ship",
+      rowClass: "bg-emerald-50/70 hover:bg-emerald-50",
     };
   }
   if (line.status === "库存充足") {
@@ -168,11 +168,9 @@ export function ReviewTable({
         <div className="min-w-28 text-sm">
           <div>{confirmedOrderMode ? "确定" : "订货"} {row.original.orderQty}</div>
           <div className="mt-1 text-muted-foreground">{confirmedOrderMode ? "做单" : "建议"} {row.original.suggestedShipQty}</div>
-          {confirmedOrderMode ? null : (
-            <div className="mt-1 text-muted-foreground">
-              主 {row.original.mainAvailableBefore} / 临 {row.original.nearExpiryAvailableBefore}
-            </div>
-          )}
+          <div className="mt-1 text-muted-foreground">
+            可发 主 {row.original.mainAvailableBefore} / 临 {row.original.nearExpiryAvailableBefore}
+          </div>
         </div>
       ),
     },
