@@ -114,6 +114,19 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
     onMessage(status === "disabled" ? "商品映射已禁用" : "商品映射已标记复查");
   }
 
+  async function reviewMapping(mapping: ProductMappingDto) {
+    setDraft({
+      externalBarcode: mapping.externalBarcode,
+      externalGoodsCode: mapping.externalGoodsCode,
+      externalGoodsName: mapping.externalGoodsName,
+      wdtSpecNo: mapping.wdtSpecNo,
+      note: mapping.note || "复查长期映射",
+    });
+    setSpecQuery(mapping.wdtGoodsName || mapping.wdtSpecNo);
+    setSpecs([]);
+    await updateStatus(mapping, "needs_review");
+  }
+
   async function deleteMapping(mapping: ProductMappingDto) {
     if (!window.confirm(`确定删除长期映射“${mapping.externalGoodsName || mapping.externalBarcode || mapping.externalGoodsCode}”吗？删除后后续批次不会再使用这条人工映射。`)) return;
     const response = await fetch(`/api/v1/product-mappings/${mapping.id}`, { method: "DELETE" });
@@ -332,7 +345,7 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
                   <td className="px-3 py-3 align-top text-muted-foreground">{mapping.note}</td>
                   <td className="px-3 py-3 align-top">
                     <div className="flex flex-wrap gap-2">
-                      <Button className="h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80" onClick={() => void updateStatus(mapping, "needs_review")}>
+                      <Button className="h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80" onClick={() => void reviewMapping(mapping)}>
                         <ShieldAlert className="h-4 w-4" />
                         复查
                       </Button>

@@ -786,6 +786,28 @@ describe("App", () => {
     expect(mappingRows).toHaveLength(0);
   });
 
+  it("fills the mapping form when reviewing an existing product mapping", async () => {
+    render(<App />);
+    await clickBatch();
+    fireEvent.click(screen.getByRole("checkbox", { name: "开发者模式" }));
+    switchToReviewTab();
+
+    expect(await screen.findByText("已确认/待处理映射")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("人工确认")).toBeInTheDocument());
+    const mappingRow = [...document.querySelectorAll("tr")].find((row) => row.textContent?.includes("人工确认"));
+    if (!mappingRow) throw new Error("Mapping row not found");
+    fireEvent.click(within(mappingRow).getByRole("button", { name: "复查" }));
+
+    expect(screen.getByLabelText("外部条码")).toHaveValue("2153722460015");
+    expect(screen.getByLabelText("外部编码")).toHaveValue("5372246");
+    expect(screen.getByLabelText("外部商品名")).toHaveValue("雅漾专研保湿修护面膜25ml*5片");
+    expect(screen.getByLabelText("旺店通 spec_no")).toHaveValue("3282770392869");
+    expect(screen.getByLabelText("备注")).toHaveValue("人工确认");
+    expect(screen.getByLabelText("旺店通商品搜索")).toHaveValue("雅漾专研保湿修护面膜");
+    expect(await screen.findByText("商品映射已标记复查")).toBeInTheDocument();
+    await waitFor(() => expect(mappingRows[0].status).toBe("needs_review"));
+  });
+
   it("refreshes the active production batch after confirming a product mapping", async () => {
     currentBatch = { ...currentBatch, mode: "production_api", sourceType: "order" };
     mappingRows = [];
