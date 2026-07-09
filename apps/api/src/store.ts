@@ -1207,9 +1207,10 @@ export function createSqliteStore(options: StoreOptions = {}) {
             .limit(250)
         : await base.orderBy(desc(productMatchCandidates.createdAt)).limit(250);
       const confirmedMappings = await database.db.select().from(productMappings).where(eq(productMappings.status, "confirmed"));
-      return dedupeProductMatchCandidates(
+      const candidates = dedupeProductMatchCandidates(
         rows.map(toProductMatchCandidateDto).filter((candidate) => !confirmedMappings.some((mapping) => productCandidateMatchesMapping(candidate, mapping))),
       ).slice(0, 50);
+      return attachProductCandidateStock(candidates, database, stockClient);
     },
 
     async updateProductMappingStatus(
@@ -2554,6 +2555,47 @@ function toProductMatchCandidateDto(row: ProductMatchCandidateRow): ProductMatch
     source: row.source,
     createdAt: row.createdAt,
   };
+}
+
+async function attachProductCandidateStock(
+  candidates: ProductMatchCandidateDto[],
+  database: DatabaseContext,
+  stockClient: StockLookupClient | undefined,
+): Promise<ProductMatchCandidateDto[]> {
+  if (!stockClient || candidates.length === 0) return candidates;
+  const settings = toWarehouseUsageSettingsDto(await getWarehouseUsageSettingsRow(database));
+  const stockBySpecNo = new Map<string, Pick<ProductMatchCandidateDto, "stockTotalAvailable" | "stockRows" | "stockError">>();
+  await Promise.all([...new Set(candidates.map((candidate) => candidate.wdtSpecNo).filter(Boolean))].map(async (specNo) => {
+    try {
+      const response = await stockClient.queryStock(specNo);
+      if (response.status && response.status !== 0) {
+        stockBySpecNo.set(specNo, { stockError: `库存查询失败 status=${response.status}` });
+        return;
+      }
+      const rows = (response.data?.detail_list ?? []).map((row) => ({
+        warehouseNo: row.warehouse_no ?? "",
+        warehouseName: row.warehouse_name ?? "",
+        availableSendStock: getWdtAvailableSendStock(row),
+        included: isIncludedWarehouseStock(row, settings),
+      }));
+      stockBySpecNo.set(specNo, {
+        stockTotalAvailable: rows.filter((row) => row.included).reduce((total, row) => total + row.availableSendStock, 0),
+        stockRows: rows,
+      });
+    } catch (error) {
+      stockBySpecNo.set(specNo, { stockError: error instanceof Error ? error.message : "库存查询失败" });
+    }
+  }));
+
+  return candidates.map((candidate) => ({ ...candidate, ...(stockBySpecNo.get(candidate.wdtSpecNo) ?? {}) }));
+}
+
+function isIncludedWarehouseStock(row: WdtStockRow, settings: WarehouseUsageSettingsDto) {
+  const warehouseNo = row.warehouse_no ?? "";
+  if (warehouseNo === "001") return settings.includeMainWarehouse;
+  if (warehouseNo === "LINQI") return settings.includeNearExpiryWarehouse;
+  if (warehouseNo === "CIPIN" || row.defect === true) return settings.includeDefectWarehouse;
+  return settings.includeOtherWarehouses;
 }
 
 function parseBarcodes(value: string): string[] {

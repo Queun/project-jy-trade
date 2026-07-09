@@ -422,6 +422,14 @@ export const ProductMatchCandidateDtoSchema = z.object({
   score: z.number(),
   basis: z.string(),
   source: z.string(),
+  stockTotalAvailable: z.number().optional(),
+  stockRows: z.array(z.object({
+    warehouseNo: z.string(),
+    warehouseName: z.string(),
+    availableSendStock: z.number(),
+    included: z.boolean(),
+  })).optional(),
+  stockError: z.string().optional(),
   createdAt: z.string(),
 });
 export type ProductMatchCandidateDto = z.infer<typeof ProductMatchCandidateDtoSchema>;

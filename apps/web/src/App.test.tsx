@@ -694,6 +694,10 @@ describe("App", () => {
     expect(await screen.findByText("商品映射确认")).toBeInTheDocument();
     expect(await screen.findByText("待确认候选")).toBeInTheDocument();
     await waitFor(() => expect(screen.getAllByText("雅漾专研保湿修护面膜25ml*5片").length).toBeGreaterThan(0));
+    expect(screen.getByText("可发 15")).toBeInTheDocument();
+    expect(screen.getByText("001 /主仓: 12")).toBeInTheDocument();
+    expect(screen.getByText("LINQI /临期仓: 3")).toBeInTheDocument();
+    expect(screen.getByText("CIPIN /次品仓: 99（未计入）")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /雅漾专研保湿修护面膜25ml/ }));
     expect(screen.getByLabelText("旺店通 spec_no")).toHaveValue("3282770392869");
@@ -1397,6 +1401,12 @@ function productCandidate(patch: Partial<ProductMatchCandidateDto> = {}): Produc
     score: 82,
     basis: "contains_name",
     source: "goods",
+    stockTotalAvailable: 15,
+    stockRows: [
+      { warehouseNo: "001", warehouseName: "主仓", availableSendStock: 12, included: true },
+      { warehouseNo: "LINQI", warehouseName: "临期仓", availableSendStock: 3, included: true },
+      { warehouseNo: "CIPIN", warehouseName: "次品仓", availableSendStock: 99, included: false },
+    ],
     createdAt: "2026-07-03T00:00:00.000Z",
     ...patch,
   };

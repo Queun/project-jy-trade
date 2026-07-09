@@ -2184,7 +2184,22 @@ describe("api server", () => {
       },
     ]);
     await database.close();
-    const app = buildTestServer(databaseUrl);
+    const stockClient: StockLookupClient = {
+      async queryStock(specNo) {
+        return {
+          status: 0,
+          data: {
+            total_count: 3,
+            detail_list: [
+              { spec_no: specNo, warehouse_no: "001", warehouse_name: "主仓", available_send_stock: 12 },
+              { spec_no: specNo, warehouse_no: "LINQI", warehouse_name: "临期仓", available_send_stock: 3 },
+              { spec_no: specNo, warehouse_no: "CIPIN", warehouse_name: "次品仓", available_send_stock: 99 },
+            ],
+          },
+        };
+      },
+    };
+    const app = buildTestServer(databaseUrl, undefined, stockClient);
     const cookie = await loginCookie(app);
 
     const response = await app.inject({
@@ -2202,6 +2217,12 @@ describe("api server", () => {
           wdtSpecNo: "3282770392869",
           score: 82,
           basis: "contains_name",
+          stockTotalAvailable: 15,
+          stockRows: expect.arrayContaining([
+            expect.objectContaining({ warehouseNo: "001", warehouseName: "主仓", availableSendStock: 12, included: true }),
+            expect.objectContaining({ warehouseNo: "LINQI", warehouseName: "临期仓", availableSendStock: 3, included: true }),
+            expect.objectContaining({ warehouseNo: "CIPIN", warehouseName: "次品仓", availableSendStock: 99, included: false }),
+          ]),
         }),
         expect.objectContaining({
           externalBarcode: "2153722460015",

@@ -259,13 +259,16 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
             {candidates.map((candidate) => (
               <button
                 key={candidate.id}
-                className="rounded-md border border-border px-3 py-2 text-left text-sm hover:bg-muted"
+                className="rounded-md border border-border px-3 py-2 text-left text-sm transition hover:bg-muted focus:outline-none focus:ring-2 focus:ring-primary/40"
                 onClick={() => chooseCandidate(candidate)}
               >
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="font-medium">{candidate.externalGoodsName || "未填名称"}</span>
                   <Badge tone="warn">{candidate.score}</Badge>
                   <Badge tone="info">{candidate.basis}</Badge>
+                  <Badge tone={candidate.stockError ? "bad" : candidate.stockTotalAvailable && candidate.stockTotalAvailable > 0 ? "good" : "neutral"}>
+                    {candidate.stockError ? "库存未查到" : candidate.stockTotalAvailable === undefined ? "库存未查询" : `可发 ${candidate.stockTotalAvailable}`}
+                  </Badge>
                 </div>
                 <div className="mt-1 text-muted-foreground">
                   {candidate.externalBarcode || "无条码"} / {candidate.externalGoodsCode || "无编码"}
@@ -273,6 +276,25 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
                 <div className="mt-1 text-muted-foreground">
                   {"->"} {candidate.wdtGoodsName} / {candidate.wdtSpecNo} / {candidate.wdtSpecName}
                 </div>
+                {candidate.stockRows && candidate.stockRows.length > 0 ? (
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {candidate.stockRows.map((row) => (
+                      <span
+                        key={`${candidate.id}-${row.warehouseNo}-${row.warehouseName}`}
+                        className={
+                          row.included
+                            ? "rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-xs text-emerald-900"
+                            : "rounded border border-border bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
+                        }
+                      >
+                        {row.warehouseNo || row.warehouseName || "未命名仓"} {row.warehouseName ? `/${row.warehouseName}` : ""}: {row.availableSendStock}
+                        {row.included ? "" : "（未计入）"}
+                      </span>
+                    ))}
+                  </div>
+                ) : candidate.stockError ? (
+                  <div className="mt-2 text-xs text-rose-700">{candidate.stockError}</div>
+                ) : null}
               </button>
             ))}
             {candidates.length === 0 ? <div className="text-sm text-muted-foreground">暂无待确认候选</div> : null}
