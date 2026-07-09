@@ -1005,6 +1005,116 @@ describe("api server", () => {
     await app.close();
   });
 
+  it("corrects store fields on the current batch without changing maintained addresses", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await seedSuccessfulGoodsCache(database);
+    await database.db.insert(storeAddresses).values({
+      id: "store-address-correct-store-fields",
+      storeNo: "S001",
+      storeName: "Ole确定单门店",
+      normalizedStoreName: "ole确定单门店",
+      receiver: "正确收件人",
+      phone: "18800006666",
+      address: "正确地址",
+      isVip: 0,
+      note: "",
+      sourceSheet: "手工维护",
+      sourceRow: 0,
+      importedAt: "",
+      rawJson: "{}",
+      updatedByUserId: null,
+      updatedByUsername: null,
+      createdAt: "2026-07-03T00:00:00.000Z",
+      updatedAt: "2026-07-03T00:00:00.000Z",
+    });
+    await database.close();
+
+    const app = buildTestServer(databaseUrl);
+    const cookie = await loginCookie(app);
+    const imported = await app.inject({
+      method: "POST",
+      url: "/api/v1/confirmed-orders/import",
+      payload: {
+        fileName: "确定单-门店错字.xlsx",
+        contentBase64: confirmedOrderWorkbookBase64({ storeNo: "S-错", storeName: "Ole确定单门店错字" }),
+      },
+      headers: { cookie },
+    });
+    expect(imported.statusCode).toBe(201);
+
+    const beforeReadiness = await app.inject({
+      method: "GET",
+      url: `/api/v1/batches/${imported.json().batch.id}/make-order-readiness`,
+      headers: { cookie },
+    });
+    expect(beforeReadiness.statusCode).toBe(200);
+    expect(beforeReadiness.json()).toMatchObject({
+      canExport: false,
+      missingAddressCount: 1,
+      missingStores: [expect.objectContaining({ storeNo: "S-错", storeName: "Ole确定单门店错字", shippableLineCount: 2 })],
+    });
+
+    const corrected = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/batches/${imported.json().batch.id}/store-fields`,
+      payload: {
+        currentStoreNo: "S-错",
+        currentStoreName: "Ole确定单门店错字",
+        nextStoreNo: "S001",
+        nextStoreName: "Ole确定单门店",
+      },
+      headers: { cookie },
+    });
+    expect(corrected.statusCode).toBe(200);
+    expect(corrected.json()).toMatchObject({
+      updatedLineCount: 2,
+      makeOrderReadiness: { canExport: true, missingAddressCount: 0 },
+    });
+
+    const linesResponse = await app.inject({
+      method: "GET",
+      url: `/api/v1/batches/${imported.json().batch.id}/review-lines`,
+      headers: { cookie },
+    });
+    expect(linesResponse.statusCode).toBe(200);
+    expect(linesResponse.json()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ storeNo: "S001", storeName: "Ole确定单门店" }),
+      ]),
+    );
+
+    const verifyDatabase = createDatabaseContext(databaseUrl);
+    await verifyDatabase.ready;
+    const addressRows = await verifyDatabase.db.select().from(storeAddresses);
+    await verifyDatabase.close();
+    expect(addressRows).toHaveLength(1);
+    expect(addressRows[0]).toMatchObject({ storeNo: "S001", storeName: "Ole确定单门店", receiver: "正确收件人" });
+
+    const exportResponse = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${imported.json().batch.id}/exports`,
+      payload: { type: "wdt_import" },
+      headers: { cookie },
+    });
+    expect(exportResponse.statusCode).toBe(201);
+    const downloadResponse = await app.inject({
+      method: "GET",
+      url: exportResponse.json().downloadUrl,
+      headers: { cookie },
+    });
+    const workbook = XLSX.read(downloadResponse.rawPayload, { type: "buffer" });
+    const rows = XLSX.utils.sheet_to_json<Record<string, string | number>>(workbook.Sheets["Sheet1"], { defval: "" });
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({
+      收件人: "正确收件人",
+      手机: "18800006666",
+      地址: "正确地址",
+    });
+    await app.close();
+  });
+
   it("rebuilds confirmed-order batches with newly saved product mappings", async () => {
     const databaseUrl = testDatabaseUrl();
     const database = createDatabaseContext(databaseUrl);
@@ -3112,18 +3222,20 @@ function externalProductsWorkbookBase64() {
 }
 
 function confirmedOrderWorkbookBase64(
-  options: { goodsCode?: string; barcode?: string; goodsName?: string } = {},
+  options: { goodsCode?: string; barcode?: string; goodsName?: string; storeNo?: string; storeName?: string } = {},
 ) {
   const goodsCode = options.goodsCode ?? "3282770392869";
   const barcode = options.barcode ?? "2153722460015";
   const goodsName = options.goodsName ?? "雅漾专研保湿修护面膜";
+  const storeNo = options.storeNo ?? "S001";
+  const storeName = options.storeName ?? "Ole确定单门店";
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(
     workbook,
     XLSX.utils.aoa_to_sheet([
       ["审批单号", "通知单号", "收货地编码", "收货地名称", "业务员", "截止日期", "商品编码", "商品条码", "商品名称", "规格", "订货数量", "实际发货数量", "合同进价", "主仓"],
-      ["APPROVAL-1", "NOTICE-1", "S001", "Ole确定单门店", "原业务员", "2026-07-12", goodsCode, barcode, goodsName, "25ml*5", "2", "2", "12.5", ""],
-      ["APPROVAL-2", "NOTICE-2", "S001", "Ole确定单门店", "原业务员", "2026-07-12", goodsCode, barcode, goodsName, "25ml*5", "3", "3", "12.5", ""],
+      ["APPROVAL-1", "NOTICE-1", storeNo, storeName, "原业务员", "2026-07-12", goodsCode, barcode, goodsName, "25ml*5", "2", "2", "12.5", ""],
+      ["APPROVAL-2", "NOTICE-2", storeNo, storeName, "原业务员", "2026-07-12", goodsCode, barcode, goodsName, "25ml*5", "3", "3", "12.5", ""],
     ]),
     "确定单",
   );

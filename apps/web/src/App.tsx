@@ -9,6 +9,7 @@ import type {
   ProductMappingDto,
   ReviewDecision,
   ReviewLineDto,
+  UpdateBatchStoreFieldsResponse,
   WarehouseUsageSettingsDto,
   WdtGoodsSyncRunDto,
 } from "@jy-trade/shared";
@@ -108,7 +109,7 @@ export function App() {
   const [mappingFocusQuery, setMappingFocusQuery] = useState("");
   const [mappingFocusProduct, setMappingFocusProduct] = useState<ProductMappingFocusProduct | null>(null);
   const [recheckingConfirmedOrder, setRecheckingConfirmedOrder] = useState(false);
-  const [addressFocus, setAddressFocus] = useState<{
+  const [addressFocus] = useState<{
     store: MakeOrderReadinessDto["missingStores"][number];
     requestId: number;
   } | null>(null);
@@ -268,6 +269,44 @@ export function App() {
       return;
     }
     setMakeOrderReadiness((await response.json()) as MakeOrderReadinessDto);
+  }
+
+  async function correctBatchStoreFields(
+    store: MakeOrderReadinessDto["missingStores"][number],
+    next: { storeNo: string; storeName: string },
+  ) {
+    if (!activeBatch) {
+      setMessage("请先选择一个批次");
+      return;
+    }
+    setMessage("正在修正本批门店字段...");
+    const response = await fetch(`/api/v1/batches/${activeBatch.id}/store-fields`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        currentStoreNo: store.storeNo,
+        currentStoreName: store.storeName,
+        nextStoreNo: next.storeNo,
+        nextStoreName: next.storeName,
+      }),
+    });
+    if (!response.ok) {
+      const error = await response.json();
+      setMessage(error.message ?? "本批门店字段修正失败");
+      return;
+    }
+    const result = (await response.json()) as UpdateBatchStoreFieldsResponse;
+    setActiveBatch(result.batch);
+    const lines = await fetchReviewLines(result.batch.id);
+    if (!lines) return;
+    setReviewLines(sortReviewLines(lines));
+    setDraftById(buildDrafts(lines));
+    setErrorsById({});
+    setMakeOrderReadiness(result.makeOrderReadiness);
+    await refreshExports(result.batch.id);
+    await refreshBatches();
+    setMessage("已修正本批门店字段");
+    setSuccessNotice(result.makeOrderReadiness.canExport ? "门店字段已修正，可以继续生成做单" : "门店字段已修正，请继续处理剩余缺地址项");
   }
 
   async function fetchReviewLines(batchId: string) {
@@ -918,12 +957,8 @@ export function App() {
                 canExport={permissions.canExport}
                 exports={exports}
                 makeOrderReadiness={makeOrderReadiness}
+                onCorrectStoreFields={(store, next) => void correctBatchStoreFields(store, next)}
                 onCreateExport={(type) => void createExport(type)}
-                onRepairMissingStore={(store) => {
-                  setAddressFocus((current) => ({ store, requestId: (current?.requestId ?? 0) + 1 }));
-                  setActiveTab("addresses");
-                  setMessage("已带入缺地址门店，请补齐或修正门店信息后保存");
-                }}
               />
             ) : null}
 
@@ -1502,21 +1537,28 @@ function ReviewTab({
   );
 }
 
+function missingStoreKey(store: MakeOrderReadinessDto["missingStores"][number]) {
+  return `${store.storeNo || ""}|${store.storeName || ""}`;
+}
+
 function ExportTab({
   activeBatch,
   canExport,
   exports,
   makeOrderReadiness,
+  onCorrectStoreFields,
   onCreateExport,
-  onRepairMissingStore,
 }: {
   activeBatch: BatchSummary | null;
   canExport: boolean;
   exports: ExportDto[];
   makeOrderReadiness: MakeOrderReadinessDto | null;
+  onCorrectStoreFields: (store: MakeOrderReadinessDto["missingStores"][number], next: { storeNo: string; storeName: string }) => Promise<void> | void;
   onCreateExport: (type: ExportDto["type"]) => void;
-  onRepairMissingStore: (store: MakeOrderReadinessDto["missingStores"][number]) => void;
 }) {
+  const [editingStoreKey, setEditingStoreKey] = useState("");
+  const [storeFieldDraft, setStoreFieldDraft] = useState({ storeNo: "", storeName: "" });
+  const [savingStoreFields, setSavingStoreFields] = useState(false);
   const batchReadyForExport = activeBatch?.status === "reviewed" || activeBatch?.status === "exported";
   const makeOrderReady = makeOrderReadiness?.canExport === true;
   const canCreateBasicExport = canExport && batchReadyForExport;
@@ -1532,6 +1574,21 @@ function ExportTab({
       disabledReason: makeOrderReady ? undefined : "需先补齐发货地址",
     },
   ];
+
+  function editStoreFields(store: MakeOrderReadinessDto["missingStores"][number]) {
+    setEditingStoreKey(missingStoreKey(store));
+    setStoreFieldDraft({ storeNo: store.storeNo, storeName: store.storeName });
+  }
+
+  async function saveStoreFields(store: MakeOrderReadinessDto["missingStores"][number]) {
+    setSavingStoreFields(true);
+    try {
+      await onCorrectStoreFields(store, storeFieldDraft);
+      setEditingStoreKey("");
+    } finally {
+      setSavingStoreFields(false);
+    }
+  }
 
   return (
     <section className="mt-4 rounded-md border border-border bg-card p-4">
@@ -1585,18 +1642,47 @@ function ExportTab({
           {makeOrderReadiness && makeOrderReadiness.missingStores.length > 0 ? (
             <div className="mt-3 space-y-2">
               {makeOrderReadiness.missingStores.slice(0, 5).map((store) => (
-                <div key={`${store.storeNo}-${store.storeName}`} className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm">
-                  <div>
-                    <span className="font-medium">{store.storeName || store.storeNo}</span>
-                    {store.storeNo ? <span className="ml-2 text-muted-foreground">{store.storeNo}</span> : null}
+                <div key={`${store.storeNo}-${store.storeName}`} className="rounded-md border border-border bg-background px-3 py-2 text-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <span className="font-medium">{store.storeName || store.storeNo}</span>
+                      {store.storeNo ? <span className="ml-2 text-muted-foreground">{store.storeNo}</span> : null}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-muted-foreground">{store.shippableLineCount} 行待做单</span>
+                      <Button className="h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80" disabled={!canExport} onClick={() => editStoreFields(store)}>
+                        <MapPin className="h-4 w-4" />
+                        修正本批字段
+                      </Button>
+                    </div>
                   </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-muted-foreground">{store.shippableLineCount} 行待做单</span>
-                    <Button className="h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80" onClick={() => onRepairMissingStore(store)}>
-                      <MapPin className="h-4 w-4" />
-                      补地址/修正
-                    </Button>
-                  </div>
+                  {editingStoreKey === missingStoreKey(store) ? (
+                    <div className="mt-3 grid gap-2 border-t border-border/70 pt-3 sm:grid-cols-[160px_minmax(220px,1fr)_auto]">
+                      <input
+                        aria-label="本批收货地编码"
+                        className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+                        placeholder="收货地编码"
+                        value={storeFieldDraft.storeNo}
+                        onChange={(event) => setStoreFieldDraft((current) => ({ ...current, storeNo: event.target.value }))}
+                      />
+                      <input
+                        aria-label="本批收货地名称"
+                        className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+                        placeholder="收货地名称"
+                        value={storeFieldDraft.storeName}
+                        onChange={(event) => setStoreFieldDraft((current) => ({ ...current, storeName: event.target.value }))}
+                      />
+                      <div className="flex items-center gap-2">
+                        <Button className="h-9 px-3" disabled={!canExport || !storeFieldDraft.storeName.trim() || savingStoreFields} onClick={() => void saveStoreFields(store)}>
+                          <Save className="h-4 w-4" />
+                          保存
+                        </Button>
+                        <Button className="h-9 bg-muted px-3 text-muted-foreground hover:bg-muted/80" disabled={savingStoreFields} onClick={() => setEditingStoreKey("")}>
+                          取消
+                        </Button>
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               ))}
               {makeOrderReadiness.missingStores.length > 5 ? (

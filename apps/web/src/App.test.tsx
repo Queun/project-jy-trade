@@ -533,31 +533,37 @@ describe("App", () => {
     expect(screen.getByText("可做单 2 行 / 缺地址 1 个门店")).toBeInTheDocument();
     expect(screen.getByText("测试门店")).toBeInTheDocument();
     expect(screen.getByText("2 行待做单")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "补地址/修正" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "修正本批字段" })).toBeInTheDocument();
   });
 
-  it("saves store addresses from the address maintenance tab opened by the export tab", async () => {
+  it("corrects store fields on the current batch from the export tab", async () => {
     currentBatch = { ...currentBatch, status: "reviewed" };
     render(<App />);
     await clickBatch();
     switchToExportTab();
 
-    fireEvent.click(await screen.findByRole("button", { name: "补地址/修正" }));
-    expect(screen.getByTestId("maintenance-tab-addresses")).toHaveTextContent("地址维护");
-    expect(await screen.findByText("门店地址维护")).toBeInTheDocument();
-    expect(screen.getByText("已带入缺地址门店；如果确定单里的门店编码或名称有误，可以在保存前直接修正。")).toBeInTheDocument();
-    expect(screen.getByLabelText("门店编码")).toHaveValue("STORE");
-    expect(screen.getByLabelText("门店名称")).toHaveValue("测试门店");
-    expect(screen.getByText("历史批次")).toBeInTheDocument();
-    expect(screen.getAllByText("订货通知单 .xls").length).toBeGreaterThanOrEqual(2);
-    fireEvent.change(screen.getByLabelText("收件人"), { target: { value: "张三" } });
-    fireEvent.change(screen.getByLabelText("手机"), { target: { value: "18800000000" } });
-    fireEvent.change(screen.getByLabelText("地址"), { target: { value: "深圳市南山区测试地址" } });
-    fireEvent.click(screen.getByRole("button", { name: "保存地址" }));
+    fireEvent.click(await screen.findByRole("button", { name: "修正本批字段" }));
+    expect(screen.getByLabelText("本批收货地编码")).toHaveValue("STORE");
+    expect(screen.getByLabelText("本批收货地名称")).toHaveValue("测试门店");
+    fireEvent.change(screen.getByLabelText("本批收货地编码"), { target: { value: "STORE-FIXED" } });
+    fireEvent.change(screen.getByLabelText("本批收货地名称"), { target: { value: "正确门店" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
 
-    expect(await screen.findByText("门店地址已保存")).toBeInTheDocument();
-    expect(await screen.findByText("张三 / 18800000000")).toBeInTheDocument();
-    expect(screen.getByText("深圳市南山区测试地址")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(fetch).toHaveBeenCalledWith("/api/v1/batches/batch-1/store-fields", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          currentStoreNo: "STORE",
+          currentStoreName: "测试门店",
+          nextStoreNo: "STORE-FIXED",
+          nextStoreName: "正确门店",
+        }),
+      }),
+    );
+    expect(await screen.findByText("已修正本批门店字段")).toBeInTheDocument();
+    expect(screen.getByText("门店字段已修正，可以继续生成做单")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "生成做单表格" })).not.toBeDisabled();
   });
 
   it("imports store addresses from the address maintenance tab", async () => {
@@ -597,12 +603,8 @@ describe("App", () => {
     await clickBatch();
     switchToExportTab();
 
-    fireEvent.click(await screen.findByRole("button", { name: "补地址/修正" }));
-    expect(await screen.findByText("门店地址维护")).toBeInTheDocument();
-    expect(screen.getByLabelText("门店编码")).toHaveValue("STORE");
-    expect(screen.getByLabelText("门店名称")).toHaveValue("测试门店");
-    expect(screen.getByText("当前账号只能查看门店地址。")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "保存地址" })).toBeDisabled();
+    expect(await screen.findByRole("button", { name: "修正本批字段" })).toBeDisabled();
+    expect(screen.getByText("当前账号不能生成做单文件，请联系管理员或切换到运营账号。")).toBeInTheDocument();
   });
 
   it("imports external product maintenance workbooks from the product maintenance tab", async () => {
@@ -1056,6 +1058,19 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
     return failReviewLines ? json({ message: "审核明细读取失败" }, 500) : json(lines);
   }
   if (url.includes("/make-order-readiness") && method === "GET") return json(makeOrderReadiness);
+  if (url.includes("/store-fields") && method === "PATCH") {
+    const body = JSON.parse(String(init?.body));
+    let updatedLineCount = 0;
+    lines = lines.map((line) => {
+      const matches = body.currentStoreNo ? line.storeNo === body.currentStoreNo : line.storeName === body.currentStoreName;
+      if (!matches) return line;
+      updatedLineCount += 1;
+      return { ...line, storeNo: body.nextStoreNo, storeName: body.nextStoreName };
+    });
+    currentBatch = { ...currentBatch, updatedAt: "2026-07-07T00:00:00.000Z" };
+    makeOrderReadiness = { ...makeOrderReadiness, canExport: true, missingAddressCount: 0, missingStores: [] };
+    return json({ batch: currentBatch, updatedLineCount, makeOrderReadiness });
+  }
   if (url.startsWith("/api/v1/external-products") && method === "GET") {
     const query = decodeURIComponent(url.split("query=")[1] ?? "").trim();
     const rows = query

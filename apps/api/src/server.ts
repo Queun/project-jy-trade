@@ -15,6 +15,7 @@ import {
   ImportExternalProductsRequestSchema,
   RunMockReviewRequestSchema,
   RunRealReviewRequestSchema,
+  UpdateBatchStoreFieldsRequestSchema,
   UpsertStoreAddressRequestSchema,
   UpdateWarehouseUsageSettingsRequestSchema,
   UploadOrderFileRequestSchema,
@@ -31,6 +32,7 @@ import {
   type ProductMatchCandidateDto,
   type ProductMappingDto,
   type StoreAddressDto,
+  type UpdateBatchStoreFieldsResponse,
   type UserRole,
   type WarehouseUsageSettingsDto,
   type WdtGoodsSpecSearchResultDto,
@@ -212,6 +214,15 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     const readiness = await store.getMakeOrderReadiness(batchId);
     if (!readiness) return reply.code(404).send({ message: "Batch not found" });
     return readiness;
+  });
+
+  app.patch("/api/v1/batches/:batchId/store-fields", async (request, reply): Promise<UpdateBatchStoreFieldsResponse | unknown> => {
+    requireRole(request, ["admin", "operator"]);
+    const { batchId } = request.params as { batchId: string };
+    const body = UpdateBatchStoreFieldsRequestSchema.parse(request.body ?? {});
+    const result = await store.updateBatchStoreFields(batchId, body, getCurrentUser(request));
+    if (!result) return reply.code(404).send({ message: "Batch not found" });
+    return result;
   });
 
   app.get("/api/v1/settings/warehouse-usage", async (): Promise<WarehouseUsageSettingsDto> => store.getWarehouseUsageSettings());

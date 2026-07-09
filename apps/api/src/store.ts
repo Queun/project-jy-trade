@@ -33,6 +33,8 @@
   StoreAddressDto,
   StoreAddressImportPreviewItem,
   UpdateWarehouseUsageSettingsRequest,
+  UpdateBatchStoreFieldsRequest,
+  UpdateBatchStoreFieldsResponse,
   UpdateReviewLinePriorityRequest,
   UpdateProductMappingStatusRequest,
   UpsertStoreAddressRequest,
@@ -541,6 +543,55 @@ export function createSqliteStore(options: StoreOptions = {}) {
       const lines = await getReviewLineDtos(database, batchId);
       const addressIndex = await loadMakeOrderAddressIndex(database);
       return buildMakeOrderReadiness(batchId, lines, addressIndex);
+    },
+
+    async updateBatchStoreFields(batchId: string, input: UpdateBatchStoreFieldsRequest, actor?: AuthUserDto): Promise<UpdateBatchStoreFieldsResponse | undefined> {
+      await ready;
+      const batch = await getBatchRow(database, batchId);
+      if (!batch) return undefined;
+      const nextStoreName = input.nextStoreName.trim();
+      const nextStoreNo = input.nextStoreNo.trim();
+      if (!nextStoreName) {
+        throw new StoreValidationError("收货地名称不能为空");
+      }
+
+      const currentKey = makeOrderStoreKey({ storeNo: input.currentStoreNo.trim(), storeName: input.currentStoreName.trim() });
+      if (currentKey === "name:") {
+        throw new StoreValidationError("缺少要修正的原收货地字段");
+      }
+
+      const rows = await database.db.select().from(reviewLines).where(eq(reviewLines.batchId, batchId));
+      const matchedRows = rows.filter((line) => makeOrderStoreKey({ storeNo: line.storeNo, storeName: line.storeName }) === currentKey);
+      if (matchedRows.length === 0) {
+        throw new StoreValidationError("当前批次没有匹配的收货地字段可修正");
+      }
+
+      for (const line of matchedRows) {
+        await database.db
+          .update(reviewLines)
+          .set({ storeNo: nextStoreNo, storeName: nextStoreName })
+          .where(eq(reviewLines.id, line.id));
+      }
+
+      const now = new Date().toISOString();
+      const updatedBatch: BatchRow = { ...batch, updatedAt: now };
+      await database.db.update(batches).set({ updatedAt: now }).where(eq(batches.id, batchId));
+      const lines = await getReviewLineDtos(database, batchId);
+      const addressIndex = await loadMakeOrderAddressIndex(database);
+      const makeOrderReadiness = buildMakeOrderReadiness(batchId, lines, addressIndex);
+      await insertAuditLog(database, actor?.id ?? null, "batch.update_store_fields", "batch", batchId, {
+        currentStoreNo: input.currentStoreNo,
+        currentStoreName: input.currentStoreName,
+        nextStoreNo,
+        nextStoreName,
+        updatedLineCount: matchedRows.length,
+      });
+
+      return {
+        batch: toBatchSummary(updatedBatch),
+        updatedLineCount: matchedRows.length,
+        makeOrderReadiness,
+      };
     },
 
     async listStoreAddresses(query = ""): Promise<StoreAddressDto[]> {

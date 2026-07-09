@@ -176,6 +176,21 @@ export const MakeOrderReadinessDtoSchema = z.object({
 });
 export type MakeOrderReadinessDto = z.infer<typeof MakeOrderReadinessDtoSchema>;
 
+export const UpdateBatchStoreFieldsRequestSchema = z.object({
+  currentStoreNo: z.string().default(""),
+  currentStoreName: z.string().default(""),
+  nextStoreNo: z.string().default(""),
+  nextStoreName: z.string().min(1),
+});
+export type UpdateBatchStoreFieldsRequest = z.infer<typeof UpdateBatchStoreFieldsRequestSchema>;
+
+export const UpdateBatchStoreFieldsResponseSchema = z.object({
+  batch: BatchSummarySchema,
+  updatedLineCount: z.number(),
+  makeOrderReadiness: MakeOrderReadinessDtoSchema,
+});
+export type UpdateBatchStoreFieldsResponse = z.infer<typeof UpdateBatchStoreFieldsResponseSchema>;
+
 export const StoreAddressDtoSchema = z.object({
   id: z.string(),
   storeNo: z.string(),
