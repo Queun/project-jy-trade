@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { decideLocalProductMatch } from "./localProductMatcher.js";
 
 describe("local product matcher", () => {
-  it("uses confirmed mapping before automatic candidates", () => {
+  it("uses automatic WDT candidates before confirmed mappings", () => {
     const result = decideLocalProductMatch(
       { barcode: "external-1", goodsName: "外部商品" },
       {
@@ -26,8 +26,66 @@ describe("local product matcher", () => {
     );
 
     expect(result.status).toBe("matched");
+    expect(result.candidate?.specNo).toBe("auto-spec");
+    expect(result.message).toBe("Matched by barcode");
+  });
+
+  it("uses confirmed mapping when WDT has no code match", () => {
+    const result = decideLocalProductMatch(
+      { barcode: "external-1", goodsName: "外部商品" },
+      {
+        mappings: [
+          {
+            externalBarcode: "external-1",
+            wdtSpecNo: "manual-spec",
+            wdtGoodsName: "人工确认商品",
+            status: "confirmed",
+          },
+        ],
+        goodsSpecs: [{ specNo: "auto-spec", goodsName: "完全不同", barcode: "other" }],
+      },
+    );
+
+    expect(result.status).toBe("matched");
     expect(result.candidate?.specNo).toBe("manual-spec");
     expect(result.message).toBe("Matched by confirmed product mapping");
+  });
+
+  it("matches single-component WDT suites before confirmed mappings", () => {
+    const result = decideLocalProductMatch(
+      { barcode: "2150317560013", goodsName: "lelabo护发素(33檀香系列)50ml" },
+      {
+        mappings: [
+          {
+            externalBarcode: "2150317560013",
+            wdtSpecNo: "manual-spec",
+            wdtGoodsName: "历史人工映射",
+            status: "confirmed",
+          },
+        ],
+        goodsSpecs: [],
+        suites: [
+          {
+            suiteNo: "2150317560013",
+            suiteName: "lelabo护发素(33檀香系列)50ml",
+            barcode: "2150317560013",
+            componentSpecNo: "021700004",
+            componentGoodsNo: "021700004",
+            componentGoodsName: "【中小样】le labo护发素(33檀香系列)",
+            componentSpecName: "50ml",
+            componentBarcode: "021700004",
+          },
+        ],
+      },
+    );
+
+    expect(result.status).toBe("matched");
+    expect(result.candidate).toMatchObject({
+      source: "suite",
+      goodsNo: "2150317560013",
+      specNo: "021700004",
+      makeOrderCode: "2150317560013",
+    });
   });
 
   it("matches a unique local barcode candidate", () => {

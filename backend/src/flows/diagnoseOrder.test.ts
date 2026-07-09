@@ -30,7 +30,7 @@ describe("diagnoseOrder", () => {
     expect(line.stock?.mainAvailableStock).toBe(5);
   });
 
-  it("uses manual mapping before local barcode candidates", async () => {
+  it("uses local barcode candidates before manual mappings", async () => {
     const [line] = await diagnoseOrderLines(
       fakeStockClient(),
       [orderLine({ externalBarcode: "B1", externalGoodsName: "商品1" })],
@@ -39,8 +39,8 @@ describe("diagnoseOrder", () => {
     );
 
     expect(line.decision.status).toBe("matched");
-    expect(line.decision.candidate?.specNo).toBe("MANUAL");
-    expect(line.decision.message).toBe("Matched by confirmed product mapping");
+    expect(line.decision.candidate?.specNo).toBe("AUTO");
+    expect(line.decision.message).toBe("Matched by barcode");
   });
 
   it("uses confirmed database mapping before name candidates", async () => {

@@ -14,6 +14,7 @@ export interface ProductCandidate {
   specNo?: string;
   specName?: string;
   specCode?: string;
+  makeOrderCode?: string;
   barcodes?: string[];
 }
 

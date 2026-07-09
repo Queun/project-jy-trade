@@ -101,6 +101,7 @@ export const ReviewLineDtoSchema = z.object({
   goodsName: z.string(),
   specName: z.string(),
   wdtSpecNo: z.string(),
+  wdtMakeOrderCode: z.string(),
   matchStatus: MatchStatusSchema,
   matchMessage: z.string(),
   orderQty: z.number(),

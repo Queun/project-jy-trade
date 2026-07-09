@@ -65,6 +65,8 @@ import {
   warehouseUsageSettings,
   wdtGoodsSpecs,
   wdtGoodsSyncRuns,
+  wdtSuiteComponents,
+  wdtSuites,
 } from "./db/schema.js";
 import {
   type GoodsSyncRepository,
@@ -79,6 +81,7 @@ import {
   decideLocalProductMatch,
   loadOrderLines,
   type LocalGoodsSpecCandidate,
+  type LocalSuiteCandidate,
   type ProductMappingCandidate,
   type ProductMatchDecision,
 } from "@jy-trade/workflow";
@@ -94,6 +97,8 @@ type StoreAddressRow = typeof storeAddresses.$inferSelect;
 type WarehouseUsageSettingsRow = typeof warehouseUsageSettings.$inferSelect;
 type WdtGoodsSyncRunRow = typeof wdtGoodsSyncRuns.$inferSelect;
 type WdtGoodsSpecRow = typeof wdtGoodsSpecs.$inferSelect;
+type WdtSuiteRow = typeof wdtSuites.$inferSelect;
+type WdtSuiteComponentRow = typeof wdtSuiteComponents.$inferSelect;
 type ProductMappingRow = typeof productMappings.$inferSelect;
 type ProductMatchCandidateRow = typeof productMatchCandidates.$inferSelect;
 type ExternalProductRow = typeof externalProducts.$inferSelect;
@@ -322,6 +327,7 @@ export function createSqliteStore(options: StoreOptions = {}) {
       assertReviewGoodsCacheUsable(cacheStatus);
 
       const goodsSpecs = (await database.db.select().from(wdtGoodsSpecs)).map(toLocalGoodsSpecCandidate);
+      const suites = await loadLocalSuiteCandidates(database);
       const mappings = (await database.db.select().from(productMappings).where(eq(productMappings.status, "confirmed"))).map(toProductMappingCandidate);
       const warehouseSettings = toWarehouseUsageSettingsDto(await getWarehouseUsageSettingsRow(database));
       const vipStoreIndex = await loadVipStoreIndex(database);
@@ -329,6 +335,7 @@ export function createSqliteStore(options: StoreOptions = {}) {
         batchId,
         orderFile: batch.filePath,
         goodsSpecs,
+        suites,
         mappings,
         warehouseSettings,
         vipStoreIndex,
@@ -393,12 +400,14 @@ export function createSqliteStore(options: StoreOptions = {}) {
 
       const now = new Date().toISOString();
       const goodsSpecs = (await database.db.select().from(wdtGoodsSpecs)).map(toLocalGoodsSpecCandidate);
+      const suites = await loadLocalSuiteCandidates(database);
       const mappings = (await database.db.select().from(productMappings).where(eq(productMappings.status, "confirmed"))).map(toProductMappingCandidate);
       const externalProductMatches = await loadExternalProductMatchIndex(database);
       const buildResult = buildConfirmedOrderReview({
         batchId: `batch-${randomUUID()}`,
         lines: parsed.lines,
         goodsSpecs,
+        suites,
         mappings,
         externalProductMatches,
       });
@@ -1196,6 +1205,7 @@ interface RealReviewBuildOptions {
   batchId: string;
   orderFile: string;
   goodsSpecs: LocalGoodsSpecCandidate[];
+  suites: LocalSuiteCandidate[];
   mappings: ProductMappingCandidate[];
   warehouseSettings: WarehouseUsageSettingsDto;
   vipStoreIndex: VipStoreIndex;
@@ -1366,6 +1376,7 @@ function buildConfirmedOrderReview(options: {
   batchId: string;
   lines: ParsedConfirmedOrderLine[];
   goodsSpecs: LocalGoodsSpecCandidate[];
+  suites: LocalSuiteCandidate[];
   mappings: ProductMappingCandidate[];
   externalProductMatches: ExternalProductMatchCandidate[];
 }): ConfirmedOrderReviewBuildResult {
@@ -1424,6 +1435,7 @@ function buildConfirmedOrderReview(options: {
       goodsName: decision.candidate?.goodsName ?? "",
       specName: decision.candidate?.specName ?? "",
       wdtSpecNo: decision.candidate?.specNo ?? "",
+      wdtMakeOrderCode: decision.candidate?.makeOrderCode ?? decision.candidate?.specNo ?? "",
       matchStatus: decision.status,
       matchMessage: decision.message,
       orderQty: line.orderQty,
@@ -1446,6 +1458,7 @@ function decideConfirmedOrderProductMatch(
   line: ParsedConfirmedOrderLine,
   sources: Pick<ConfirmedOrderReviewBuildResult, never> & {
     goodsSpecs: LocalGoodsSpecCandidate[];
+    suites: LocalSuiteCandidate[];
     mappings: ProductMappingCandidate[];
     externalProductMatches: ExternalProductMatchCandidate[];
   },
@@ -1456,7 +1469,7 @@ function decideConfirmedOrderProductMatch(
     goodsName: line.externalGoodsName,
     specName: line.spec,
   };
-  const direct = decideLocalProductMatch(input, { goodsSpecs: sources.goodsSpecs, mappings: sources.mappings });
+  const direct = decideLocalProductMatch(input, { goodsSpecs: sources.goodsSpecs, suites: sources.suites, mappings: sources.mappings });
   if (direct.status === "matched") return direct;
 
   const external = findExternalProductMatch(line, sources.externalProductMatches);
@@ -1469,6 +1482,7 @@ function decideConfirmedOrderProductMatch(
         goodsName: external.wdtGoodsName || external.externalGoodsName,
         specNo: external.wdtSpecNo,
         specName: external.wdtSpecName,
+        makeOrderCode: external.wdtSpecNo,
         barcodes: [external.wdtBarcode || external.externalBarcode].filter(Boolean),
         score: 105,
         basis: "code",
@@ -1504,7 +1518,7 @@ async function buildRealReview(client: StockLookupClient, options: RealReviewBui
         goodsName: line.externalGoodsName,
         specName: line.spec,
       },
-      { goodsSpecs: options.goodsSpecs, mappings: options.mappings },
+      { goodsSpecs: options.goodsSpecs, suites: options.suites, mappings: options.mappings },
     );
 
     const id = `${options.batchId}-line-${index + 1}`;
@@ -1572,6 +1586,7 @@ interface RealReviewLineInput {
 
 function buildRealReviewLine(input: RealReviewLineInput, suggestedShipQty: number): ReviewLineDto {
   const specNo = input.matchStatus === "matched" ? input.decision.candidate?.specNo ?? "" : "";
+  const makeOrderCode = input.matchStatus === "matched" ? input.decision.candidate?.makeOrderCode ?? specNo : "";
   const mainBefore = input.stock?.mainAvailableStock ?? 0;
   const nearExpiryBefore = input.stock?.nearExpiryAvailableStock ?? 0;
 
@@ -1620,6 +1635,7 @@ function buildRealReviewLine(input: RealReviewLineInput, suggestedShipQty: numbe
     goodsName: input.decision.candidate?.goodsName ?? "",
     specName: input.decision.candidate?.specName ?? "",
     wdtSpecNo: specNo,
+    wdtMakeOrderCode: makeOrderCode,
     matchStatus: input.matchStatus,
     matchMessage: input.matchMessage,
     orderQty: input.orderLine.orderQty,
@@ -1796,6 +1812,7 @@ async function replaceBatchReviewLines(database: DatabaseContext, batchId: strin
       goodsName: line.goodsName,
       specName: line.specName,
       wdtSpecNo: line.wdtSpecNo,
+      wdtMakeOrderCode: line.wdtMakeOrderCode || line.wdtSpecNo,
       matchStatus: line.matchStatus,
       matchMessage: line.matchMessage,
       orderQty: line.orderQty,
@@ -1958,6 +1975,42 @@ function toLocalGoodsSpecCandidate(row: WdtGoodsSpecRow): LocalGoodsSpecCandidat
     barcode: row.barcode,
     barcodes: parseBarcodes(row.barcodesJson),
     deleted: row.deleted,
+  };
+}
+
+async function loadLocalSuiteCandidates(database: DatabaseContext): Promise<LocalSuiteCandidate[]> {
+  const suites = await database.db.select().from(wdtSuites);
+  if (suites.length === 0) return [];
+  const components = await database.db.select().from(wdtSuiteComponents);
+  const componentsBySuiteNo = new Map<string, WdtSuiteComponentRow[]>();
+  for (const component of components) {
+    const rows = componentsBySuiteNo.get(component.suiteNo) ?? [];
+    rows.push(component);
+    componentsBySuiteNo.set(component.suiteNo, rows);
+  }
+
+  const candidates: LocalSuiteCandidate[] = [];
+  for (const suite of suites) {
+    const activeComponents = (componentsBySuiteNo.get(suite.suiteNo) ?? [])
+      .filter((component) => component.deleted !== 1 && component.specNo)
+      .sort((a, b) => a.sortOrder - b.sortOrder);
+    if (activeComponents.length !== 1) continue;
+    candidates.push(toLocalSuiteCandidate(suite, activeComponents[0]));
+  }
+  return candidates;
+}
+
+function toLocalSuiteCandidate(suite: WdtSuiteRow, component: WdtSuiteComponentRow): LocalSuiteCandidate {
+  return {
+    suiteNo: suite.suiteNo,
+    suiteName: suite.suiteName,
+    barcode: suite.barcode,
+    componentSpecNo: component.specNo,
+    componentGoodsNo: component.goodsNo,
+    componentGoodsName: component.goodsName,
+    componentSpecName: component.specName,
+    componentBarcode: component.barcode,
+    deleted: suite.deleted,
   };
 }
 
@@ -2204,6 +2257,7 @@ function toReviewLineDto(line: ReviewLineRow, decision?: ReviewDecisionRow): Rev
     goodsName: line.goodsName,
     specName: line.specName,
     wdtSpecNo: line.wdtSpecNo,
+    wdtMakeOrderCode: line.wdtMakeOrderCode || line.wdtSpecNo,
     matchStatus: line.matchStatus,
     matchMessage: line.matchMessage,
     orderQty: line.orderQty,
@@ -3071,7 +3125,7 @@ function renderWdtImportRow(
     发票类型: WDT_IMPORT_DEFAULTS.invoiceType,
     发票抬头: WDT_IMPORT_DEFAULTS.invoiceTitle,
     业务员: actor?.username ?? "",
-    商家编码: line.wdtSpecNo,
+    商家编码: line.wdtMakeOrderCode || line.wdtSpecNo,
     货品数量: line.approvedShipQty,
     货品价格: numberOrBlank(line.contractPrice),
   };

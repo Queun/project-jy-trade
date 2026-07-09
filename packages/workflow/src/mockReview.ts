@@ -99,6 +99,7 @@ export function buildMockReview(orderFile: string, mockDataFile: string, batchId
       goodsName: match?.goodsName ?? "",
       specName: match?.specName ?? "",
       wdtSpecNo: line.wdtSpecNo || match?.wdtSpecNo || "",
+      wdtMakeOrderCode: line.wdtSpecNo || match?.wdtSpecNo || "",
       matchStatus: match?.status ?? "not_found",
       matchMessage: match?.message ?? "未匹配",
       orderQty: line.orderQty,

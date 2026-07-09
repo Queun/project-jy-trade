@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, rmSync, unlinkSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -19,6 +19,8 @@ import {
   storeAddresses,
   wdtGoodsSpecs,
   wdtGoodsSyncRuns,
+  wdtSuiteComponents,
+  wdtSuites,
 } from "./db/schema.js";
 import { buildApiServer } from "./server.js";
 import type { StockLookupClient, StoreOptions } from "./store.js";
@@ -2173,6 +2175,82 @@ describe("api server", () => {
     await app.close();
   });
 
+  it("matches single-component WDT suites and exports the suite code for make-order", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await seedSuccessfulGoodsCache(database);
+    await seedSingleComponentSuite(database);
+    await database.close();
+
+    const suiteOrderFile = createSuiteOrderFile(resolve(projectRoot, "outputs/fixtures/suite-order.xlsx"));
+    const stockClient: StockLookupClient = {
+      async queryStock(specNo) {
+        expect(specNo).toBe("021700004");
+        return {
+          status: 0,
+          data: {
+            total_count: 1,
+            detail_list: [{ spec_no: specNo, warehouse_no: "001", warehouse_name: "主仓", available_send_stock: 10 }],
+          },
+        };
+      },
+    };
+    const app = buildTestServer(databaseUrl, undefined, stockClient);
+    const cookie = await loginCookie(app);
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/v1/batches",
+      payload: { filePath: suiteOrderFile, mode: "production_api" },
+      headers: { cookie },
+    });
+    const batch = created.json();
+
+    const review = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${batch.id}/actions/run-real-review`,
+      payload: {},
+      headers: { cookie },
+    });
+    expect(review.statusCode).toBe(200);
+    expect(review.json()).toMatchObject({ stockQueriedCount: 1 });
+
+    const linesResponse = await app.inject({
+      method: "GET",
+      url: `/api/v1/batches/${batch.id}/review-lines`,
+      headers: { cookie },
+    });
+    const [line] = linesResponse.json();
+    expect(line).toMatchObject({
+      matchStatus: "matched",
+      wdtSpecNo: "021700004",
+      wdtMakeOrderCode: "2150317560013",
+      decision: "ship",
+      approvedShipQty: 2,
+    });
+    await seedStoreAddresses(app, cookie, [line]);
+
+    const exportResponse = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${batch.id}/exports`,
+      payload: { type: "wdt_import" },
+      headers: { cookie },
+    });
+    expect(exportResponse.statusCode).toBe(201);
+    const downloadResponse = await app.inject({
+      method: "GET",
+      url: exportResponse.json().downloadUrl,
+      headers: { cookie },
+    });
+    const workbook = XLSX.read(downloadResponse.rawPayload, { type: "buffer" });
+    const rows = XLSX.utils.sheet_to_json<Record<string, string | number>>(workbook.Sheets["Sheet1"], { defval: "" });
+    expect(rows[0]).toMatchObject({
+      商家编码: "2150317560013",
+      货品数量: 2,
+    });
+    await app.close();
+  });
+
   it("uses WDT available send stock instead of physical stock numbers", async () => {
     const databaseUrl = testDatabaseUrl();
     const database = createDatabaseContext(databaseUrl);
@@ -2471,6 +2549,56 @@ function testDatabaseUrl() {
   return `file:../../outputs/api-test-${randomUUID()}.db`;
 }
 
+function createSuiteOrderFile(filePath: string) {
+  mkdirSync(resolve(filePath, ".."), { recursive: true });
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(
+    workbook,
+    XLSX.utils.json_to_sheet([
+      {
+        订货通知单号: "SUITE-NOTICE-001",
+        订货审批单号: "SUITE-APPROVAL-001",
+        阅读状态: "已读",
+        送货方式: "配送",
+        状态: "待处理",
+        送货地: "测试仓",
+        大类: "测试品类",
+        门店: "STORE-SUITE",
+        门店名称: "组合装测试门店",
+        订货日期: "2026-07-09",
+        截止日期: "2026-07-10",
+        上传时间: "2026-07-09 10:00:00",
+        业务员: "测试业务员",
+        制单人: "测试制单人",
+        制单时间: "2026-07-09 09:00:00",
+        审核人: "测试审核人",
+        商品编码: "2150317560013",
+        商品名称: "lelabo护发素(33檀香系列)50ml",
+        商品条码: "2150317560013",
+        规格: "50ml",
+        运输规格: "测试运输规格",
+        订货箱数: "1",
+        订货数: "2",
+        未含税进价: "10.00",
+        含税合同进价: "11.30",
+        含税进价: "11.30",
+        折扣率: "1",
+        "保质期(天)": "365",
+        实收数量: "",
+        赠品率: "0",
+        TD: "",
+        DA: "",
+        PD: "",
+        SPD: "",
+        REBATE: "",
+      },
+    ]),
+    "订货通知单",
+  );
+  writeFileSync(filePath, XLSX.write(workbook, { type: "buffer", bookType: "xlsx" }) as Buffer);
+  return filePath;
+}
+
 async function createReviewedBatch(
   app: ReturnType<typeof buildApiServer>,
   mockDataFile = "examples/mock_flow_data.json",
@@ -2564,6 +2692,36 @@ async function seedSuccessfulGoodsCache(database: ReturnType<typeof createDataba
     barcodesJson: JSON.stringify(["2153722460015", "3282770392869"]),
     deleted: 0,
     modified: now,
+    rawJson: "{}",
+    syncedAt: now,
+  });
+}
+
+async function seedSingleComponentSuite(database: ReturnType<typeof createDatabaseContext>) {
+  const now = "2026-07-09T00:00:00.000Z";
+  await database.db.insert(wdtSuites).values({
+    id: "wdt-suite-2150317560013",
+    suiteNo: "2150317560013",
+    suiteName: "lelabo护发素(33檀香系列)50ml",
+    barcode: "2150317560013",
+    deleted: 0,
+    modified: now,
+    rawJson: "{}",
+    syncedAt: now,
+  });
+  await database.db.insert(wdtSuiteComponents).values({
+    id: "wdt-suite-component-2150317560013-1",
+    suiteNo: "2150317560013",
+    sortOrder: 1,
+    specNo: "021700004",
+    goodsNo: "021700004",
+    goodsName: "【中小样】le labo护发素(33檀香系列)",
+    specName: "50ml",
+    specCode: "",
+    barcode: "021700004",
+    quantity: 1,
+    ratio: 1,
+    deleted: 0,
     rawJson: "{}",
     syncedAt: now,
   });

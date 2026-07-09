@@ -80,6 +80,7 @@ export const reviewLines = sqliteTable(
     goodsName: text("goods_name").notNull().default(""),
     specName: text("spec_name").notNull().default(""),
     wdtSpecNo: text("wdt_spec_no").notNull().default(""),
+    wdtMakeOrderCode: text("wdt_make_order_code").notNull().default(""),
     matchStatus: text("match_status", { enum: ["matched", "not_found", "ambiguous", "api_error"] }).notNull(),
     matchMessage: text("match_message").notNull().default(""),
     orderQty: real("order_qty").notNull(),

@@ -23,12 +23,31 @@ export interface LocalGoodsSpecCandidate {
   deleted?: number;
 }
 
+export interface LocalSuiteCandidate {
+  suiteNo: string;
+  suiteName?: string;
+  barcode?: string;
+  componentSpecNo: string;
+  componentGoodsNo?: string;
+  componentGoodsName?: string;
+  componentSpecName?: string;
+  componentBarcode?: string;
+  deleted?: number;
+}
+
 export interface LocalProductMatchSources {
   mappings: ProductMappingCandidate[];
   goodsSpecs: LocalGoodsSpecCandidate[];
+  suites?: LocalSuiteCandidate[];
 }
 
 export function decideLocalProductMatch(input: ProductMatchInput, sources: LocalProductMatchSources): ProductMatchDecision {
+  const goodsDecision = decideProductMatch(input, sources.goodsSpecs.filter((spec) => spec.deleted !== 1).map(toProductCandidate));
+  if (isAutomaticCodeDecision(goodsDecision)) return goodsDecision;
+
+  const suiteDecision = decideProductMatch(input, (sources.suites ?? []).filter((suite) => suite.deleted !== 1).map(toSuiteProductCandidate));
+  if (isAutomaticCodeDecision(suiteDecision)) return suiteDecision;
+
   const mapping = findConfirmedMapping(input, sources.mappings);
   if (mapping) {
     return {
@@ -48,7 +67,9 @@ export function decideLocalProductMatch(input: ProductMatchInput, sources: Local
     };
   }
 
-  return decideProductMatch(input, sources.goodsSpecs.filter((spec) => spec.deleted !== 1).map(toProductCandidate));
+  if (goodsDecision.status === "ambiguous") return goodsDecision;
+  if (suiteDecision.status === "ambiguous") return suiteDecision;
+  return goodsDecision;
 }
 
 function findConfirmedMapping(input: ProductMatchInput, mappings: ProductMappingCandidate[]): ProductMappingCandidate | undefined {
@@ -70,4 +91,22 @@ function toProductCandidate(spec: LocalGoodsSpecCandidate): ProductCandidate {
     specCode: spec.specCode,
     barcodes: [...new Set([spec.barcode, ...(spec.barcodes ?? [])].filter((item): item is string => Boolean(item)))],
   };
+}
+
+function toSuiteProductCandidate(suite: LocalSuiteCandidate): ProductCandidate {
+  return {
+    source: "suite",
+    goodsNo: suite.suiteNo,
+    goodsName: suite.suiteName,
+    specNo: suite.componentSpecNo,
+    specName: suite.componentSpecName,
+    specCode: suite.suiteNo,
+    makeOrderCode: suite.suiteNo,
+    barcodes: [...new Set([suite.barcode, suite.suiteNo, suite.componentBarcode].filter((item): item is string => Boolean(item)))],
+  };
+}
+
+function isAutomaticCodeDecision(decision: ProductMatchDecision): boolean {
+  if (decision.status === "matched") return true;
+  return decision.status === "ambiguous" && decision.candidates.some((candidate) => candidate.basis === "barcode" || candidate.basis === "code");
 }

@@ -1473,6 +1473,7 @@ function reviewLine(patch: Partial<ReviewLineDto>): ReviewLineDto {
     goodsName: "商品",
     specName: "规格",
     wdtSpecNo: "SPEC",
+    wdtMakeOrderCode: "SPEC",
     matchStatus: "matched",
     matchMessage: "matched",
     orderQty: 5,
