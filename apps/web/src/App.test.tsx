@@ -379,7 +379,7 @@ describe("App", () => {
     await waitFor(() => expect(lines.find((line) => line.id === "line-1")?.decision).toBe("ship"));
     fireEvent.change(within(row).getByLabelText("审核发货数 line-1"), { target: { value: "8" } });
     fireEvent.change(within(row).getByLabelText("审核原因 line-1"), { target: { value: "人工确认额外库存" } });
-    fireEvent.click(within(row).getByRole("button", { name: "保存数量" }));
+    fireEvent.click(within(row).getByRole("button", { name: "保存" }));
 
     await waitFor(() => expect(within(row).getByText("超建议数")).toBeInTheDocument());
     expect(lines.find((line) => line.id === "line-1")).toMatchObject({
@@ -401,17 +401,19 @@ describe("App", () => {
     expect(within(row).queryByText("优先处理必须填写原因")).not.toBeInTheDocument();
   });
 
-  it("auto-saves reason edits when the field loses focus", async () => {
+  it("shows a save button only after editing quantity or reason", async () => {
     render(<App />);
     await clickBatch();
     switchToReviewTab();
 
     const row = await rowFor("可发商品");
+    expect(within(row).queryByRole("button", { name: "保存" })).not.toBeInTheDocument();
     const reasonInput = within(row).getByLabelText("审核原因 line-1");
     fireEvent.change(reasonInput, { target: { value: "门店备注" } });
-    fireEvent.blur(reasonInput);
 
+    fireEvent.click(within(row).getByRole("button", { name: "保存" }));
     await waitFor(() => expect(lines.find((line) => line.id === "line-1")?.reason).toBe("门店备注"));
+    expect(within(row).queryByRole("button", { name: "保存" })).not.toBeInTheDocument();
   });
 
   it("marks priority lines and moves them to the top", async () => {

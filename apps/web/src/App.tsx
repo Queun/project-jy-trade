@@ -95,7 +95,6 @@ export function App() {
   const [activeFilter, setActiveFilter] = useState<FilterKey>("all");
   const [draftById, setDraftById] = useState<Record<string, ReviewDraft>>({});
   const [errorsById, setErrorsById] = useState<Record<string, string>>({});
-  const [savingReasonById, setSavingReasonById] = useState<Record<string, boolean>>({});
   const [goodsSyncRun, setGoodsSyncRun] = useState<WdtGoodsSyncRunDto | null>(null);
   const [goodsSyncError, setGoodsSyncError] = useState("正在读取商品同步状态");
   const [goodsSyncMessage, setGoodsSyncMessage] = useState("");
@@ -625,17 +624,6 @@ export function App() {
     setMessage(priority ? "已标记为优先处理" : "已取消优先处理");
   }
 
-  async function autoSaveReason(line: ReviewLineDto, reason: string) {
-    const draft = { ...draftById[line.id], reason };
-    setSavingReasonById((current) => ({ ...current, [line.id]: true }));
-    await saveDecision(line, draft, { silent: true });
-    setSavingReasonById((current) => {
-      const next = { ...current };
-      delete next[line.id];
-      return next;
-    });
-  }
-
   async function saveWarehouseSettings() {
     if (!warehouseSettingsDraft) return;
     const response = await fetch("/api/v1/settings/warehouse-usage", {
@@ -929,7 +917,6 @@ export function App() {
                 errorsById={errorsById}
                 filteredLines={filteredLines}
                 isDeveloperMode={developerMode}
-                savingReasonById={savingReasonById}
                 canReview={permissions.canReview}
                 stats={stats}
                 mappingFocusQuery={mappingFocusQuery}
@@ -942,7 +929,6 @@ export function App() {
                 onMessage={setMessage}
                 onPriorityChange={togglePriority}
                 onQuickDecision={quickDecision}
-                onReasonSave={autoSaveReason}
                 onRecheckConfirmedOrder={() => void recheckConfirmedOrderBatch(activeBatch, { userTriggered: true })}
                 onSave={saveDecision}
                 onSubmitReview={() => void submitReview()}
@@ -1388,7 +1374,6 @@ function ReviewTab({
   isDeveloperMode,
   mappingFocusQuery,
   mappingFocusProduct,
-  savingReasonById,
   canRecheckConfirmedOrder,
   canReview,
   recheckingConfirmedOrder,
@@ -1401,7 +1386,6 @@ function ReviewTab({
   onMessage,
   onPriorityChange,
   onQuickDecision,
-  onReasonSave,
   onRecheckConfirmedOrder,
   onSave,
   onSubmitReview,
@@ -1414,7 +1398,6 @@ function ReviewTab({
   isDeveloperMode: boolean;
   mappingFocusQuery: string;
   mappingFocusProduct: ProductMappingFocusProduct | null;
-  savingReasonById: Record<string, boolean>;
   canRecheckConfirmedOrder: boolean;
   canReview: boolean;
   recheckingConfirmedOrder: boolean;
@@ -1427,7 +1410,6 @@ function ReviewTab({
   onMessage: (message: string) => void;
   onPriorityChange: (line: ReviewLineDto, priority: boolean) => void;
   onQuickDecision: (line: ReviewLineDto, decision: ReviewDecision) => void;
-  onReasonSave: (line: ReviewLineDto, reason: string) => void;
   onRecheckConfirmedOrder: () => void;
   onSave: (line: ReviewLineDto) => void;
   onSubmitReview: () => void;
@@ -1505,14 +1487,12 @@ function ReviewTab({
               <ReviewTable
                 draftById={draftById}
                 errorsById={errorsById}
-                savingReasonById={savingReasonById}
                 rows={filteredLines}
                 readOnly={!canReview}
                 onDraftChange={onDraftChange}
                 onLocateMapping={onLocateMapping}
                 onPriorityChange={onPriorityChange}
                 onQuickDecision={onQuickDecision}
-                onReasonSave={onReasonSave}
                 onSave={onSave}
                 confirmedOrderMode={confirmedOrderMode}
               />

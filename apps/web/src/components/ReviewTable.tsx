@@ -10,14 +10,12 @@ interface ReviewTableProps {
   rows: ReviewLineDto[];
   draftById: Record<string, ReviewDraft>;
   errorsById: Record<string, string>;
-  savingReasonById: Record<string, boolean>;
   confirmedOrderMode?: boolean;
   readOnly?: boolean;
   onDraftChange: (lineId: string, patch: Partial<ReviewDraft>) => void;
   onLocateMapping: (line: ReviewLineDto) => void;
   onPriorityChange: (line: ReviewLineDto, priority: boolean) => void;
   onSave: (line: ReviewLineDto) => void;
-  onReasonSave: (line: ReviewLineDto, reason: string) => void;
   onQuickDecision: (line: ReviewLineDto, decision: ReviewDecision) => void;
 }
 
@@ -119,13 +117,11 @@ export function ReviewTable({
   rows,
   draftById,
   errorsById,
-  savingReasonById,
   confirmedOrderMode = false,
   readOnly = false,
   onDraftChange,
   onLocateMapping,
   onPriorityChange,
-  onReasonSave,
   onSave,
   onQuickDecision,
 }: ReviewTableProps) {
@@ -193,9 +189,12 @@ export function ReviewTable({
           reason: line.reason,
         };
         const error = errorsById[line.id];
-        const isSavingReason = Boolean(savingReasonById[line.id]);
         const approvedQty = Number(draft.approvedShipQty);
         const isOverSuggested = draft.decision === "ship" && Number.isFinite(approvedQty) && approvedQty > line.suggestedShipQty;
+        const isDirty =
+          draft.decision !== line.decision
+          || draft.approvedShipQty !== String(line.approvedShipQty)
+          || draft.reason !== line.reason;
 
         return (
           <div className="min-w-80 space-y-2">
@@ -225,32 +224,36 @@ export function ReviewTable({
                 优先处理
               </label>
             </div>
-            <div className="grid gap-2 sm:grid-cols-[120px_1fr_auto]">
+            <div className="flex flex-wrap items-center gap-2">
               <input
                 aria-label={`审核发货数 ${line.id}`}
-                className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+                className="h-9 w-28 rounded-md border border-input bg-background px-2 text-sm"
                 disabled={readOnly}
+                inputMode="numeric"
                 min={0}
-                type="number"
+                pattern="[0-9]*"
+                step={1}
+                type="text"
                 value={draft.approvedShipQty}
-                onChange={(event) => onDraftChange(line.id, { approvedShipQty: event.target.value })}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  if (/^\d*$/.test(value)) onDraftChange(line.id, { approvedShipQty: value });
+                }}
               />
               <input
                 aria-label={`审核原因 ${line.id}`}
-                className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+                className="h-9 min-w-52 flex-1 rounded-md border border-input bg-background px-2 text-sm"
                 disabled={readOnly}
                 placeholder={confirmedOrderMode ? "处理备注" : "原因"}
                 value={draft.reason}
-                onChange={(event) => {
-                  onDraftChange(line.id, { reason: event.target.value });
-                  onReasonSave(line, event.target.value);
-                }}
+                onChange={(event) => onDraftChange(line.id, { reason: event.target.value })}
               />
-              <Button className="h-9 px-3" disabled={readOnly} onClick={() => onSave(line)}>
-                保存数量
-              </Button>
+              {isDirty && !readOnly ? (
+                <Button className="h-9 px-3" onClick={() => onSave(line)}>
+                  保存
+                </Button>
+              ) : null}
             </div>
-            {isSavingReason ? <div className="text-xs text-muted-foreground">原因保存中...</div> : null}
             {error ? <div className="text-xs text-rose-700">{error}</div> : null}
           </div>
         );
