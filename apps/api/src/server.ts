@@ -47,8 +47,10 @@ interface BuildApiServerOptions extends StoreOptions {
   logger?: boolean;
 }
 
+const excelUploadBodyLimitBytes = 50 * 1024 * 1024;
+
 export function buildApiServer(options: BuildApiServerOptions = {}) {
-  const app = Fastify({ logger: options.logger ?? true });
+  const app = Fastify({ bodyLimit: excelUploadBodyLimitBytes, logger: options.logger ?? true });
   const store = createSqliteStore(options);
   const projectRoot = options.projectRoot ?? resolveProjectRoot();
 
