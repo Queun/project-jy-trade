@@ -1150,6 +1150,18 @@ function ImportTab({
 }) {
   const canRunReal = canImport && goodsSyncRun?.status === "success" && (isDeveloperMode || Boolean(selectedOrderFileName));
   const canRunConfirmed = canImport && Boolean(selectedOrderFileName);
+  const realImportHint = !canImport
+    ? "当前账号不能导入订单"
+    : goodsSyncRun?.status !== "success"
+      ? "商品档案同步成功后才能导入新订单"
+      : !selectedOrderFileName && !isDeveloperMode
+        ? "请先选择订货单 Excel 文件"
+        : "导入原始订货单，系统会先生成初审结果";
+  const confirmedImportHint = !canImport
+    ? "当前账号不能导入订单"
+    : !selectedOrderFileName
+      ? "请先选择确定单 Excel 文件"
+      : "导入已经审核过的确定单，直接进入做单准备";
 
   return (
     <section className="mt-4">
@@ -1192,17 +1204,32 @@ function ImportTab({
             />
           </>
         ) : null}
-        <div className="mt-4 flex flex-wrap items-center gap-3">
-          <Button disabled={!canRunReal} onClick={onRunReal}>
-            <FileSpreadsheet className="h-4 w-4" />
-            导入新订单
-          </Button>
-          <Button className="bg-muted text-muted-foreground hover:bg-muted/80" disabled={!canRunConfirmed} onClick={onRunConfirmed}>
-            <PackageCheck className="h-4 w-4" />
-            导入确定单
-          </Button>
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
+          <span className="block" title={realImportHint}>
+            <Button aria-label="导入新订单" className="h-auto min-h-12 w-full justify-start px-4 py-3 text-left" disabled={!canRunReal} onClick={onRunReal}>
+              <FileSpreadsheet className="h-4 w-4 shrink-0" />
+              <span className="grid gap-0.5">
+                <span>导入新订单</span>
+                <span className="text-xs font-normal text-primary-foreground/85">导入后先审核，再生成做单文件</span>
+              </span>
+            </Button>
+          </span>
+          <span className="block" title={confirmedImportHint}>
+            <Button
+              aria-label="导入确定单"
+              className="h-auto min-h-12 w-full justify-start border border-primary/30 bg-card px-4 py-3 text-left text-primary shadow-sm hover:border-primary/50 hover:bg-teal-50 disabled:bg-muted disabled:text-muted-foreground"
+              disabled={!canRunConfirmed}
+              onClick={onRunConfirmed}
+            >
+              <PackageCheck className="h-4 w-4 shrink-0" />
+              <span className="grid gap-0.5">
+                <span>导入确定单</span>
+                <span className="text-xs font-normal text-current opacity-75">已审核的单据，直接做单</span>
+              </span>
+            </Button>
+          </span>
           {isDeveloperMode ? (
-            <Button className="bg-muted text-muted-foreground hover:bg-muted/80" onClick={onRunDemo}>
+            <Button className="bg-muted text-muted-foreground hover:bg-muted/80 md:col-span-2" onClick={onRunDemo}>
               <RefreshCcw className="h-4 w-4" />
               生成演示批次
             </Button>
