@@ -2654,6 +2654,64 @@ describe("api server", () => {
     await app.close();
   });
 
+  it("supplements stored product match candidates with live same-name alternatives", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await database.db.insert(wdtGoodsSpecs).values([
+      {
+        id: "wdt-goods-spec-live-5ml",
+        goodsNo: "020001538",
+        goodsName: "【中小样】肌肤之钥金致乳霜",
+        specNo: "020001538",
+        specName: "5ml",
+        barcode: "020001538",
+        barcodesJson: JSON.stringify(["020001538"]),
+        syncedAt: "2026-07-03T00:00:00.000Z",
+      },
+      {
+        id: "wdt-goods-spec-live-2ml",
+        goodsNo: "020001539",
+        goodsName: "【中小样】肌肤之钥金致乳霜",
+        specNo: "020001539",
+        specName: "2ml",
+        barcode: "020001539",
+        barcodesJson: JSON.stringify(["020001539"]),
+        syncedAt: "2026-07-03T00:00:00.000Z",
+      },
+    ]);
+    await database.db.insert(reviewLines).values({
+      id: "review-line-live-candidates",
+      batchId: "batch-live-candidates",
+      sortOrder: 1,
+      orderNoticeNo: "ORDER-LIVE",
+      excelRow: 2,
+      storeNo: "STORE-LIVE",
+      storeName: "测试门店",
+      uploadTime: "2026-07-03T00:00:00.000Z",
+      externalBarcode: "2153659120013",
+      externalGoodsCode: "5365912",
+      externalGoodsName: "肌肤之钥金致乳霜5ml",
+      matchStatus: "ambiguous",
+      orderQty: 1,
+      suggestedShipQty: 0,
+      status: "未匹配",
+    });
+    await database.close();
+    const app = buildTestServer(databaseUrl);
+    const cookie = await loginCookie(app);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/v1/product-match-candidates?query=2153659120013",
+      headers: { cookie },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().map((candidate: { wdtSpecNo: string }) => candidate.wdtSpecNo)).toEqual(["020001538", "020001539"]);
+    await app.close();
+  });
+
   it("runs real review from cached goods specs and read-only WDT stock", async () => {
     const databaseUrl = testDatabaseUrl();
     const database = createDatabaseContext(databaseUrl);

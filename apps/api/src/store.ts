@@ -1274,8 +1274,10 @@ export function createSqliteStore(options: StoreOptions = {}) {
             .limit(250)
         : await base.orderBy(desc(productMatchCandidates.createdAt)).limit(250);
       const confirmedMappings = await database.db.select().from(productMappings).where(eq(productMappings.status, "confirmed"));
+      const liveCandidates = trimmed ? await buildLiveProductMatchCandidates(database, trimmed) : [];
       const candidates = dedupeProductMatchCandidates(
-        rows.map(toProductMatchCandidateDto).filter((candidate) => !confirmedMappings.some((mapping) => productCandidateMatchesMapping(candidate, mapping))),
+        [...rows.map(toProductMatchCandidateDto), ...liveCandidates]
+          .filter((candidate) => !confirmedMappings.some((mapping) => productCandidateMatchesMapping(candidate, mapping))),
       )
         .sort(compareProductMatchCandidates)
         .slice(0, 50);
@@ -2093,6 +2095,92 @@ function dedupeProductMatchCandidates(candidates: ProductMatchCandidateDto[]): P
     }
   }
   return [...byKey.values()];
+}
+
+async function buildLiveProductMatchCandidates(database: DatabaseContext, query: string): Promise<ProductMatchCandidateDto[]> {
+  const reviewRows = await database.db
+    .select()
+    .from(reviewLines)
+    .where(
+      or(
+        eq(reviewLines.externalBarcode, query),
+        eq(reviewLines.externalGoodsCode, query),
+        like(reviewLines.externalGoodsName, `%${query}%`),
+      ),
+    )
+    .limit(20);
+
+  const inputs = reviewRows.length > 0
+    ? reviewRows
+    : [liveQueryReviewLine(query)];
+  if (inputs.length === 0) return [];
+
+  const goodsSpecs = (await database.db.select().from(wdtGoodsSpecs)).map(toLocalGoodsSpecCandidate);
+  const suites = await loadLocalSuiteCandidates(database);
+  const candidates: ProductMatchCandidateDto[] = [];
+
+  for (const line of inputs) {
+    const fullDecision = decideLocalProductMatch(reviewLineToProductMatchInput(line), { goodsSpecs, suites, mappings: [] });
+    const nameDecision = decideLocalProductMatch(reviewLineToNameOnlyProductMatchInput(line), { goodsSpecs, suites, mappings: [] });
+    candidates.push(...toLiveProductMatchCandidates(line, fullDecision));
+    candidates.push(...toLiveProductMatchCandidates(line, nameDecision));
+  }
+
+  return dedupeProductMatchCandidates(candidates).sort(compareProductMatchCandidates).slice(0, 20);
+}
+
+function liveQueryReviewLine(query: string): Pick<ReviewLineRow, "id" | "batchId" | "externalBarcode" | "externalGoodsCode" | "externalGoodsName" | "originalSpec"> {
+  return {
+    id: "live-query",
+    batchId: "live",
+    externalBarcode: "",
+    externalGoodsCode: "",
+    externalGoodsName: query,
+    originalSpec: "",
+  };
+}
+
+function reviewLineToProductMatchInput(line: Pick<ReviewLineRow, "externalBarcode" | "externalGoodsCode" | "externalGoodsName" | "originalSpec">) {
+  return {
+    barcode: line.externalBarcode,
+    goodsCode: line.externalGoodsCode,
+    goodsName: line.externalGoodsName,
+    specName: line.originalSpec,
+  };
+}
+
+function reviewLineToNameOnlyProductMatchInput(line: Pick<ReviewLineRow, "externalGoodsName" | "originalSpec">) {
+  return {
+    goodsName: line.externalGoodsName,
+    specName: line.originalSpec,
+  };
+}
+
+function toLiveProductMatchCandidates(
+  line: Pick<ReviewLineRow, "id" | "batchId" | "externalBarcode" | "externalGoodsCode" | "externalGoodsName">,
+  decision: ProductMatchDecision,
+): ProductMatchCandidateDto[] {
+  const now = new Date().toISOString();
+  const candidates = [decision.candidate, ...decision.candidates].filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate));
+  return candidates
+    .filter((candidate) => candidate.specNo)
+    .map((candidate) => ({
+      id: `live-candidate-${line.id}-${candidate.source}-${candidate.specNo}`,
+      batchId: line.batchId,
+      reviewLineId: line.id,
+      externalBarcode: line.externalBarcode,
+      externalGoodsName: line.externalGoodsName,
+      externalGoodsCode: line.externalGoodsCode,
+      wdtSpecNo: candidate.specNo ?? "",
+      wdtGoodsNo: candidate.goodsNo ?? "",
+      wdtGoodsName: candidate.goodsName ?? "",
+      wdtSpecName: candidate.specName ?? "",
+      wdtBarcode: candidate.barcodes?.[0] ?? "",
+      score: candidate.score,
+      basis: candidate.basis,
+      source: candidate.source,
+      createdAt: now,
+    }));
 }
 
 function compareProductMatchCandidates(left: ProductMatchCandidateDto, right: ProductMatchCandidateDto): number {
