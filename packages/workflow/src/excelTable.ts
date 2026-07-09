@@ -9,9 +9,9 @@ export function cleanCell(value: unknown): string {
   return /^\d+\.0$/.test(text) ? text.slice(0, -2) : text;
 }
 
-export function readFirstSheetRows(filePath: string): TableRow[] {
+export function readFirstSheetRows(filePath: string, preferredSheetName?: string): TableRow[] {
   const workbook = XLSX.readFile(filePath, { cellDates: false, raw: false });
-  const firstSheetName = workbook.SheetNames[0];
+  const firstSheetName = preferredSheetName && workbook.SheetNames.includes(preferredSheetName) ? preferredSheetName : workbook.SheetNames[0];
   if (!firstSheetName) return [];
   const sheet = workbook.Sheets[firstSheetName];
   const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, {

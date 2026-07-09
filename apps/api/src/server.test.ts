@@ -852,7 +852,7 @@ describe("api server", () => {
       url: "/api/v1/confirmed-orders/import",
       payload: {
         fileName: "确定单.xlsx",
-        contentBase64: confirmedOrderWorkbookBase64(),
+        contentBase64: confirmedOrderWorkbookBase64({ extraFirstSheet: true }),
       },
       headers: { cookie },
     });
@@ -3495,6 +3495,7 @@ function confirmedOrderWorkbookBase64(
       shipQty: string;
       contractPrice?: string;
     }>;
+    extraFirstSheet?: boolean;
   } = {},
 ) {
   const goodsCode = options.goodsCode ?? "3282770392869";
@@ -3507,6 +3508,9 @@ function confirmedOrderWorkbookBase64(
     { approvalNo: "APPROVAL-2", noticeNo: "NOTICE-2", goodsCode, barcode, goodsName, spec: "25ml*5", orderQty: "3", shipQty: "3", contractPrice: "12.5" },
   ];
   const workbook = XLSX.utils.book_new();
+  if (options.extraFirstSheet) {
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([["说明"], ["这个 sheet 不应被导入"]]), "原始单");
+  }
   XLSX.utils.book_append_sheet(
     workbook,
     XLSX.utils.aoa_to_sheet([

@@ -67,7 +67,7 @@ export function validateOrderColumns(headers: string[]): string[] {
 }
 
 export function loadOrderLines(filePath: string): OrderLine[] {
-  const rows = readFirstSheetRows(filePath);
+  const rows = readFirstSheetRows(filePath, "原始单");
   if (rows.length === 0) return [];
   const headers = rows[0] ?? [];
   const missing = validateOrderColumns(headers);
