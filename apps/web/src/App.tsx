@@ -107,6 +107,7 @@ export function App() {
   const [developerMode, setDeveloperMode] = useState(false);
   const [mappingFocusQuery, setMappingFocusQuery] = useState("");
   const [mappingFocusProduct, setMappingFocusProduct] = useState<ProductMappingFocusProduct | null>(null);
+  const [recheckingConfirmedOrder, setRecheckingConfirmedOrder] = useState(false);
   const [addressFocus, setAddressFocus] = useState<{
     store: MakeOrderReadinessDto["missingStores"][number];
     requestId: number;
@@ -402,31 +403,57 @@ export function App() {
     setSuccessNotice(result.unmatchedRowCount > 0 ? "确定单导入成功，请先处理做单字段提醒" : "确定单导入成功，可以直接进入做单");
   }
 
-  async function rerunActiveBatchAfterMapping(mapping: ProductMappingDto) {
-    if (!activeBatch) {
-      setMessage("长期商品映射已保存，正式订单重新初审后生效");
-      return;
+  async function recheckConfirmedOrderBatch(
+    batch: BatchSummary | null,
+    options: { userTriggered?: boolean; successMessage?: string } = {},
+  ): Promise<ImportConfirmedOrderResponse | null> {
+    if (!batch) {
+      setMessage("请先选择一个确定单批次");
+      return null;
     }
-    if (activeBatch.sourceType === "confirmed_order") {
-      setMessage("长期商品映射已保存，正在重新校验当前确定单...");
-      const rebuildResponse = await fetch(`/api/v1/batches/${activeBatch.id}/actions/rebuild-confirmed-order`, { method: "POST" });
+    if (batch.sourceType !== "confirmed_order") {
+      setMessage("当前批次不是确定单，不能使用确定单重新校验");
+      return null;
+    }
+
+    setRecheckingConfirmedOrder(true);
+    setMessage(options.userTriggered ? "正在重新校验确定单..." : "正在重新校验当前确定单...");
+    try {
+      const rebuildResponse = await fetch(`/api/v1/batches/${batch.id}/actions/rebuild-confirmed-order`, { method: "POST" });
       if (!rebuildResponse.ok) {
         const error = await rebuildResponse.json();
-        setMessage(error.message ?? "映射已保存，但当前确定单重新校验失败");
-        return;
+        setMessage(error.message ?? "确定单重新校验失败");
+        return null;
       }
       const rebuild = (await rebuildResponse.json()) as ImportConfirmedOrderResponse;
       setActiveBatch(rebuild.batch);
       const lines = await fetchReviewLines(rebuild.batch.id);
-      if (!lines) return;
+      if (!lines) return null;
       setReviewLines(sortReviewLines(lines));
       setDraftById(buildDrafts(lines));
       setErrorsById({});
       await refreshExports(rebuild.batch.id);
       await refreshMakeOrderReadiness(rebuild.batch.id);
       await refreshBatches();
-      setMessage(`长期商品映射已保存，当前确定单已重新校验：${mapping.externalBarcode || mapping.externalGoodsCode || mapping.externalGoodsName}`);
-      setSuccessNotice(rebuild.unmatchedRowCount > 0 ? "确定单已重新校验，请处理做单字段提醒" : "映射已应用到当前确定单");
+      const summary = `确定单已重新校验：${rebuild.parsedRowCount} 行，可做单 ${rebuild.matchedRowCount} 行，待补字段 ${rebuild.unmatchedRowCount} 行`;
+      setMessage(options.successMessage ?? summary);
+      setSuccessNotice(rebuild.unmatchedRowCount > 0 ? "确定单已重新校验，请处理做单字段提醒" : "确定单已重新校验，可以继续做单");
+      return rebuild;
+    } finally {
+      setRecheckingConfirmedOrder(false);
+    }
+  }
+
+  async function rerunActiveBatchAfterMapping(mapping: ProductMappingDto) {
+    if (!activeBatch) {
+      setMessage("长期商品映射已保存，正式订单重新初审后生效");
+      return;
+    }
+    if (activeBatch.sourceType === "confirmed_order") {
+      const rebuild = await recheckConfirmedOrderBatch(activeBatch, {
+        successMessage: `长期商品映射已保存，当前确定单已重新校验：${mapping.externalBarcode || mapping.externalGoodsCode || mapping.externalGoodsName}`,
+      });
+      if (rebuild?.unmatchedRowCount === 0) setSuccessNotice("映射已应用到当前确定单");
       return;
     }
     if (activeBatch.mode !== "production_api") {
@@ -877,8 +904,11 @@ export function App() {
                 onPriorityChange={togglePriority}
                 onQuickDecision={quickDecision}
                 onReasonSave={autoSaveReason}
+                onRecheckConfirmedOrder={() => void recheckConfirmedOrderBatch(activeBatch, { userTriggered: true })}
                 onSave={saveDecision}
                 onSubmitReview={() => void submitReview()}
+                canRecheckConfirmedOrder={permissions.canImport}
+                recheckingConfirmedOrder={recheckingConfirmedOrder}
               />
             ) : null}
 
@@ -1324,7 +1354,9 @@ function ReviewTab({
   mappingFocusQuery,
   mappingFocusProduct,
   savingReasonById,
+  canRecheckConfirmedOrder,
   canReview,
+  recheckingConfirmedOrder,
   stats,
   onBulkApprove,
   onDraftChange,
@@ -1335,6 +1367,7 @@ function ReviewTab({
   onPriorityChange,
   onQuickDecision,
   onReasonSave,
+  onRecheckConfirmedOrder,
   onSave,
   onSubmitReview,
 }: {
@@ -1347,7 +1380,9 @@ function ReviewTab({
   mappingFocusQuery: string;
   mappingFocusProduct: ProductMappingFocusProduct | null;
   savingReasonById: Record<string, boolean>;
+  canRecheckConfirmedOrder: boolean;
   canReview: boolean;
+  recheckingConfirmedOrder: boolean;
   stats: ReturnType<typeof buildStats>;
   onBulkApprove: () => void;
   onDraftChange: (lineId: string, patch: Partial<ReviewDraft>) => void;
@@ -1358,6 +1393,7 @@ function ReviewTab({
   onPriorityChange: (line: ReviewLineDto, priority: boolean) => void;
   onQuickDecision: (line: ReviewLineDto, decision: ReviewDecision) => void;
   onReasonSave: (line: ReviewLineDto, reason: string) => void;
+  onRecheckConfirmedOrder: () => void;
   onSave: (line: ReviewLineDto) => void;
   onSubmitReview: () => void;
 }) {
@@ -1387,7 +1423,14 @@ function ReviewTab({
               {activeBatch ? (confirmedOrderMode ? "核对确定单做单字段和商品提醒" : "确认本批次发货数量和原因") : "请先选择或导入批次"}
             </p>
           </div>
-          {confirmedOrderMode ? null : (
+          {confirmedOrderMode ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <Button disabled={!activeBatch || !canRecheckConfirmedOrder || recheckingConfirmedOrder} onClick={onRecheckConfirmedOrder}>
+                <RefreshCcw className={recheckingConfirmedOrder ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+                {recheckingConfirmedOrder ? "校验中..." : "重新校验确定单"}
+              </Button>
+            </div>
+          ) : (
             <div className="flex flex-wrap items-center gap-2">
               <Button disabled={!activeBatch || !canReview} onClick={onBulkApprove}>
                 <CheckCheck className="h-4 w-4" />
@@ -1400,7 +1443,11 @@ function ReviewTab({
             </div>
           )}
         </div>
-        {!canReview ? <PermissionHint className="mb-3" message="当前账号不能审核发货，请联系管理员或切换到审核账号。" /> : null}
+        {confirmedOrderMode && !canRecheckConfirmedOrder ? (
+          <PermissionHint className="mb-3" message="当前账号不能重新校验确定单，请联系管理员或切换到运营账号。" />
+        ) : !confirmedOrderMode && !canReview ? (
+          <PermissionHint className="mb-3" message="当前账号不能审核发货，请联系管理员或切换到审核账号。" />
+        ) : null}
         {activeBatch ? (
           <>
             <div className="mb-3 flex flex-wrap gap-2">

@@ -902,6 +902,38 @@ describe("App", () => {
     expect(await screen.findByText("映射已应用到当前确定单")).toBeInTheDocument();
     await waitFor(() => expect(lines.every((line) => line.matchStatus === "matched" && line.decision === "ship")).toBe(true));
   });
+
+  it("lets users manually recheck confirmed-order batches", async () => {
+    currentBatch = { ...currentBatch, mode: "production_api", sourceType: "confirmed_order", status: "reviewed" };
+    lines = [
+      reviewLine({
+        id: "line-confirmed-order-stock",
+        externalGoodsName: "确定单库存商品",
+        matchStatus: "matched",
+        status: "库存充足",
+        decision: "ship",
+        suggestedShipQty: 2,
+        approvedShipQty: 2,
+        mainAvailableBefore: 0,
+        nearExpiryAvailableBefore: 0,
+      }),
+    ];
+    render(<App />);
+    await clickBatch();
+    switchToReviewTab();
+
+    expect(await screen.findByText("确定单校验")).toBeInTheDocument();
+    const recheckButton = screen.getByRole("button", { name: "重新校验确定单" });
+    fireEvent.click(recheckButton);
+
+    await waitFor(() =>
+      expect(fetch).toHaveBeenCalledWith("/api/v1/batches/batch-1/actions/rebuild-confirmed-order", {
+        method: "POST",
+      }),
+    );
+    expect(await screen.findByText("确定单已重新校验，可以继续做单")).toBeInTheDocument();
+    expect(screen.getByText("确定单已重新校验：1 行，可做单 1 行，待补字段 0 行")).toBeInTheDocument();
+  });
 });
 
 async function rowFor(productName: string) {
