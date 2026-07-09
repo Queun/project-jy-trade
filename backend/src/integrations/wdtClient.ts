@@ -282,10 +282,18 @@ export class WdtClient {
   }
 
   queryStock(specNo: string, warehouseNo?: string): Promise<WdtStockResponse> {
-    return this.call("wms.StockSpec.search2", {
-      spec_nos: [specNo],
-      ...(warehouseNo ? { warehouse_no: warehouseNo } : {}),
-    }) as Promise<WdtStockResponse>;
+    return this.queryStocks([specNo], warehouseNo);
+  }
+
+  queryStocks(specNos: string[], warehouseNo?: string): Promise<WdtStockResponse> {
+    return this.call(
+      "wms.StockSpec.search2",
+      {
+        spec_nos: specNos,
+        ...(warehouseNo ? { warehouse_no: warehouseNo } : {}),
+      },
+      { pageSize: 1000 },
+    ) as Promise<WdtStockResponse>;
   }
 
   queryRecentStockCandidates(warehouseNo?: string): Promise<WdtStockResponse> {

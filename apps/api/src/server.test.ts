@@ -1006,6 +1006,133 @@ describe("api server", () => {
     await app.close();
   });
 
+  it("queries confirmed-order stock in batches", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await seedSuccessfulGoodsCache(database);
+    const now = "2026-07-03T00:00:00.000Z";
+    await database.db.insert(wdtGoodsSpecs).values({
+      id: "wdt-goods-spec-confirmed-order-batch-2",
+      goodsNo: "GOODS-2",
+      goodsName: "批量库存商品2",
+      specNo: "SPEC-2",
+      specName: "规格2",
+      specCode: "",
+      barcode: "BARCODE-2",
+      barcodesJson: JSON.stringify(["BARCODE-2", "SPEC-2"]),
+      deleted: 0,
+      modified: now,
+      rawJson: "{}",
+      syncedAt: now,
+    });
+    await database.close();
+
+    const stockBatches: string[][] = [];
+    const stockClient: StockLookupClient = {
+      async queryStock() {
+        throw new Error("single stock query should not be used");
+      },
+      async queryStocks(specNos) {
+        stockBatches.push(specNos);
+        return {
+          status: 0,
+          data: {
+            total_count: specNos.length,
+            detail_list: specNos.map((specNo, index) => ({
+              spec_no: specNo,
+              warehouse_no: "MAIN-A",
+              warehouse_name: "OLE主仓",
+              available_send_stock: index === 0 ? 6 : 8,
+            })),
+          },
+        };
+      },
+    };
+    const app = buildTestServer(databaseUrl, undefined, stockClient);
+    const cookie = await loginCookie(app);
+    const imported = await app.inject({
+      method: "POST",
+      url: "/api/v1/confirmed-orders/import",
+      payload: {
+        fileName: "确定单-批量库存.xlsx",
+        contentBase64: confirmedOrderWorkbookBase64({
+          rows: [
+            { noticeNo: "NOTICE-1", goodsCode: "3282770392869", barcode: "2153722460015", goodsName: "雅漾专研保湿修护面膜", shipQty: "2" },
+            { noticeNo: "NOTICE-2", goodsCode: "SPEC-2", barcode: "BARCODE-2", goodsName: "批量库存商品2", shipQty: "3" },
+          ],
+        }),
+      },
+      headers: { cookie },
+    });
+    expect(imported.statusCode).toBe(201);
+    expect(stockBatches).toEqual([["3282770392869", "SPEC-2"]]);
+
+    const linesResponse = await app.inject({
+      method: "GET",
+      url: `/api/v1/batches/${imported.json().batch.id}/review-lines`,
+      headers: { cookie },
+    });
+    expect(linesResponse.statusCode).toBe(200);
+    expect(linesResponse.json().map((line: { mainAvailableBefore: number }) => line.mainAvailableBefore)).toEqual([6, 8]);
+    await app.close();
+  });
+
+  it("retries confirmed-order stock batches after WDT concurrency errors", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await seedSuccessfulGoodsCache(database);
+    await database.close();
+
+    let callCount = 0;
+    const stockClient: StockLookupClient = {
+      async queryStock() {
+        throw new Error("single stock query should not be used");
+      },
+      async queryStocks(specNos) {
+        callCount += 1;
+        if (callCount === 1) {
+          throw new Error("WDT stock query failed: status=100 message=超过最大并发限制,请稍后重试");
+        }
+        return {
+          status: 0,
+          data: {
+            total_count: specNos.length,
+            detail_list: [
+              { spec_no: "3282770392869", warehouse_no: "MAIN-A", warehouse_name: "OLE主仓", available_send_stock: 9 },
+            ],
+          },
+        };
+      },
+    };
+    const app = buildTestServer(databaseUrl, undefined, stockClient);
+    const cookie = await loginCookie(app);
+    const imported = await app.inject({
+      method: "POST",
+      url: "/api/v1/confirmed-orders/import",
+      payload: {
+        fileName: "确定单-库存重试.xlsx",
+        contentBase64: confirmedOrderWorkbookBase64(),
+      },
+      headers: { cookie },
+    });
+    expect(imported.statusCode).toBe(201);
+    expect(callCount).toBe(2);
+
+    const linesResponse = await app.inject({
+      method: "GET",
+      url: `/api/v1/batches/${imported.json().batch.id}/review-lines`,
+      headers: { cookie },
+    });
+    expect(linesResponse.statusCode).toBe(200);
+    for (const line of linesResponse.json()) {
+      expect(line.stockErrorDetail).toBe("");
+      expect(line.mainAvailableBefore).toBe(9);
+    }
+    await app.close();
+  });
+
   it("keeps confirmed-order stock error details separate from user-facing messages", async () => {
     const databaseUrl = testDatabaseUrl();
     const database = createDatabaseContext(databaseUrl);
@@ -3267,20 +3394,55 @@ function externalProductsWorkbookBase64() {
 }
 
 function confirmedOrderWorkbookBase64(
-  options: { goodsCode?: string; barcode?: string; goodsName?: string; storeNo?: string; storeName?: string } = {},
+  options: {
+    goodsCode?: string;
+    barcode?: string;
+    goodsName?: string;
+    storeNo?: string;
+    storeName?: string;
+    rows?: Array<{
+      approvalNo?: string;
+      noticeNo: string;
+      goodsCode: string;
+      barcode: string;
+      goodsName: string;
+      spec?: string;
+      orderQty?: string;
+      shipQty: string;
+      contractPrice?: string;
+    }>;
+  } = {},
 ) {
   const goodsCode = options.goodsCode ?? "3282770392869";
   const barcode = options.barcode ?? "2153722460015";
   const goodsName = options.goodsName ?? "雅漾专研保湿修护面膜";
   const storeNo = options.storeNo ?? "S001";
   const storeName = options.storeName ?? "Ole确定单门店";
+  const rows = options.rows ?? [
+    { approvalNo: "APPROVAL-1", noticeNo: "NOTICE-1", goodsCode, barcode, goodsName, spec: "25ml*5", orderQty: "2", shipQty: "2", contractPrice: "12.5" },
+    { approvalNo: "APPROVAL-2", noticeNo: "NOTICE-2", goodsCode, barcode, goodsName, spec: "25ml*5", orderQty: "3", shipQty: "3", contractPrice: "12.5" },
+  ];
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(
     workbook,
     XLSX.utils.aoa_to_sheet([
       ["审批单号", "通知单号", "收货地编码", "收货地名称", "业务员", "截止日期", "商品编码", "商品条码", "商品名称", "规格", "订货数量", "实际发货数量", "合同进价", "主仓"],
-      ["APPROVAL-1", "NOTICE-1", storeNo, storeName, "原业务员", "2026-07-12", goodsCode, barcode, goodsName, "25ml*5", "2", "2", "12.5", ""],
-      ["APPROVAL-2", "NOTICE-2", storeNo, storeName, "原业务员", "2026-07-12", goodsCode, barcode, goodsName, "25ml*5", "3", "3", "12.5", ""],
+      ...rows.map((row, index) => [
+        row.approvalNo ?? `APPROVAL-${index + 1}`,
+        row.noticeNo,
+        storeNo,
+        storeName,
+        "原业务员",
+        "2026-07-12",
+        row.goodsCode,
+        row.barcode,
+        row.goodsName,
+        row.spec ?? "",
+        row.orderQty ?? row.shipQty,
+        row.shipQty,
+        row.contractPrice ?? "12.5",
+        "",
+      ]),
     ]),
     "确定单",
   );

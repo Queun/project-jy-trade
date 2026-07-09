@@ -108,6 +108,7 @@ type ExternalProductComponentRow = typeof externalProductComponents.$inferSelect
 
 export interface StockLookupClient {
   queryStock(specNo: string): Promise<WdtStockResponse>;
+  queryStocks?(specNos: string[]): Promise<WdtStockResponse>;
 }
 
 interface WarehouseStockSummary {
@@ -118,6 +119,13 @@ interface WarehouseStockSummary {
   usableAvailableStock: number;
   warehouseBreakdown: string;
 }
+
+const WDT_STOCK_BATCH_SIZE = 40;
+const WDT_STOCK_MIN_INTERVAL_MS = process.env.NODE_ENV === "test" ? 0 : 1100;
+const WDT_STOCK_RETRY_DELAYS_MS = process.env.NODE_ENV === "test" ? [0] : [1500];
+
+let wdtStockRequestQueue: Promise<void> = Promise.resolve();
+let lastWdtStockRequestStartedAt = 0;
 
 export interface StoreOptions {
   databaseUrl?: string;
@@ -2320,21 +2328,105 @@ async function queryWarehouseStockSummaries(
   const stockErrorsBySpecNo = new Map<string, StockLookupError>();
   let stockQueriedCount = 0;
 
-  await Promise.all([...new Set(specNos.filter(Boolean))].map(async (specNo) => {
+  for (const batch of stockQueryBatches(specNos, stockClient)) {
     try {
-      const response = await stockClient.queryStock(specNo);
+      const response = await queryStockBatchWithRetry(stockClient, batch);
       if (response.status && response.status !== 0) {
-        stockErrorsBySpecNo.set(specNo, buildStockLookupError(`status=${response.status} message=${response.message ?? ""}`));
-        return;
+        const error = buildStockLookupError(wdtStockResponseErrorDetail(response));
+        for (const specNo of batch) stockErrorsBySpecNo.set(specNo, error);
+        continue;
       }
-      stockBySpecNo.set(specNo, summarizeWarehouseStock(response.data?.detail_list ?? [], settings));
-      stockQueriedCount += 1;
+      const rowsBySpecNo = groupWdtStockRowsBySpecNo(response.data?.detail_list ?? []);
+      for (const specNo of batch) {
+        stockBySpecNo.set(specNo, summarizeWarehouseStock(rowsBySpecNo.get(specNo) ?? [], settings));
+        stockQueriedCount += 1;
+      }
     } catch (error) {
-      stockErrorsBySpecNo.set(specNo, buildStockLookupError(error instanceof Error ? error.message : "库存查询失败"));
+      const stockError = buildStockLookupError(error instanceof Error ? error.message : "库存查询失败");
+      for (const specNo of batch) stockErrorsBySpecNo.set(specNo, stockError);
     }
-  }));
+  }
 
   return { stockBySpecNo, stockErrorsBySpecNo, stockQueriedCount };
+}
+
+function stockQueryBatches(specNos: string[], stockClient: StockLookupClient): string[][] {
+  const uniqueSpecNos = [...new Set(specNos.map((specNo) => specNo.trim()).filter(Boolean))];
+  const batchSize = stockClient.queryStocks ? WDT_STOCK_BATCH_SIZE : 1;
+  return chunk(uniqueSpecNos, batchSize);
+}
+
+async function queryStockBatchWithRetry(stockClient: StockLookupClient, specNos: string[]): Promise<WdtStockResponse> {
+  let latestFailure: unknown;
+  for (const delayMs of [0, ...WDT_STOCK_RETRY_DELAYS_MS]) {
+    if (delayMs > 0) await sleep(delayMs);
+    try {
+      const response = await enqueueWdtStockRequest(() => queryStockBatch(stockClient, specNos));
+      if (!isRetryableWdtStockResponse(response)) return response;
+      latestFailure = new Error(wdtStockResponseErrorDetail(response));
+    } catch (error) {
+      latestFailure = error;
+      if (!isRetryableWdtStockError(error)) throw error;
+    }
+  }
+  if (latestFailure instanceof Error) throw latestFailure;
+  throw new Error("库存查询失败");
+}
+
+async function queryStockBatch(stockClient: StockLookupClient, specNos: string[]): Promise<WdtStockResponse> {
+  if (stockClient.queryStocks) return stockClient.queryStocks(specNos);
+  return stockClient.queryStock(specNos[0] ?? "");
+}
+
+function enqueueWdtStockRequest<T>(request: () => Promise<T>): Promise<T> {
+  const run = async () => {
+    const waitMs = Math.max(0, lastWdtStockRequestStartedAt + WDT_STOCK_MIN_INTERVAL_MS - Date.now());
+    if (waitMs > 0) await sleep(waitMs);
+    lastWdtStockRequestStartedAt = Date.now();
+    return request();
+  };
+  const result = wdtStockRequestQueue.catch(() => undefined).then(run);
+  wdtStockRequestQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+
+function isRetryableWdtStockResponse(response: WdtStockResponse): boolean {
+  if (!response.status || response.status === 0) return false;
+  return isRetryableWdtStockDetail(wdtStockResponseErrorDetail(response));
+}
+
+function isRetryableWdtStockError(error: unknown): boolean {
+  return isRetryableWdtStockDetail(error instanceof Error ? error.message : String(error));
+}
+
+function isRetryableWdtStockDetail(detail: string): boolean {
+  return detail.includes("并发") || detail.includes("频率") || detail.includes("status=100");
+}
+
+function wdtStockResponseErrorDetail(response: WdtStockResponse): string {
+  return `status=${response.status ?? ""} message=${response.message ?? ""}`;
+}
+
+function groupWdtStockRowsBySpecNo(rows: WdtStockRow[]): Map<string, WdtStockRow[]> {
+  const rowsBySpecNo = new Map<string, WdtStockRow[]>();
+  for (const row of rows) {
+    const specNo = (row.spec_no ?? "").trim();
+    if (!specNo) continue;
+    rowsBySpecNo.set(specNo, [...(rowsBySpecNo.get(specNo) ?? []), row]);
+  }
+  return rowsBySpecNo;
+}
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 interface StockLookupError {
@@ -2747,27 +2839,32 @@ async function queryStockBySpecNo(
 ): Promise<Map<string, Pick<ProductMatchCandidateDto, "stockTotalAvailable" | "stockRows" | "stockError">>> {
   const settings = toWarehouseUsageSettingsDto(await getWarehouseUsageSettingsRow(database));
   const stockBySpecNo = new Map<string, Pick<ProductMatchCandidateDto, "stockTotalAvailable" | "stockRows" | "stockError">>();
-  await Promise.all([...new Set(specNos.filter(Boolean))].map(async (specNo) => {
+  for (const batch of stockQueryBatches(specNos, stockClient)) {
     try {
-      const response = await stockClient.queryStock(specNo);
+      const response = await queryStockBatchWithRetry(stockClient, batch);
       if (response.status && response.status !== 0) {
-        stockBySpecNo.set(specNo, { stockError: `库存查询失败 status=${response.status}` });
-        return;
+        const stockError = `库存查询失败 ${wdtStockResponseErrorDetail(response)}`;
+        for (const specNo of batch) stockBySpecNo.set(specNo, { stockError });
+        continue;
       }
-      const rows = (response.data?.detail_list ?? []).map((row) => ({
-        warehouseNo: row.warehouse_no ?? "",
-        warehouseName: row.warehouse_name ?? "",
-        availableSendStock: getWdtAvailableSendStock(row),
-        included: isIncludedWarehouseStock(row, settings),
-      }));
-      stockBySpecNo.set(specNo, {
-        stockTotalAvailable: rows.filter((row) => row.included).reduce((total, row) => total + row.availableSendStock, 0),
-        stockRows: rows,
-      });
+      const rowsBySpecNo = groupWdtStockRowsBySpecNo(response.data?.detail_list ?? []);
+      for (const specNo of batch) {
+        const rows = (rowsBySpecNo.get(specNo) ?? []).map((row) => ({
+          warehouseNo: row.warehouse_no ?? "",
+          warehouseName: row.warehouse_name ?? "",
+          availableSendStock: getWdtAvailableSendStock(row),
+          included: isIncludedWarehouseStock(row, settings),
+        }));
+        stockBySpecNo.set(specNo, {
+          stockTotalAvailable: rows.filter((row) => row.included).reduce((total, row) => total + row.availableSendStock, 0),
+          stockRows: rows,
+        });
+      }
     } catch (error) {
-      stockBySpecNo.set(specNo, { stockError: error instanceof Error ? error.message : "库存查询失败" });
+      const stockError = error instanceof Error ? error.message : "库存查询失败";
+      for (const specNo of batch) stockBySpecNo.set(specNo, { stockError });
     }
-  }));
+  }
   return stockBySpecNo;
 }
 

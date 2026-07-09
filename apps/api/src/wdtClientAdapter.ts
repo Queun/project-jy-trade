@@ -27,6 +27,11 @@ export function createWdtReadClientsFromEnv(profile = normalizeWdtProfile(proces
           assertWdtStockSuccess(response);
           return response;
         },
+        async queryStocks(specNos) {
+          const response = await client.queryStocks(specNos);
+          assertWdtStockSuccess(response);
+          return response;
+        },
       },
     };
   } catch {
