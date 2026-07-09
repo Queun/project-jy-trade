@@ -39,7 +39,7 @@ type FilterKey =
   | "manual_mapping"
   | "over_suggested";
 
-const filters: Array<{ key: FilterKey; label: string }> = [
+const orderFilters: Array<{ key: FilterKey; label: string }> = [
   { key: "all", label: "全部" },
   { key: "ready", label: "可发货" },
   { key: "partial", label: "部分满足" },
@@ -51,6 +51,17 @@ const filters: Array<{ key: FilterKey; label: string }> = [
   { key: "priority", label: "优先处理" },
   { key: "manual_mapping", label: "长期映射" },
   { key: "over_suggested", label: "超建议数" },
+];
+
+const confirmedOrderFilters: Array<{ key: FilterKey; label: string }> = [
+  { key: "all", label: "全部" },
+  { key: "ready", label: "可做单" },
+  { key: "unmatched", label: "待补字段" },
+  { key: "pending", label: "待处理" },
+  { key: "ship", label: "已做单" },
+  { key: "do_not_ship", label: "不做单" },
+  { key: "priority", label: "优先处理" },
+  { key: "manual_mapping", label: "长期映射" },
 ];
 
 const workflowTabs: Array<{ key: WorkTab; label: string; icon: typeof FileSpreadsheet }> = [
@@ -383,8 +394,8 @@ export function App() {
     await refreshExports(result.batch.id);
     await refreshMakeOrderReadiness(result.batch.id);
     await refreshBatches();
-    setMessage(`确定单已导入：${result.parsedRowCount} 行，已匹配 ${result.matchedRowCount} 行，异常 ${result.unmatchedRowCount} 行`);
-    setSuccessNotice(result.unmatchedRowCount > 0 ? "确定单导入成功，请先处理商品异常" : "确定单导入成功，可以直接进入做单");
+    setMessage(`确定单已导入：${result.parsedRowCount} 行，可做单 ${result.matchedRowCount} 行，待补字段 ${result.unmatchedRowCount} 行`);
+    setSuccessNotice(result.unmatchedRowCount > 0 ? "确定单导入成功，请先处理做单字段提醒" : "确定单导入成功，可以直接进入做单");
   }
 
   async function rerunActiveBatchAfterMapping(mapping: ProductMappingDto) {
@@ -717,7 +728,7 @@ export function App() {
           </div>
           <GoodsSyncHeaderStatus error={goodsSyncError} run={goodsSyncRun} />
           <div className="flex flex-wrap items-center gap-2">
-            {activeBatch ? <Badge tone={batchStatusTone(activeBatch.status)}>{batchStatusText(activeBatch.status)}</Badge> : null}
+            {activeBatch ? <Badge tone={batchStatusTone(activeBatch.status)}>{batchStatusText(activeBatch)}</Badge> : null}
             <Button className="h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80" onClick={reopenHelp}>
               <HelpCircle className="h-4 w-4" />
               帮助
@@ -955,11 +966,13 @@ function BatchList({
                       <div className="min-w-0 break-words font-semibold leading-snug text-foreground [overflow-wrap:anywhere]">{batch.fileName}</div>
                     </div>
                   </div>
-                  <Badge tone={batchStatusTone(batch.status)}>{batchStatusText(batch.status)}</Badge>
+                  <Badge tone={batchStatusTone(batch.status)}>{batchStatusText(batch)}</Badge>
                 </div>
                 <div className="mt-3 flex flex-wrap items-center gap-2 text-muted-foreground">
                   <span>{batch.orderLineCount} 行</span>
-                  <span>{batch.matchedBarcodeCount}/{batch.uniqueBarcodeCount} 已匹配</span>
+                  <span>
+                    {batch.matchedBarcodeCount}/{batch.uniqueBarcodeCount} {batch.sourceType === "confirmed_order" ? "可做单" : "已匹配"}
+                  </span>
                 </div>
               </button>
               <div className="flex border-t border-border/70">
@@ -1009,7 +1022,7 @@ function CurrentBatchPanel({ batch, message, reviewLines }: { batch: BatchSummar
           <h2 className="text-lg font-semibold">{batch ? batch.fileName : "尚未选择批次"}</h2>
           <p className="mt-1 text-sm text-muted-foreground">{message}</p>
         </div>
-        {batch ? <Badge tone={batchStatusTone(batch.status)}>{batchStatusText(batch.status)}</Badge> : null}
+        {batch ? <Badge tone={batchStatusTone(batch.status)}>{batchStatusText(batch)}</Badge> : null}
       </div>
       {batch ? (
         <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-4">
@@ -1334,16 +1347,16 @@ function ReviewTab({
     <section className="mt-4 min-w-0 space-y-4">
       <div className="grid grid-cols-2 gap-3 xl:grid-cols-5">
         <Stat label="明细行" value={stats.total} />
-        <Stat label="待审核" value={stats.pending} />
-        <Stat label="发货" value={stats.ship} />
-        <Stat label="不发货" value={stats.doNotShip} />
+        <Stat label={confirmedOrderMode ? "待处理" : "待审核"} value={stats.pending} />
+        <Stat label={confirmedOrderMode ? "做单" : "发货"} value={stats.ship} />
+        <Stat label={confirmedOrderMode ? "不做单" : "不发货"} value={stats.doNotShip} />
         <Stat label="优先处理" value={stats.priority} />
       </div>
       <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
-        <Stat label="已匹配" value={stats.matched} />
-        <Stat label="需确认" value={stats.ambiguous} />
-        <Stat label="未找到" value={stats.notFound} />
-        <Stat label="库存异常" value={stats.inventoryException} />
+        <Stat label={confirmedOrderMode ? "可做单" : "已匹配"} value={stats.matched} />
+        <Stat label={confirmedOrderMode ? "需选做单码" : "需确认"} value={stats.ambiguous} />
+        <Stat label={confirmedOrderMode ? "缺做单码" : "未找到"} value={stats.notFound} />
+        <Stat label={confirmedOrderMode ? "校验异常" : "库存异常"} value={stats.inventoryException} />
       </div>
       <section className="rounded-md border border-border bg-card p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
@@ -1370,7 +1383,7 @@ function ReviewTab({
         {activeBatch ? (
           <>
             <div className="mb-3 flex flex-wrap gap-2">
-              {filters.map((filter) => (
+              {(confirmedOrderMode ? confirmedOrderFilters : orderFilters).map((filter) => (
                 <button
                   key={filter.key}
                   className={
@@ -1398,6 +1411,7 @@ function ReviewTab({
                 onQuickDecision={onQuickDecision}
                 onReasonSave={onReasonSave}
                 onSave={onSave}
+                confirmedOrderMode={confirmedOrderMode}
               />
             ) : (
               <EmptyState title="当前筛选没有明细" description="切换筛选条件，或检查本批次是否已经生成初审明细。" />
@@ -1827,7 +1841,14 @@ function userSyncStatusText(status: WdtGoodsSyncRunDto["status"] | "none") {
   return "未更新";
 }
 
-function batchStatusText(status: BatchSummary["status"]) {
+function batchStatusText(batch: BatchSummary) {
+  const status = batch.status;
+  if (batch.sourceType === "confirmed_order") {
+    if (status === "uploaded") return "已导入";
+    if (status === "matched" || status === "review_generated" || status === "reviewed") return "已校验";
+    if (status === "exported") return "已生成做单";
+    return status;
+  }
   if (status === "uploaded") return "已导入";
   if (status === "matched") return "已匹配";
   if (status === "inventory_synced") return "已查库存";

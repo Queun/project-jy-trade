@@ -802,6 +802,11 @@ describe("App", () => {
 
     expect(await screen.findByText("确定单校验")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "提交审核完成" })).not.toBeInTheDocument();
+    const confirmedOrderRow = await rowFor("雅漾专研保湿修护面膜25ml*5片");
+    expect(within(confirmedOrderRow).getByText("待补做单码")).toBeInTheDocument();
+    expect(within(confirmedOrderRow).getByText("需选做单码")).toBeInTheDocument();
+    expect(within(confirmedOrderRow).queryByText("未匹配")).not.toBeInTheDocument();
+    expect(within(confirmedOrderRow).queryByText("待确认")).not.toBeInTheDocument();
     fireEvent.click(await screen.findByRole("button", { name: /雅漾专研保湿修护面膜25ml/ }));
     fireEvent.click(screen.getByRole("button", { name: "保存长期映射" }));
 

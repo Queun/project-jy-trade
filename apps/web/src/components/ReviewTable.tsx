@@ -11,6 +11,7 @@ interface ReviewTableProps {
   draftById: Record<string, ReviewDraft>;
   errorsById: Record<string, string>;
   savingReasonById: Record<string, boolean>;
+  confirmedOrderMode?: boolean;
   readOnly?: boolean;
   onDraftChange: (lineId: string, patch: Partial<ReviewDraft>) => void;
   onLocateMapping: (line: ReviewLineDto) => void;
@@ -26,11 +27,20 @@ export interface ReviewDraft {
   reason: string;
 }
 
-function statusTone(status: ReviewLineDto["status"]) {
+function statusTone(status: ReviewLineDto["status"], confirmedOrderMode = false) {
+  if (confirmedOrderMode && status === "未匹配") return "warn";
   if (status === "库存充足") return "good";
   if (status === "部分满足") return "warn";
   if (status === "库存不足") return "bad";
   return "neutral";
+}
+
+function statusText(status: ReviewLineDto["status"], confirmedOrderMode = false) {
+  if (!confirmedOrderMode) return status;
+  if (status === "库存充足") return "可做单";
+  if (status === "未匹配") return "待补做单码";
+  if (status === "库存不足") return "需复核";
+  return "待确认数量";
 }
 
 function decisionTone(decision: ReviewDecision) {
@@ -39,13 +49,19 @@ function decisionTone(decision: ReviewDecision) {
   return "neutral";
 }
 
-function decisionText(decision: ReviewDecision) {
-  if (decision === "ship") return "发货";
-  if (decision === "do_not_ship") return "不发";
-  return "待审核";
+function decisionText(decision: ReviewDecision, confirmedOrderMode = false) {
+  if (decision === "ship") return confirmedOrderMode ? "做单" : "发货";
+  if (decision === "do_not_ship") return confirmedOrderMode ? "不做单" : "不发";
+  return confirmedOrderMode ? "待补全" : "待审核";
 }
 
-function matchStatusText(matchStatus: ReviewLineDto["matchStatus"]) {
+function matchStatusText(matchStatus: ReviewLineDto["matchStatus"], confirmedOrderMode = false) {
+  if (confirmedOrderMode) {
+    if (matchStatus === "matched") return "字段已补全";
+    if (matchStatus === "ambiguous") return "需选做单码";
+    if (matchStatus === "not_found") return "缺做单码";
+    return "校验异常";
+  }
   if (matchStatus === "matched") return "已匹配";
   if (matchStatus === "ambiguous") return "待确认";
   if (matchStatus === "not_found") return "未匹配";
@@ -104,6 +120,7 @@ export function ReviewTable({
   draftById,
   errorsById,
   savingReasonById,
+  confirmedOrderMode = false,
   readOnly = false,
   onDraftChange,
   onLocateMapping,
@@ -149,11 +166,13 @@ export function ReviewTable({
       header: "数量",
       cell: ({ row }) => (
         <div className="min-w-28 text-sm">
-          <div>订货 {row.original.orderQty}</div>
-          <div className="mt-1 text-muted-foreground">建议 {row.original.suggestedShipQty}</div>
-          <div className="mt-1 text-muted-foreground">
-            主 {row.original.mainAvailableBefore} / 临 {row.original.nearExpiryAvailableBefore}
-          </div>
+          <div>{confirmedOrderMode ? "确定" : "订货"} {row.original.orderQty}</div>
+          <div className="mt-1 text-muted-foreground">{confirmedOrderMode ? "做单" : "建议"} {row.original.suggestedShipQty}</div>
+          {confirmedOrderMode ? null : (
+            <div className="mt-1 text-muted-foreground">
+              主 {row.original.mainAvailableBefore} / 临 {row.original.nearExpiryAvailableBefore}
+            </div>
+          )}
         </div>
       ),
     },
@@ -161,13 +180,13 @@ export function ReviewTable({
       header: "状态",
       cell: ({ row }) => (
         <div className="flex min-w-28 flex-col items-start gap-2">
-          <Badge tone={statusTone(row.original.status)}>{row.original.status}</Badge>
-          <Badge tone={row.original.matchStatus === "matched" ? "info" : "warn"}>{matchStatusText(row.original.matchStatus)}</Badge>
+          <Badge tone={statusTone(row.original.status, confirmedOrderMode)}>{statusText(row.original.status, confirmedOrderMode)}</Badge>
+          <Badge tone={row.original.matchStatus === "matched" ? "info" : "warn"}>{matchStatusText(row.original.matchStatus, confirmedOrderMode)}</Badge>
         </div>
       ),
     },
     {
-      header: "审核",
+      header: confirmedOrderMode ? "做单处理" : "审核",
       cell: ({ row }) => {
         const line = row.original;
         const draft = draftById[line.id] ?? {
@@ -183,18 +202,18 @@ export function ReviewTable({
         return (
           <div className="min-w-80 space-y-2">
             <div className="flex flex-wrap items-center gap-2">
-              <Badge tone={decisionTone(draft.decision)}>{decisionText(draft.decision)}</Badge>
+              <Badge tone={decisionTone(draft.decision)}>{decisionText(draft.decision, confirmedOrderMode)}</Badge>
               {line.priority ? <Badge tone="info">优先</Badge> : null}
               {isOverSuggested ? <Badge tone="warn">超建议数</Badge> : null}
               <Button className="h-8 px-2" disabled={readOnly} onClick={() => onQuickDecision(line, "ship")}>
-                发货
+                {confirmedOrderMode ? "做单" : "发货"}
               </Button>
               <Button
                 className="h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80"
                 disabled={readOnly}
                 onClick={() => onQuickDecision(line, "do_not_ship")}
               >
-                不发
+                {confirmedOrderMode ? "不做单" : "不发"}
               </Button>
               <label className="inline-flex h-8 items-center gap-2 rounded-md border border-border px-2 text-sm text-muted-foreground">
                 <input
@@ -222,7 +241,7 @@ export function ReviewTable({
                 aria-label={`审核原因 ${line.id}`}
                 className="h-9 rounded-md border border-input bg-background px-2 text-sm"
                 disabled={readOnly}
-                placeholder="原因"
+                placeholder={confirmedOrderMode ? "处理备注" : "原因"}
                 value={draft.reason}
                 onChange={(event) => {
                   onDraftChange(line.id, { reason: event.target.value });
