@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check, Search, ShieldAlert, XCircle } from "lucide-react";
+import { Check, Search, ShieldAlert, Trash2, XCircle } from "lucide-react";
 import type {
   ProductMappingDto,
   ProductMappingStatus,
@@ -112,6 +112,19 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
     }
     await refreshMappings();
     onMessage(status === "disabled" ? "商品映射已禁用" : "商品映射已标记复查");
+  }
+
+  async function deleteMapping(mapping: ProductMappingDto) {
+    if (!window.confirm(`确定删除长期映射“${mapping.externalGoodsName || mapping.externalBarcode || mapping.externalGoodsCode}”吗？删除后后续批次不会再使用这条人工映射。`)) return;
+    const response = await fetch(`/api/v1/product-mappings/${mapping.id}`, { method: "DELETE" });
+    if (!response.ok) {
+      const body = await response.json();
+      setError(body.message ?? "删除长期映射失败");
+      return;
+    }
+    await refreshMappings();
+    await refreshCandidates();
+    onMessage("长期商品映射已删除，重新初审后生效");
   }
 
   function chooseSpec(spec: WdtGoodsSpecSearchResultDto) {
@@ -319,6 +332,10 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
                       <Button className="h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80" onClick={() => void updateStatus(mapping, "disabled")}>
                         <XCircle className="h-4 w-4" />
                         禁用
+                      </Button>
+                      <Button className="h-8 bg-rose-50 px-2 text-rose-700 hover:bg-rose-100" onClick={() => void deleteMapping(mapping)}>
+                        <Trash2 className="h-4 w-4" />
+                        删除
                       </Button>
                     </div>
                   </td>

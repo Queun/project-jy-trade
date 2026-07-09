@@ -12,6 +12,7 @@ import type {
   WarehouseUsageSettingsDto,
   WdtGoodsSyncRunDto,
 } from "@jy-trade/shared";
+import { isConfirmedProductMappingMatch } from "@jy-trade/shared";
 
 import { ProductMappingPanel, type ProductMappingFocusProduct } from "./components/ProductMappingPanel.js";
 import { ExternalProductPanel } from "./components/ExternalProductPanel.js";
@@ -35,6 +36,7 @@ type FilterKey =
   | "ship"
   | "do_not_ship"
   | "priority"
+  | "manual_mapping"
   | "over_suggested";
 
 const filters: Array<{ key: FilterKey; label: string }> = [
@@ -47,6 +49,7 @@ const filters: Array<{ key: FilterKey; label: string }> = [
   { key: "ship", label: "已发货" },
   { key: "do_not_ship", label: "不发货" },
   { key: "priority", label: "优先处理" },
+  { key: "manual_mapping", label: "长期映射" },
   { key: "over_suggested", label: "超建议数" },
 ];
 
@@ -1344,6 +1347,7 @@ function ReviewTab({
                       ? "rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground"
                       : "rounded-md border border-border bg-card px-3 py-2 text-sm text-muted-foreground hover:bg-muted"
                   }
+                  data-testid={`review-filter-${filter.key}`}
                   onClick={() => onFilterChange(filter.key)}
                 >
                   {filter.label}
@@ -1865,8 +1869,13 @@ function matchesFilter(line: ReviewLineDto, filter: FilterKey) {
   if (filter === "ship") return line.decision === "ship";
   if (filter === "do_not_ship") return line.decision === "do_not_ship";
   if (filter === "priority") return line.priority;
+  if (filter === "manual_mapping") return isManualMappingLine(line);
   if (filter === "over_suggested") return line.decision === "ship" && line.approvedShipQty > line.suggestedShipQty;
   return true;
+}
+
+function isManualMappingLine(line: ReviewLineDto) {
+  return isConfirmedProductMappingMatch(line.matchMessage);
 }
 
 function validateDraft(line: ReviewLineDto, draft: ReviewDraft, approvedShipQty: number) {

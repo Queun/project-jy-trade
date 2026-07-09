@@ -2030,6 +2030,18 @@ describe("api server", () => {
     });
     expect(disabled.statusCode).toBe(200);
     expect(disabled.json()).toMatchObject({ status: "disabled", note: "wrong mapping" });
+
+    const deleted = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/product-mappings/${created.json().id}`,
+      headers: { cookie },
+    });
+    expect(deleted.statusCode).toBe(200);
+    expect(deleted.json()).toMatchObject({ mappingId: created.json().id, deleted: true });
+
+    const listAfterDelete = await app.inject({ method: "GET", url: "/api/v1/product-mappings?query=2153722460015", headers: { cookie } });
+    expect(listAfterDelete.statusCode).toBe(200);
+    expect(listAfterDelete.json()).toHaveLength(0);
     await app.close();
   });
 

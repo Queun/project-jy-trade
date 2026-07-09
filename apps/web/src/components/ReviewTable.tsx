@@ -1,5 +1,5 @@
 import { flexRender, getCoreRowModel, useReactTable, type ColumnDef } from "@tanstack/react-table";
-import type { ReviewDecision, ReviewLineDto } from "@jy-trade/shared";
+import { isConfirmedProductMappingMatch, type ReviewDecision, type ReviewLineDto } from "@jy-trade/shared";
 import { Search } from "lucide-react";
 
 import { Badge } from "./ui/badge.js";
@@ -52,53 +52,50 @@ function matchStatusText(matchStatus: ReviewLineDto["matchStatus"]) {
   return "匹配异常";
 }
 
+function isManualMappingLine(line: ReviewLineDto) {
+  return isConfirmedProductMappingMatch(line.matchMessage);
+}
+
 function reviewRowTone(line: ReviewLineDto, decision: ReviewDecision) {
   if (decision === "ship") {
     return {
       key: "ship",
       rowClass: "bg-emerald-50/70 hover:bg-emerald-50",
-      stripeClass: "border-l-emerald-500",
     };
   }
   if (decision === "do_not_ship") {
     return {
       key: "do_not_ship",
       rowClass: "bg-rose-50/70 hover:bg-rose-50",
-      stripeClass: "border-l-rose-500",
     };
   }
   if (line.matchStatus !== "matched" || line.status === "未匹配") {
     return {
       key: "unmatched",
       rowClass: "bg-sky-50/60 hover:bg-sky-50",
-      stripeClass: "border-l-sky-500",
     };
   }
   if (line.status === "库存不足") {
     return {
       key: "out_of_stock",
       rowClass: "bg-red-50/60 hover:bg-red-50",
-      stripeClass: "border-l-red-500",
     };
   }
   if (line.status === "部分满足") {
     return {
       key: "partial",
       rowClass: "bg-amber-50/70 hover:bg-amber-50",
-      stripeClass: "border-l-amber-500",
     };
   }
   if (line.status === "库存充足") {
     return {
       key: "ready",
       rowClass: "bg-emerald-50/35 hover:bg-emerald-50/60",
-      stripeClass: "border-l-emerald-300",
     };
   }
   return {
     key: "pending",
     rowClass: "bg-background hover:bg-muted/30",
-    stripeClass: "border-l-transparent",
   };
 }
 
@@ -130,16 +127,18 @@ export function ReviewTable({
       cell: ({ row }) => {
         const line = row.original;
         const needsMapping = line.matchStatus !== "matched";
+        const manualMapping = isManualMappingLine(line);
 
         return (
           <div className="min-w-60">
             <div className="font-medium">{line.externalGoodsName}</div>
             <div className="mt-1 text-xs text-muted-foreground">{line.externalBarcode}</div>
             {line.wdtSpecNo ? <div className="mt-1 text-xs text-muted-foreground">{line.wdtSpecNo}</div> : null}
-            {needsMapping ? (
+            {manualMapping ? <Badge className="mt-2" tone="info">长期映射</Badge> : null}
+            {needsMapping || manualMapping ? (
               <Button className="mt-2 h-7 bg-muted px-2 text-xs text-muted-foreground hover:bg-muted/80" onClick={() => onLocateMapping(line)}>
                 <Search className="h-3.5 w-3.5" />
-                定位映射
+                {manualMapping ? "复查映射" : "定位映射"}
               </Button>
             ) : null}
           </div>
@@ -265,8 +264,8 @@ export function ReviewTable({
 
             return (
               <tr key={row.id} className={cn("border-t border-border transition-colors", tone.rowClass)} data-review-state={tone.key}>
-                {row.getVisibleCells().map((cell, index) => (
-                  <td key={cell.id} className={cn("px-3 py-3 align-top", index === 0 ? "border-l-4" : "", index === 0 ? tone.stripeClass : "")}>
+                {row.getVisibleCells().map((cell) => (
+                  <td key={cell.id} className="px-3 py-3 align-top">
                     {flexRender(cell.column.columnDef.cell, cell.getContext())}
                   </td>
                 ))}

@@ -16,6 +16,7 @@ import type {
   WdtGoodsSpecSearchResultDto,
   WdtGoodsSyncRunDto,
 } from "@jy-trade/shared";
+import { confirmedProductMappingMatchMessage } from "@jy-trade/shared";
 
 const batch: BatchSummary = {
   id: "batch-1",
@@ -156,6 +157,32 @@ describe("App", () => {
     expect(screen.getByText("已定位到商品映射面板，保存长期映射后会自动刷新当前正式批次")).toBeInTheDocument();
     expect(screen.getByLabelText("映射搜索")).toHaveValue("BARCODE");
     expect(screen.getByLabelText("外部条码")).toHaveValue("BARCODE");
+  });
+
+  it("marks manually mapped rows and filters them for review", async () => {
+    lines = [
+      reviewLine({
+        id: "line-manual-mapping",
+        externalGoodsName: "长期映射商品",
+        matchMessage: confirmedProductMappingMatchMessage,
+      }),
+      reviewLine({
+        id: "line-ordinary-match",
+        externalGoodsName: "普通匹配商品",
+        matchMessage: "Matched by barcode",
+      }),
+    ];
+    render(<App />);
+    await clickBatch();
+    switchToReviewTab();
+
+    const manualRow = await rowFor("长期映射商品");
+    expect(within(manualRow).getByText("长期映射")).toBeInTheDocument();
+    expect(within(manualRow).getByRole("button", { name: "复查映射" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("review-filter-manual_mapping"));
+    expect(await rowFor("长期映射商品")).toBeInTheDocument();
+    expect(screen.queryByText("普通匹配商品")).not.toBeInTheDocument();
   });
 
   it("shows dismissible first-run help and can reopen it", async () => {
@@ -679,6 +706,23 @@ describe("App", () => {
     });
   });
 
+  it("deletes long-term product mappings from the mapping panel", async () => {
+    render(<App />);
+    await clickBatch();
+    fireEvent.click(screen.getByRole("checkbox", { name: "开发者模式" }));
+    switchToReviewTab();
+
+    expect(await screen.findByText("已确认/待处理映射")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("人工确认")).toBeInTheDocument());
+    const mappingRow = [...document.querySelectorAll("tr")].find((row) => row.textContent?.includes("人工确认"));
+    if (!mappingRow) throw new Error("Mapping row not found");
+    fireEvent.click(within(mappingRow).getByRole("button", { name: "删除" }));
+
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("确定删除长期映射"));
+    expect(await screen.findByText("长期商品映射已删除，重新初审后生效")).toBeInTheDocument();
+    expect(mappingRows).toHaveLength(0);
+  });
+
   it("refreshes the active production batch after confirming a product mapping", async () => {
     currentBatch = { ...currentBatch, mode: "production_api" };
     mappingRows = [];
@@ -1133,7 +1177,7 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
               specName: confirmed.wdtSpecName,
               wdtSpecNo: confirmed.wdtSpecNo,
               matchStatus: "matched",
-              matchMessage: "Matched by confirmed product mapping",
+              matchMessage: confirmedProductMappingMatchMessage,
               mainAvailableBefore: 20,
               suggestedShipQty: line.orderQty,
               status: "库存充足",
@@ -1194,6 +1238,13 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
     mappingRows = [created];
     candidateRows = candidateRows.filter((candidate) => !candidateMatchesMapping(candidate, created));
     return json(created, 201);
+  }
+  if (url.includes("/api/v1/product-mappings/") && method === "DELETE") {
+    const mappingId = url.split("/api/v1/product-mappings/")[1];
+    const existing = mappingRows.find((item) => item.id === mappingId);
+    if (!existing) return json({ message: "Product mapping not found" }, 404);
+    mappingRows = mappingRows.filter((item) => item.id !== mappingId);
+    return json({ mappingId, deleted: true });
   }
   if (url.includes("/api/v1/product-mappings/") && url.endsWith("/status") && method === "PATCH") {
     const body = JSON.parse(String(init?.body));

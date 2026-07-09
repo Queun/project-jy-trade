@@ -1155,6 +1155,15 @@ export function createSqliteStore(options: StoreOptions = {}) {
       return toProductMappingDto(next);
     },
 
+    async deleteProductMapping(mappingId: string, actor?: AuthUserDto): Promise<{ mappingId: string; deleted: true } | undefined> {
+      await ready;
+      const [existing] = await database.db.select().from(productMappings).where(eq(productMappings.id, mappingId)).limit(1);
+      if (!existing) return undefined;
+      await database.db.delete(productMappings).where(eq(productMappings.id, mappingId));
+      await insertAuditLog(database, actor?.id ?? null, "product_mapping.delete", "product_mapping", mappingId, existing);
+      return { mappingId, deleted: true };
+    },
+
     async close() {
       await ready.catch(() => undefined);
       await database.close();

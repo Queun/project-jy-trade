@@ -351,6 +351,14 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     return mapping;
   });
 
+  app.delete("/api/v1/product-mappings/:mappingId", async (request, reply) => {
+    requireRole(request, ["admin", "operator"]);
+    const { mappingId } = request.params as { mappingId: string };
+    const result = await store.deleteProductMapping(mappingId, getCurrentUser(request));
+    if (!result) return reply.code(404).send({ message: "Product mapping not found" });
+    return result;
+  });
+
   return app;
 }
 

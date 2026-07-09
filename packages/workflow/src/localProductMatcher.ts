@@ -1,3 +1,5 @@
+import { confirmedProductMappingMatchMessage } from "@jy-trade/shared";
+
 import { decideProductMatch, type ProductCandidate, type ProductMatchDecision, type ProductMatchInput } from "./productMatcher.js";
 
 export interface ProductMappingCandidate {
@@ -63,7 +65,7 @@ export function decideLocalProductMatch(input: ProductMatchInput, sources: Local
         basis: "code",
       },
       candidates: [],
-      message: "Matched by confirmed product mapping",
+      message: confirmedProductMappingMatchMessage,
     };
   }
 

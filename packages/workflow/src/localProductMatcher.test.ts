@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { confirmedProductMappingMatchMessage } from "@jy-trade/shared";
 
 import { decideLocalProductMatch } from "./localProductMatcher.js";
 
@@ -48,7 +49,7 @@ describe("local product matcher", () => {
 
     expect(result.status).toBe("matched");
     expect(result.candidate?.specNo).toBe("manual-spec");
-    expect(result.message).toBe("Matched by confirmed product mapping");
+    expect(result.message).toBe(confirmedProductMappingMatchMessage);
   });
 
   it("matches single-component WDT suites before confirmed mappings", () => {
