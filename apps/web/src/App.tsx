@@ -898,6 +898,7 @@ function BatchList({
         {batches.length === 0 ? <div className="text-sm text-muted-foreground">暂无批次</div> : null}
         {batches.map((batch) => {
           const expanded = expandedBatchId === batch.id;
+          const uploadDate = formatBatchListDate(batch.createdAt);
           return (
             <div
               key={batch.id}
@@ -908,18 +909,26 @@ function BatchList({
               }
             >
               <button
-                className="w-full px-3 py-2 text-left text-sm"
+                className="w-full px-3 py-3 text-left text-sm"
                 data-testid={`batch-card-${batch.id}`}
                 onClick={() => onSelect(batch)}
               >
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="truncate font-medium">{batch.fileName}</div>
-                    <div className="mt-1 text-xs text-muted-foreground">上传 {formatShortDate(batch.createdAt)}</div>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <time className="rounded bg-teal-100 px-2 py-1 text-xs font-semibold text-teal-900" dateTime={batch.createdAt}>
+                        上传 {uploadDate.date}
+                      </time>
+                      {uploadDate.time ? <span className="rounded bg-amber-100 px-2 py-1 text-xs font-medium text-amber-900">{uploadDate.time}</span> : null}
+                    </div>
+                    <div className="mt-2 flex min-w-0 items-start gap-2">
+                      <FileSpreadsheet className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
+                      <div className="min-w-0 break-words font-semibold leading-snug text-foreground [overflow-wrap:anywhere]">{batch.fileName}</div>
+                    </div>
                   </div>
                   <Badge tone={batchStatusTone(batch.status)}>{batchStatusText(batch.status)}</Badge>
                 </div>
-                <div className="mt-2 flex flex-wrap items-center gap-2 text-muted-foreground">
+                <div className="mt-3 flex flex-wrap items-center gap-2 text-muted-foreground">
                   <span>{batch.orderLineCount} 行</span>
                   <span>{batch.matchedBarcodeCount}/{batch.uniqueBarcodeCount} 已匹配</span>
                 </div>
@@ -1798,6 +1807,16 @@ function formatShortDate(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString();
+}
+
+function formatBatchListDate(value: string) {
+  if (!value) return { date: "-", time: "" };
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return { date: value, time: "" };
+  return {
+    date: date.toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" }).replaceAll("/", "-"),
+    time: date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false }),
+  };
 }
 
 function fileToBase64(file: File) {
