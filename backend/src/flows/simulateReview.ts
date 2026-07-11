@@ -11,6 +11,7 @@ import XLSX from "xlsx";
 import { loadOrderLines, type OrderLine } from "../core/orders.js";
 import { buildReviewLines, type InventorySnapshot, type ReviewLine } from "../core/review.js";
 import {
+  effectiveWdtAvailableSendStock,
   getWdtAvailableSendStock,
   getWdtStockNum,
   WdtClient,
@@ -276,7 +277,7 @@ function summarizeWarehouseStock(response: WdtStockResponse, requestedMainWareho
     warehouseBreakdown: "",
   };
 
-  const breakdown = new Map<string, { warehouseNo: string; warehouseName: string; available: number; stock: number }>();
+  const breakdown = new Map<string, { warehouseNo: string; warehouseName: string; defect: boolean; available: number; stock: number }>();
   for (const row of rows) {
     const warehouseNo = row.warehouse_no ?? "";
     const available = getWdtAvailableSendStock(row);
@@ -285,18 +286,23 @@ function summarizeWarehouseStock(response: WdtStockResponse, requestedMainWareho
     const current = breakdown.get(key) ?? {
       warehouseNo,
       warehouseName: row.warehouse_name ?? "",
+      defect: false,
       available: 0,
       stock: 0,
     };
+    current.defect ||= row.defect === true;
     current.available += available;
     current.stock += stock;
     breakdown.set(key, current);
+  }
 
-    if (mainWarehouseNos.has(warehouseNo)) {
+  for (const warehouse of breakdown.values()) {
+    const available = effectiveWdtAvailableSendStock(warehouse.available);
+    if (mainWarehouseNos.has(warehouse.warehouseNo)) {
       summary.mainAvailableStock += available;
-    } else if (nearExpiryWarehouseNos.has(warehouseNo)) {
+    } else if (nearExpiryWarehouseNos.has(warehouse.warehouseNo)) {
       summary.nearExpiryAvailableStock += available;
-    } else if (defectWarehouseNos.has(warehouseNo) || row.defect === true) {
+    } else if (defectWarehouseNos.has(warehouse.warehouseNo) || warehouse.defect) {
       summary.defectAvailableStock += available;
     } else {
       summary.otherAvailableStock += available;

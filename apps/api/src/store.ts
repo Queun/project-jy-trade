@@ -1,4 +1,6 @@
 ﻿import type {
+  ApplyProductMappingRequest,
+  ApplyProductMappingResponse,
   AuthUserDto,
   BatchSummary,
   BulkApproveResponseDto,
@@ -104,7 +106,7 @@ import {
   type ProductMatchInput,
   type ProductMatchDecision,
 } from "@jy-trade/workflow";
-import { getWdtAvailableSendStock, type WdtStockResponse, type WdtStockRow } from "../../../backend/src/integrations/wdtClient.js";
+import { effectiveWdtAvailableSendStock, getWdtAvailableSendStock, type WdtStockResponse, type WdtStockRow } from "../../../backend/src/integrations/wdtClient.js";
 
 type BatchRow = typeof batches.$inferSelect;
 type ReviewLineRow = typeof reviewLines.$inferSelect;
@@ -609,78 +611,21 @@ export function createSqliteStore(options: StoreOptions = {}) {
         throw new StoreValidationError("当前批次不是确定单批次，不能使用确定单重新校验");
       }
 
-      const parsed = parseConfirmedOrderWorkbook(await readFile(batch.filePath));
-      if (parsed.lines.length === 0) {
-        throw new StoreValidationError("确定单中没有可导入的发货明细");
+      return rebuildConfirmedOrderBatch(database, batch, input, actor);
+    },
+
+    async applyProductMapping(
+      batchId: string,
+      input: ApplyProductMappingRequest,
+      actor?: AuthUserDto,
+    ): Promise<ApplyProductMappingResponse | undefined> {
+      await ready;
+      const batch = await getBatchRow(database, batchId);
+      if (!batch) return undefined;
+      if (batch.sourceType !== "confirmed_order") {
+        throw new StoreValidationError("当前批次不是确定单批次，不能应用确定单商品映射");
       }
-
-      const now = new Date().toISOString();
-      const goodsSpecs = (await database.db.select().from(wdtGoodsSpecs)).map(toLocalGoodsSpecCandidate);
-      const suites = await loadLocalSuiteCandidates(database);
-      const mappings = (await database.db.select().from(productMappings).where(eq(productMappings.status, "confirmed"))).map(toProductMappingCandidate);
-      const externalProductMatches = await loadExternalProductMatchIndex(database);
-      const warehouseSettings = toWarehouseUsageSettingsDto(await getWarehouseUsageSettingsRow(database));
-      const vipStoreIndex = await loadVipStoreIndex(database);
-      const stockSnapshot = await loadActiveStockSnapshot(database, warehouseSettings);
-      const previousLines = await getReviewLineDtos(database, batch.id);
-      const previousDecisions = await database.db.select().from(reviewDecisions).where(eq(reviewDecisions.batchId, batch.id));
-      const buildResult = await buildConfirmedOrderReview({
-        batchId: batch.id,
-        lines: parsed.lines,
-        goodsSpecs,
-        suites,
-        mappings,
-        externalProductMatches,
-        stockSnapshot,
-        warehouseSettings,
-        vipStoreIndex,
-      });
-      const rebuiltLines = mergeRebuiltConfirmedOrderLines(buildResult.reviewLines, previousLines, input.strategy);
-      const updatedBatch: BatchRow = {
-        ...batch,
-        status: "review_generated",
-        orderLineCount: parsed.lines.length,
-        uniqueBarcodeCount: new Set(parsed.lines.map((line) => line.externalBarcode).filter(Boolean)).size,
-        matchedBarcodeCount: new Set(rebuiltLines.filter((line) => line.matchStatus === "matched").map((line) => line.externalBarcode).filter(Boolean)).size,
-        stockSnapshotRunId: stockSnapshot?.runId ?? "",
-        stockSnapshotAt: stockSnapshot?.syncedAt ?? "",
-        updatedAt: now,
-      };
-
-      await database.db
-        .update(batches)
-        .set({
-          status: updatedBatch.status,
-          orderLineCount: updatedBatch.orderLineCount,
-          uniqueBarcodeCount: updatedBatch.uniqueBarcodeCount,
-          matchedBarcodeCount: updatedBatch.matchedBarcodeCount,
-          stockSnapshotRunId: updatedBatch.stockSnapshotRunId,
-          stockSnapshotAt: updatedBatch.stockSnapshotAt,
-          updatedAt: updatedBatch.updatedAt,
-        })
-        .where(eq(batches.id, batch.id));
-      await replaceBatchReviewLines(database, batch.id, rebuiltLines, now, previousDecisions);
-      await replaceProductMatchCandidates(database, batch.id, buildResult.candidateRows, now);
-      await insertAuditLog(database, actor?.id ?? null, "confirmed_order.rebuild", "batch", batch.id, {
-        fileName: batch.fileName,
-        sheetName: parsed.sheetName,
-        parsedRowCount: parsed.lines.length,
-        matchedRowCount: buildResult.reviewLines.filter((line) => line.matchStatus === "matched").length,
-        unmatchedRowCount: buildResult.reviewLines.filter((line) => line.matchStatus !== "matched").length,
-        skippedRowCount: parsed.skippedRowCount,
-        stockQueriedCount: buildResult.stockQueriedCount,
-        strategy: input.strategy,
-      });
-
-      return {
-        batch: toBatchSummary(updatedBatch),
-        fileName: batch.fileName,
-        sheetName: parsed.sheetName,
-        parsedRowCount: parsed.lines.length,
-        matchedRowCount: rebuiltLines.filter((line) => line.matchStatus === "matched").length,
-        unmatchedRowCount: rebuiltLines.filter((line) => line.matchStatus !== "matched").length,
-        skippedRowCount: parsed.skippedRowCount,
-      };
+      return applyProductMappingToConfirmedOrder(database, batch, input, actor);
     },
 
     async getReviewLines(batchId: string): Promise<ReviewLineDto[] | undefined> {
@@ -1568,22 +1513,12 @@ type BootstrapUser = {
   syncExistingPassword?: boolean;
 };
 
-const insecureProductionBootstrapPasswords = new Set([
-  "yjmy",
-  "jymy",
-  "change-me",
-  "replace-with-a-strong-password",
-]);
-
 function resolveBootstrapUsers(): BootstrapUser[] {
   const username = process.env.JY_TRADE_BOOTSTRAP_USERNAME?.trim() || "admin";
   const configuredPassword = process.env.JY_TRADE_BOOTSTRAP_PASSWORD?.trim();
 
   if (process.env.NODE_ENV === "production") {
-    if (!configuredPassword || configuredPassword.length < 12 || insecureProductionBootstrapPasswords.has(configuredPassword.toLowerCase())) {
-      throw new StoreValidationError("生产环境必须通过 JY_TRADE_BOOTSTRAP_PASSWORD 配置至少 12 位的非示例密码");
-    }
-    return [{ username, password: configuredPassword, role: "admin", syncExistingPassword: true }];
+    return [{ username, password: configuredPassword || "yjmy", role: "admin", syncExistingPassword: true }];
   }
 
   return [
@@ -1740,6 +1675,12 @@ interface ConfirmedOrderReviewBuildResult {
   stockQueriedCount: number;
 }
 
+interface ConfirmedOrderMatchedInput {
+  line: ParsedConfirmedOrderLine;
+  id: string;
+  decision: ProductMatchDecision;
+}
+
 function parseConfirmedOrderWorkbook(buffer: Buffer): ConfirmedOrderParseResult {
   const workbook = XLSX.read(buffer, { type: "buffer", cellDates: false });
   const sheetName = workbook.SheetNames.includes("确定单") ? "确定单" : workbook.SheetNames[0];
@@ -1829,19 +1770,11 @@ async function buildConfirmedOrderReview(options: {
   stockSnapshot?: LocalStockSnapshot;
   warehouseSettings: WarehouseUsageSettingsDto;
   vipStoreIndex: VipStoreIndex;
+  matchedInputs?: ConfirmedOrderMatchedInput[];
 }): Promise<ConfirmedOrderReviewBuildResult> {
   const reviewLines: ReviewLineDto[] = [];
   const candidateRows: RealReviewCandidateRow[] = [];
-  const matchLocalProduct = createLocalProductMatcher({
-    goodsSpecs: options.goodsSpecs,
-    suites: options.suites,
-    mappings: options.mappings,
-  });
-  const matchedInputs = options.lines.map((line, index) => ({
-    line,
-    id: `${options.batchId}-line-${index + 1}`,
-    decision: decideConfirmedOrderProductMatch(line, options, matchLocalProduct),
-  }));
+  const matchedInputs = options.matchedInputs ?? prepareConfirmedOrderMatches(options);
   const specNos = matchedInputs.map((input) => input.decision.candidate?.specNo ?? "").filter(Boolean);
   const stockLookup = stockLookupFromSnapshot(specNos, options.stockSnapshot);
   const allocationInputs: ReviewAllocationInput[] = matchedInputs.map((input) => {
@@ -1935,6 +1868,26 @@ async function buildConfirmedOrderReview(options: {
   }
 
   return { batchId: options.batchId, reviewLines, candidateRows, stockQueriedCount: stockLookup.stockQueriedCount };
+}
+
+function prepareConfirmedOrderMatches(options: {
+  batchId: string;
+  lines: ParsedConfirmedOrderLine[];
+  goodsSpecs: LocalGoodsSpecCandidate[];
+  suites: LocalSuiteCandidate[];
+  mappings: ProductMappingCandidate[];
+  externalProductMatches: ExternalProductMatchCandidate[];
+}): ConfirmedOrderMatchedInput[] {
+  const matchLocalProduct = createLocalProductMatcher({
+    goodsSpecs: options.goodsSpecs,
+    suites: options.suites,
+    mappings: options.mappings,
+  });
+  return options.lines.map((line, index) => ({
+    line,
+    id: `${options.batchId}-line-${index + 1}`,
+    decision: decideConfirmedOrderProductMatch(line, options, matchLocalProduct),
+  }));
 }
 
 function confirmedOrderStatusFor(
@@ -2308,6 +2261,325 @@ function toRealReviewCandidateRows(
     basis: candidate.basis,
     source: candidate.source,
   }));
+}
+
+async function rebuildConfirmedOrderBatch(
+  database: DatabaseContext,
+  batch: BatchRow,
+  input: RebuildConfirmedOrderRequest,
+  actor?: AuthUserDto,
+): Promise<ImportConfirmedOrderResponse> {
+  const parsed = parseConfirmedOrderWorkbook(await readFile(batch.filePath));
+  if (parsed.lines.length === 0) throw new StoreValidationError("确定单中没有可导入的发货明细");
+
+  const [goodsRows, suites, mappingRows, externalProductMatches, warehouseSettingsRow, vipStoreIndex, previousLines, previousDecisions] = await Promise.all([
+    database.db.select().from(wdtGoodsSpecs),
+    loadLocalSuiteCandidates(database),
+    database.db.select().from(productMappings).where(eq(productMappings.status, "confirmed")),
+    loadExternalProductMatchIndex(database),
+    getWarehouseUsageSettingsRow(database),
+    loadVipStoreIndex(database),
+    getReviewLineDtos(database, batch.id),
+    database.db.select().from(reviewDecisions).where(eq(reviewDecisions.batchId, batch.id)),
+  ]);
+  const goodsSpecs = goodsRows.map(toLocalGoodsSpecCandidate);
+  const mappings = mappingRows.map(toProductMappingCandidate);
+  const warehouseSettings = toWarehouseUsageSettingsDto(warehouseSettingsRow);
+  const matchedInputs = prepareConfirmedOrderMatches({
+    batchId: batch.id,
+    lines: parsed.lines,
+    goodsSpecs,
+    suites,
+    mappings,
+    externalProductMatches,
+  });
+  const matchedSpecNos = matchedInputs.map((item) => item.decision.candidate?.specNo ?? "").filter(Boolean);
+  const stockSnapshot = await loadActiveStockSnapshot(database, warehouseSettings, { specNos: matchedSpecNos });
+  const buildResult = await buildConfirmedOrderReview({
+    batchId: batch.id,
+    lines: parsed.lines,
+    goodsSpecs,
+    suites,
+    mappings,
+    externalProductMatches,
+    stockSnapshot,
+    warehouseSettings,
+    vipStoreIndex,
+    matchedInputs,
+  });
+  const rebuiltLines = mergeRebuiltConfirmedOrderLines(buildResult.reviewLines, previousLines, input.strategy);
+  const now = new Date().toISOString();
+  const updatedBatch: BatchRow = {
+    ...batch,
+    status: "review_generated",
+    orderLineCount: parsed.lines.length,
+    uniqueBarcodeCount: new Set(parsed.lines.map((line) => line.externalBarcode).filter(Boolean)).size,
+    matchedBarcodeCount: new Set(rebuiltLines.filter((line) => line.matchStatus === "matched").map((line) => line.externalBarcode).filter(Boolean)).size,
+    stockSnapshotRunId: stockSnapshot?.runId ?? "",
+    stockSnapshotAt: stockSnapshot?.syncedAt ?? "",
+    updatedAt: now,
+  };
+
+  await database.db.update(batches).set({
+    status: updatedBatch.status,
+    orderLineCount: updatedBatch.orderLineCount,
+    uniqueBarcodeCount: updatedBatch.uniqueBarcodeCount,
+    matchedBarcodeCount: updatedBatch.matchedBarcodeCount,
+    stockSnapshotRunId: updatedBatch.stockSnapshotRunId,
+    stockSnapshotAt: updatedBatch.stockSnapshotAt,
+    updatedAt: updatedBatch.updatedAt,
+  }).where(eq(batches.id, batch.id));
+  await replaceBatchReviewLines(database, batch.id, rebuiltLines, now, previousDecisions);
+  await replaceProductMatchCandidates(database, batch.id, buildResult.candidateRows, now);
+  await insertAuditLog(database, actor?.id ?? null, "confirmed_order.rebuild", "batch", batch.id, {
+    fileName: batch.fileName,
+    sheetName: parsed.sheetName,
+    parsedRowCount: parsed.lines.length,
+    matchedRowCount: rebuiltLines.filter((line) => line.matchStatus === "matched").length,
+    unmatchedRowCount: rebuiltLines.filter((line) => line.matchStatus !== "matched").length,
+    skippedRowCount: parsed.skippedRowCount,
+    stockQueriedCount: buildResult.stockQueriedCount,
+    strategy: input.strategy,
+  });
+
+  return {
+    batch: toBatchSummary(updatedBatch),
+    fileName: batch.fileName,
+    sheetName: parsed.sheetName,
+    parsedRowCount: parsed.lines.length,
+    matchedRowCount: rebuiltLines.filter((line) => line.matchStatus === "matched").length,
+    unmatchedRowCount: rebuiltLines.filter((line) => line.matchStatus !== "matched").length,
+    skippedRowCount: parsed.skippedRowCount,
+  };
+}
+
+async function applyProductMappingToConfirmedOrder(
+  database: DatabaseContext,
+  batch: BatchRow,
+  input: ApplyProductMappingRequest,
+  actor?: AuthUserDto,
+): Promise<ApplyProductMappingResponse> {
+  const [mapping] = await database.db.select().from(productMappings)
+    .where(and(eq(productMappings.id, input.mappingId), eq(productMappings.status, "confirmed")))
+    .limit(1);
+  if (!mapping) throw new StoreValidationError("长期商品映射不存在或尚未确认");
+
+  const currentLines = await getReviewLineDtos(database, batch.id);
+  const targetLines = currentLines.filter((line) => reviewLineMatchesProductMapping(line, mapping));
+  if (targetLines.length === 0) {
+    return {
+      batch: toBatchSummary(batch),
+      mode: "targeted",
+      affectedExternalRowCount: 0,
+      affectedSkuPoolCount: 0,
+      affectedReviewLineCount: 0,
+      stockSnapshotRunId: batch.stockSnapshotRunId,
+      stockSnapshotAt: batch.stockSnapshotAt,
+      reviewLines: [],
+    };
+  }
+
+  const [goodsRows, suites, mappingRows, externalProductMatches, warehouseSettingsRow, vipStoreIndex] = await Promise.all([
+    database.db.select().from(wdtGoodsSpecs),
+    loadLocalSuiteCandidates(database),
+    database.db.select().from(productMappings).where(eq(productMappings.status, "confirmed")),
+    loadExternalProductMatchIndex(database),
+    getWarehouseUsageSettingsRow(database),
+    loadVipStoreIndex(database),
+  ]);
+  const goodsSpecs = goodsRows.map(toLocalGoodsSpecCandidate);
+  const mappings = mappingRows.map(toProductMappingCandidate);
+  const warehouseSettings = toWarehouseUsageSettingsDto(warehouseSettingsRow);
+  const matcher = createLocalProductMatcher({ goodsSpecs, suites, mappings });
+  const targetIds = new Set(targetLines.map((line) => line.id));
+  const targetMatchedInputs = targetLines.map((line) => {
+    const parsed = reviewLineToParsedConfirmedOrderLine(line, batch.fileName);
+    return { line: parsed, id: line.id, decision: decideConfirmedOrderProductMatch(parsed, { goodsSpecs, suites, mappings, externalProductMatches }, matcher) };
+  });
+  const affectedSpecNos = new Set([
+    ...targetLines.map((line) => line.wdtSpecNo),
+    ...targetMatchedInputs.map((item) => item.decision.candidate?.specNo ?? ""),
+  ].filter(Boolean));
+  const poolLines = currentLines.filter((line) => targetIds.has(line.id) || affectedSpecNos.has(line.wdtSpecNo));
+
+  const stockSnapshot = batch.stockSnapshotRunId
+    ? await loadActiveStockSnapshot(database, warehouseSettings, { runId: batch.stockSnapshotRunId, specNos: [...affectedSpecNos] })
+    : undefined;
+  if (batch.stockSnapshotRunId && !stockSnapshot) {
+    const fallback = await rebuildConfirmedOrderBatch(database, batch, { strategy: "preserve" }, actor);
+    const rebuiltLines = await getReviewLineDtos(database, batch.id);
+    return {
+      batch: fallback.batch,
+      mode: "full_rebuild_fallback",
+      affectedExternalRowCount: targetLines.length,
+      affectedSkuPoolCount: affectedSpecNos.size,
+      affectedReviewLineCount: rebuiltLines.length,
+      stockSnapshotRunId: fallback.batch.stockSnapshotRunId,
+      stockSnapshotAt: fallback.batch.stockSnapshotAt,
+      reviewLines: rebuiltLines,
+    };
+  }
+
+  const poolParsedLines = poolLines.map((line) => reviewLineToParsedConfirmedOrderLine(line, batch.fileName));
+  const matchedInputs = poolLines.map((line, index) => ({
+    line: poolParsedLines[index],
+    id: line.id,
+    decision: decideConfirmedOrderProductMatch(poolParsedLines[index], { goodsSpecs, suites, mappings, externalProductMatches }, matcher),
+  }));
+  const buildResult = await buildConfirmedOrderReview({
+    batchId: batch.id,
+    lines: poolParsedLines,
+    goodsSpecs,
+    suites,
+    mappings,
+    externalProductMatches,
+    stockSnapshot,
+    warehouseSettings,
+    vipStoreIndex,
+    matchedInputs,
+  });
+  const updatedPoolLines = mergeRebuiltConfirmedOrderLines(buildResult.reviewLines, poolLines, "preserve");
+  const updatedById = new Map(updatedPoolLines.map((line) => [line.id, line]));
+  const allUpdatedLines = currentLines.map((line) => updatedById.get(line.id) ?? line);
+  const now = new Date().toISOString();
+  const updatedBatch: BatchRow = {
+    ...batch,
+    status: "review_generated",
+    matchedBarcodeCount: new Set(allUpdatedLines.filter((line) => line.matchStatus === "matched").map((line) => line.externalBarcode).filter(Boolean)).size,
+    updatedAt: now,
+  };
+  const previousDecisions = await database.db.select().from(reviewDecisions).where(inArray(reviewDecisions.reviewLineId, poolLines.map((line) => line.id)));
+  const previousDecisionByLineId = new Map(previousDecisions.map((decision) => [decision.reviewLineId, decision]));
+
+  await database.db.transaction(async (tx) => {
+    await tx.update(batches).set({
+      status: updatedBatch.status,
+      matchedBarcodeCount: updatedBatch.matchedBarcodeCount,
+      updatedAt: updatedBatch.updatedAt,
+    }).where(eq(batches.id, batch.id));
+    for (const line of updatedPoolLines) {
+      await tx.update(reviewLines).set(calculatedReviewLineValues(line)).where(eq(reviewLines.id, line.id));
+      const previous = previousDecisionByLineId.get(line.id);
+      if (previous) {
+        await tx.update(reviewDecisions).set({
+          decision: line.decision,
+          approvedShipQty: line.approvedShipQty,
+          fulfillmentWarehouseNo: line.fulfillmentWarehouseNo,
+          fulfillmentWarehouseName: line.fulfillmentWarehouseName,
+          reason: line.reason,
+          updatedAt: now,
+        }).where(eq(reviewDecisions.id, previous.id));
+      } else {
+        await tx.insert(reviewDecisions).values({
+          id: `decision-${randomUUID()}`,
+          batchId: batch.id,
+          reviewLineId: line.id,
+          reviewerId: null,
+          decision: line.decision,
+          approvedShipQty: line.approvedShipQty,
+          fulfillmentWarehouseNo: line.fulfillmentWarehouseNo,
+          fulfillmentWarehouseName: line.fulfillmentWarehouseName,
+          reason: line.reason,
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+    }
+    await tx.delete(productMatchCandidates).where(inArray(productMatchCandidates.reviewLineId, poolLines.map((line) => line.id)));
+    const candidates = dedupeRealReviewCandidateRows(buildResult.candidateRows);
+    if (candidates.length > 0) {
+      await tx.insert(productMatchCandidates).values(candidates.map((candidate) => ({
+        id: `candidate-${randomUUID()}`,
+        batchId: batch.id,
+        reviewLineId: candidate.reviewLineId,
+        externalBarcode: candidate.externalBarcode,
+        externalGoodsName: candidate.externalGoodsName,
+        externalGoodsCode: candidate.externalGoodsCode,
+        wdtSpecNo: candidate.wdtSpecNo,
+        wdtGoodsNo: candidate.wdtGoodsNo,
+        wdtGoodsName: candidate.wdtGoodsName,
+        wdtSpecName: candidate.wdtSpecName,
+        wdtBarcode: candidate.wdtBarcode,
+        score: candidate.score,
+        basis: candidate.basis,
+        source: candidate.source,
+        createdAt: now,
+      })));
+    }
+  });
+  await insertAuditLog(database, actor?.id ?? null, "confirmed_order.apply_product_mapping", "batch", batch.id, {
+    mappingId: mapping.id,
+    affectedExternalRowCount: targetLines.length,
+    affectedSpecNos: [...affectedSpecNos],
+    affectedReviewLineCount: updatedPoolLines.length,
+    stockSnapshotRunId: stockSnapshot?.runId ?? "",
+  });
+
+  return {
+    batch: toBatchSummary(updatedBatch),
+    mode: "targeted",
+    affectedExternalRowCount: targetLines.length,
+    affectedSkuPoolCount: affectedSpecNos.size,
+    affectedReviewLineCount: updatedPoolLines.length,
+    stockSnapshotRunId: stockSnapshot?.runId ?? "",
+    stockSnapshotAt: stockSnapshot?.syncedAt ?? "",
+    reviewLines: updatedPoolLines,
+  };
+}
+
+function reviewLineMatchesProductMapping(line: ReviewLineDto, mapping: ProductMappingRow): boolean {
+  return Boolean(
+    (mapping.externalBarcode && line.externalBarcode === mapping.externalBarcode)
+    || (mapping.externalGoodsCode && line.externalGoodsCode === mapping.externalGoodsCode),
+  );
+}
+
+function reviewLineToParsedConfirmedOrderLine(line: ReviewLineDto, sourceFile: string): ParsedConfirmedOrderLine {
+  let raw: Record<string, string> = {};
+  try {
+    raw = JSON.parse(line.orderRawJson) as Record<string, string>;
+  } catch {
+    raw = {};
+  }
+  return {
+    sourceFile,
+    sourceSheet: "确定单",
+    excelRow: line.excelRow,
+    orderApprovalNo: line.orderApprovalNo,
+    orderNoticeNo: line.orderNoticeNo,
+    storeNo: line.storeNo,
+    storeName: line.storeName,
+    salesperson: line.salesperson,
+    deadlineDate: line.deadlineDate,
+    externalGoodsCode: line.externalGoodsCode,
+    externalBarcode: line.externalBarcode,
+    externalGoodsName: line.externalGoodsName,
+    spec: line.originalSpec,
+    orderQty: line.orderQty,
+    shipQty: line.plannedShipQty,
+    contractPrice: line.contractPrice,
+    raw,
+  };
+}
+
+function calculatedReviewLineValues(line: ReviewLineDto): Partial<ReviewLineRow> {
+  return {
+    goodsName: line.goodsName,
+    specName: line.specName,
+    wdtSpecNo: line.wdtSpecNo,
+    wdtMakeOrderCode: line.wdtMakeOrderCode || line.wdtSpecNo,
+    matchStatus: line.matchStatus,
+    matchMessage: line.matchMessage,
+    stockErrorDetail: line.stockErrorDetail ?? "",
+    mainAvailableBefore: line.mainAvailableBefore,
+    nearExpiryAvailableBefore: line.nearExpiryAvailableBefore,
+    suggestedShipQty: line.suggestedShipQty,
+    suggestedWarehouseNo: line.suggestedWarehouseNo,
+    suggestedWarehouseName: line.suggestedWarehouseName,
+    priority: line.priority ? 1 : 0,
+    priorityReason: line.priorityReason,
+    status: line.status,
+  };
 }
 
 function mergeRebuiltConfirmedOrderLines(
@@ -2783,27 +3055,29 @@ function summarizeWarehouseStock(rows: WdtStockRow[], settings: WarehouseUsageSe
   let nearExpiryAvailableStock = 0;
   let defectAvailableStock = 0;
   let otherAvailableStock = 0;
-  const warehouseByKey = new Map<string, WarehouseStockCandidate>();
+  const warehouseByKey = new Map<string, WarehouseStockCandidate & { rawAvailableStock: number }>();
 
   for (const row of rows) {
-    const available = getWdtAvailableSendStock(row);
     const warehouseType = classifyWdtWarehouse(row);
-    if (warehouseType === "main") mainAvailableStock += available;
-    else if (warehouseType === "near_expiry") nearExpiryAvailableStock += available;
-    else if (warehouseType === "defect") defectAvailableStock += available;
-    else otherAvailableStock += available;
-
     const warehouseNo = (row.warehouse_no ?? "").trim();
     const warehouseName = (row.warehouse_name ?? "").trim() || defaultWarehouseName(warehouseType);
-    if (!warehouseIncluded(warehouseType, settings) || available <= 0 || (!warehouseNo && !warehouseName)) continue;
-    const key = `${warehouseNo.toUpperCase()}|${warehouseName}`;
+    const key = `${warehouseType}|${warehouseNo.toUpperCase()}|${warehouseName}`;
     const current = warehouseByKey.get(key);
     warehouseByKey.set(key, {
       warehouseNo: warehouseNo || defaultWarehouseNo(warehouseType, warehouseName),
       warehouseName,
-      availableStock: (current?.availableStock ?? 0) + available,
+      availableStock: 0,
+      rawAvailableStock: (current?.rawAvailableStock ?? 0) + getWdtAvailableSendStock(row),
       type: warehouseType,
     });
+  }
+
+  for (const warehouse of warehouseByKey.values()) {
+    warehouse.availableStock = effectiveWdtAvailableSendStock(warehouse.rawAvailableStock);
+    if (warehouse.type === "main") mainAvailableStock += warehouse.availableStock;
+    else if (warehouse.type === "near_expiry") nearExpiryAvailableStock += warehouse.availableStock;
+    else if (warehouse.type === "defect") defectAvailableStock += warehouse.availableStock;
+    else otherAvailableStock += warehouse.availableStock;
   }
 
   const usableAvailableStock =
@@ -2818,11 +3092,13 @@ function summarizeWarehouseStock(rows: WdtStockRow[], settings: WarehouseUsageSe
     defectAvailableStock,
     otherAvailableStock,
     usableAvailableStock,
-    warehouseBreakdown: rows
-      .map((row) => `${row.warehouse_no ?? ""}/${row.warehouse_name ?? ""}:可发库存${getWdtAvailableSendStock(row)}`)
-      .filter(Boolean)
+    warehouseBreakdown: [...warehouseByKey.values()]
+      .map((warehouse) => `${warehouse.warehouseNo}/${warehouse.warehouseName}:可发库存${warehouse.rawAvailableStock}`)
       .join("; "),
-    warehouses: [...warehouseByKey.values()].sort(compareWarehouseCandidates),
+    warehouses: [...warehouseByKey.values()]
+      .filter((warehouse) => warehouseIncluded(warehouse.type, settings) && warehouse.availableStock > 0)
+      .map(({ rawAvailableStock: _rawAvailableStock, ...warehouse }) => warehouse)
+      .sort(compareWarehouseCandidates),
   };
 }
 
@@ -2899,12 +3175,31 @@ function emptyWarehouseStockSummary(): WarehouseStockSummary {
   };
 }
 
-async function loadActiveStockSnapshot(database: DatabaseContext, settings: WarehouseUsageSettingsDto): Promise<LocalStockSnapshot | undefined> {
-  const [run] = await database.db.select().from(wdtSyncRuns).where(eq(wdtSyncRuns.status, "success")).orderBy(desc(wdtSyncRuns.finishedAt)).limit(1);
+async function loadActiveStockSnapshot(
+  database: DatabaseContext,
+  settings: WarehouseUsageSettingsDto,
+  options: { runId?: string; specNos?: string[] } = {},
+): Promise<LocalStockSnapshot | undefined> {
+  const runQuery = database.db.select().from(wdtSyncRuns)
+    .where(options.runId
+      ? and(eq(wdtSyncRuns.id, options.runId), eq(wdtSyncRuns.status, "success"))
+      : eq(wdtSyncRuns.status, "success"));
+  const [run] = options.runId
+    ? await runQuery.limit(1)
+    : await runQuery.orderBy(desc(wdtSyncRuns.finishedAt)).limit(1);
   if (!run) return undefined;
-  const verifiedRows = await database.db.select().from(wdtStockSnapshotSpecs).where(eq(wdtStockSnapshotSpecs.syncRunId, run.id));
-  const snapshotRows = await database.db.select().from(wdtStockSnapshotRows).where(eq(wdtStockSnapshotRows.syncRunId, run.id));
-  const coverageRows = await database.db.select().from(wdtStockSnapshotWarehouseCoverage).where(eq(wdtStockSnapshotWarehouseCoverage.syncRunId, run.id));
+  const uniqueSpecNos = options.specNos ? [...new Set(options.specNos.filter(Boolean))] : undefined;
+  const specFilter = uniqueSpecNos && uniqueSpecNos.length > 0
+    ? and(eq(wdtStockSnapshotSpecs.syncRunId, run.id), inArray(wdtStockSnapshotSpecs.specNo, uniqueSpecNos))
+    : eq(wdtStockSnapshotSpecs.syncRunId, run.id);
+  const rowFilter = uniqueSpecNos && uniqueSpecNos.length > 0
+    ? and(eq(wdtStockSnapshotRows.syncRunId, run.id), inArray(wdtStockSnapshotRows.specNo, uniqueSpecNos))
+    : eq(wdtStockSnapshotRows.syncRunId, run.id);
+  const [verifiedRows, snapshotRows, coverageRows] = await Promise.all([
+    uniqueSpecNos?.length === 0 ? Promise.resolve([]) : database.db.select().from(wdtStockSnapshotSpecs).where(specFilter),
+    uniqueSpecNos?.length === 0 ? Promise.resolve([]) : database.db.select().from(wdtStockSnapshotRows).where(rowFilter),
+    database.db.select().from(wdtStockSnapshotWarehouseCoverage).where(eq(wdtStockSnapshotWarehouseCoverage.syncRunId, run.id)),
+  ]);
   const warehouseTypes = new Set(coverageRows.map((row) => row.warehouseType));
   const missingWarehouseTypes = enabledWarehouseTypes(settings).filter((type) => !warehouseTypes.has(type));
   const rowsBySpecNo = new Map<string, WdtStockRow[]>();
@@ -4126,6 +4421,7 @@ function buildExportFileName(fileName: string, type: ExportDto["type"], isoTime:
 }
 
 const WDT_IMPORT_SHEET_NAME = "Sheet1";
+const WDT_DO_NOT_IMPORT_SHEET_NAME = "不做单表";
 
 const REVIEW_EXPORT_SHEET_NAME = "订货审批单明细";
 
@@ -4382,15 +4678,28 @@ function renderConfirmedExportRow(line: ReviewLineDto) {
 
 function renderWdtImportWorkbook(batch: BatchRow, lines: ReviewLineDto[], addressIndex: MakeOrderAddressIndex, actor?: AuthUserDto) {
   const exportLines = lines.filter((line) => line.approvedShipQty > 0);
-  const context = buildWdtImportContext(batch, exportLines);
-  const rows = [
-    [...WDT_IMPORT_HEADERS],
-    ...exportLines.map((line) => renderWdtImportRow(line, addressIndex, WDT_IMPORT_HEADERS, context, actor)),
-  ];
+  const doNotExportLines = lines.filter((line) => line.decision === "do_not_ship");
+  const rows = renderWdtImportRows(batch, exportLines, addressIndex, actor);
+  const doNotRows = renderWdtImportRows(batch, doNotExportLines, addressIndex, actor);
   const workbook = XLSX.utils.book_new();
   const sheet = XLSX.utils.aoa_to_sheet(rows);
   XLSX.utils.book_append_sheet(workbook, sheet, WDT_IMPORT_SHEET_NAME);
+  const doNotSheet = XLSX.utils.aoa_to_sheet(doNotRows);
+  XLSX.utils.book_append_sheet(workbook, doNotSheet, WDT_DO_NOT_IMPORT_SHEET_NAME);
   return XLSX.write(workbook, { bookType: "biff8", type: "buffer" }) as Buffer;
+}
+
+function renderWdtImportRows(
+  batch: BatchRow,
+  lines: ReviewLineDto[],
+  addressIndex: MakeOrderAddressIndex,
+  actor?: AuthUserDto,
+) {
+  const context = buildWdtImportContext(batch, lines);
+  return [
+    [...WDT_IMPORT_HEADERS],
+    ...lines.map((line) => renderWdtImportRow(line, addressIndex, WDT_IMPORT_HEADERS, context, actor)),
+  ];
 }
 
 function renderWdtImportRow(

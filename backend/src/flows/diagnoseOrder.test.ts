@@ -6,6 +6,7 @@ import XLSX from "xlsx";
 
 import { createDatabaseContext } from "../../../apps/api/src/db/client.js";
 import { productMappings, productMatchCandidates, wdtGoodsSpecs, wdtGoodsSyncRuns } from "../../../apps/api/src/db/schema.js";
+import { getWdtAvailableSendStock, getWdtEffectiveAvailableSendStock } from "../integrations/wdtClient.js";
 import {
   diagnoseOrderWithDatabase,
   diagnoseOrderLines,
@@ -128,6 +129,24 @@ describe("diagnoseOrder", () => {
       nearExpiryAvailableStock: 2,
       defectAvailableStock: 1,
       otherAvailableStock: 3,
+    });
+  });
+
+  it("preserves negative WDT stock while treating each warehouse total as unavailable", () => {
+    const negativeRow = { warehouse_no: "001", warehouse_name: "主仓", available_send_stock: -8 };
+    expect(getWdtAvailableSendStock(negativeRow)).toBe(-8);
+    expect(getWdtEffectiveAvailableSendStock(negativeRow)).toBe(0);
+
+    const summary = summarizeWarehouseStock([
+      negativeRow,
+      { warehouse_no: "001", warehouse_name: "主仓", available_send_stock: 3 },
+      { warehouse_no: "LINQI", warehouse_name: "临期仓", available_send_stock: 10 },
+    ]);
+
+    expect(summary).toMatchObject({
+      mainAvailableStock: 0,
+      nearExpiryAvailableStock: 10,
+      warehouseBreakdown: "001/主仓:可发库存-5; LINQI/临期仓:可发库存10",
     });
   });
 

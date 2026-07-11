@@ -60,11 +60,18 @@ describe("api server", () => {
     expect(snapshotIsOlderThan("invalid", atBoundary)).toBe(true);
   });
 
-  it("requires an explicit strong bootstrap password in production", () => {
+  it("allows the trial deployment to use the default admin password in production", async () => {
     process.env.NODE_ENV = "production";
     delete process.env.JY_TRADE_BOOTSTRAP_PASSWORD;
+    const app = buildTestServer();
 
-    expect(() => buildTestServer()).toThrow("生产环境必须通过 JY_TRADE_BOOTSTRAP_PASSWORD 配置至少 12 位的非示例密码");
+    const login = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      payload: { username: "admin", password: "yjmy" },
+    });
+    expect(login.statusCode).toBe(200);
+    await app.close();
   });
 
   it("only bootstraps the configured admin account in production", async () => {
@@ -1933,12 +1940,12 @@ describe("api server", () => {
     await app.close();
   });
 
-  it("rebuilds confirmed-order batches with newly saved product mappings", async () => {
+  it("applies saved mappings only to affected confirmed-order SKU pools", async () => {
     const databaseUrl = testDatabaseUrl();
     const database = createDatabaseContext(databaseUrl);
     await database.ready;
     await seedSuccessfulGoodsCache(database);
-    await seedSingleWarehouseSnapshot(database, "3282770392869");
+    await seedSingleWarehouseSnapshot(database, "3282770392869", 6);
     await database.close();
 
     const app = buildTestServer(databaseUrl, undefined, fixedWarehouseStockClient());
@@ -1948,17 +1955,18 @@ describe("api server", () => {
       url: "/api/v1/confirmed-orders/import",
       payload: {
         fileName: "确定单-待映射.xlsx",
-        contentBase64: confirmedOrderWorkbookBase64({
-          goodsCode: "5372246",
-          barcode: "2153659180017",
-          goodsName: "待映射确定单商品",
-        }),
+        contentBase64: confirmedOrderWorkbookBase64({ rows: [
+          { noticeNo: "TARGET-1", goodsCode: "5372246", barcode: "2153659180017", goodsName: "待映射确定单商品", shipQty: "2" },
+          { noticeNo: "TARGET-2", goodsCode: "5372246", barcode: "2153659180017", goodsName: "待映射确定单商品", shipQty: "3" },
+          { noticeNo: "EXISTING-POOL", goodsCode: "3282770392869", barcode: "2153722460015", goodsName: "雅漾专研保湿修护面膜", shipQty: "4" },
+          { noticeNo: "UNRELATED", goodsCode: "UNRELATED", barcode: "UNRELATED", goodsName: "完全无关商品", shipQty: "1" },
+        ] }),
       },
       headers: { cookie },
     });
     expect(imported.statusCode).toBe(201);
     expect(imported.json()).toMatchObject({
-      unmatchedRowCount: 2,
+      unmatchedRowCount: 3,
       batch: { sourceType: "confirmed_order", status: "review_generated" },
     });
 
@@ -1986,18 +1994,42 @@ describe("api server", () => {
     });
     expect(mapping.statusCode).toBe(201);
 
-    const rebuilt = await app.inject({
-      method: "POST",
-      url: `/api/v1/batches/${imported.json().batch.id}/actions/rebuild-confirmed-order`,
-      payload: { strategy: "preserve" },
+    const beforeApply = await app.inject({
+      method: "GET",
+      url: `/api/v1/batches/${imported.json().batch.id}/review-lines`,
       headers: { cookie },
     });
-    expect(rebuilt.statusCode).toBe(200);
-    expect(rebuilt.json()).toMatchObject({
-      matchedRowCount: 2,
-      unmatchedRowCount: 0,
+    const existingPoolLine = beforeApply.json().find((line: { orderNoticeNo: string }) => line.orderNoticeNo === "EXISTING-POOL");
+    const unrelatedBefore = beforeApply.json().find((line: { orderNoticeNo: string }) => line.orderNoticeNo === "UNRELATED");
+    const manualDecision = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/batches/${imported.json().batch.id}/review-lines/${existingPoolLine.id}/decision`,
+      payload: {
+        decision: "ship",
+        approvedShipQty: 4,
+        fulfillmentWarehouseNo: "001",
+        fulfillmentWarehouseName: "主仓",
+        reason: "保留人工数量",
+      },
+      headers: { cookie },
+    });
+    expect(manualDecision.statusCode).toBe(200);
+
+    const applied = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${imported.json().batch.id}/actions/apply-product-mapping`,
+      payload: { mappingId: mapping.json().id },
+      headers: { cookie },
+    });
+    expect(applied.statusCode).toBe(200);
+    expect(applied.json()).toMatchObject({
+      mode: "targeted",
+      affectedExternalRowCount: 2,
+      affectedSkuPoolCount: 1,
+      affectedReviewLineCount: 3,
       batch: { sourceType: "confirmed_order", status: "review_generated" },
     });
+    expect(applied.json().reviewLines.map((line: { orderNoticeNo: string }) => line.orderNoticeNo)).not.toContain("UNRELATED");
 
     const linesResponse = await app.inject({
       method: "GET",
@@ -2005,14 +2037,161 @@ describe("api server", () => {
       headers: { cookie },
     });
     expect(linesResponse.statusCode).toBe(200);
-    expect(linesResponse.json()).toHaveLength(2);
-    expect(linesResponse.json()[0]).toMatchObject({
+    expect(linesResponse.json()).toHaveLength(4);
+    const byNotice = new Map(linesResponse.json().map((line: { orderNoticeNo: string }) => [line.orderNoticeNo, line]));
+    expect(byNotice.get("TARGET-1")).toMatchObject({
       matchStatus: "matched",
       decision: "ship",
       approvedShipQty: 2,
       wdtSpecNo: "3282770392869",
     });
+    expect(byNotice.get("TARGET-2")).toMatchObject({ matchStatus: "matched", suggestedShipQty: 2, approvedShipQty: 2 });
+    expect(byNotice.get("EXISTING-POOL")).toMatchObject({
+      suggestedShipQty: 2,
+      approvedShipQty: 4,
+      reason: "保留人工数量",
+    });
+    expect(byNotice.get("UNRELATED")).toEqual(unrelatedBefore);
 
+    await app.close();
+  });
+
+  it("falls back to a full preserve rebuild when a batch snapshot was pruned", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await seedSuccessfulGoodsCache(database);
+    await seedSingleWarehouseSnapshot(database, "3282770392869", 5, "001", "主仓", "2026-07-03T00:01:00.000Z");
+    await database.close();
+
+    const app = buildTestServer(databaseUrl, undefined, failingRealtimeStockClient());
+    const cookie = await loginCookie(app);
+    const imported = await app.inject({
+      method: "POST",
+      url: "/api/v1/confirmed-orders/import",
+      payload: {
+        fileName: "确定单-快照回退.xlsx",
+        contentBase64: confirmedOrderWorkbookBase64({ goodsCode: "5372246", barcode: "2153659180017", goodsName: "待映射确定单商品" }),
+      },
+      headers: { cookie },
+    });
+    const mapping = await app.inject({
+      method: "POST",
+      url: "/api/v1/product-mappings",
+      payload: {
+        externalBarcode: "2153659180017",
+        externalGoodsCode: "5372246",
+        externalGoodsName: "待映射确定单商品",
+        wdtSpecNo: "3282770392869",
+        sourceBatchId: imported.json().batch.id,
+        note: "快照回退映射",
+      },
+      headers: { cookie },
+    });
+
+    const pruned = createDatabaseContext(databaseUrl);
+    await pruned.ready;
+    const oldRunId = imported.json().batch.stockSnapshotRunId;
+    await pruned.db.delete(wdtStockSnapshotRows).where(eq(wdtStockSnapshotRows.syncRunId, oldRunId));
+    await pruned.db.delete(wdtStockSnapshotSpecs).where(eq(wdtStockSnapshotSpecs.syncRunId, oldRunId));
+    await pruned.db.delete(wdtStockSnapshotWarehouseCoverage).where(eq(wdtStockSnapshotWarehouseCoverage.syncRunId, oldRunId));
+    await pruned.db.delete(wdtSyncRuns).where(eq(wdtSyncRuns.id, oldRunId));
+    const latest = await seedSingleWarehouseSnapshot(pruned, "3282770392869", 3, "001", "主仓", "2026-07-03T02:01:00.000Z");
+    await pruned.close();
+
+    const applied = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${imported.json().batch.id}/actions/apply-product-mapping`,
+      payload: { mappingId: mapping.json().id },
+      headers: { cookie },
+    });
+    expect(applied.statusCode).toBe(200);
+    expect(applied.json()).toMatchObject({
+      mode: "full_rebuild_fallback",
+      affectedExternalRowCount: 2,
+      stockSnapshotRunId: latest.runId,
+      batch: { status: "review_generated", stockSnapshotRunId: latest.runId },
+    });
+    expect(applied.json().reviewLines).toHaveLength(2);
+    expect(applied.json().reviewLines.every((line: { matchStatus: string }) => line.matchStatus === "matched")).toBe(true);
+    await app.close();
+  });
+
+  it("reallocates both old and new SKU pools when an existing mapping target changes", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await seedSuccessfulGoodsCache(database);
+    const now = "2026-07-03T00:00:00.000Z";
+    await database.db.insert(wdtGoodsSpecs).values({
+      id: "wdt-goods-spec-mapping-target-b",
+      goodsNo: "SPEC-B",
+      goodsName: "映射目标B",
+      specNo: "SPEC-B",
+      specName: "B规格",
+      specCode: "SPEC-B",
+      barcode: "BARCODE-B",
+      barcodesJson: JSON.stringify(["BARCODE-B", "SPEC-B"]),
+      deleted: 0,
+      modified: now,
+      rawJson: "{}",
+      syncedAt: now,
+    });
+    await seedSuccessfulStockSnapshot(database, {
+      verifiedSpecNos: ["3282770392869", "SPEC-B"],
+      rows: [
+        { specNo: "3282770392869", warehouseNo: "001", warehouseName: "主仓", availableSendStock: 4 },
+        { specNo: "SPEC-B", warehouseNo: "001", warehouseName: "主仓", availableSendStock: 4 },
+      ],
+    });
+    await database.close();
+
+    const app = buildTestServer(databaseUrl, undefined, failingRealtimeStockClient());
+    const cookie = await loginCookie(app);
+    const imported = await app.inject({
+      method: "POST",
+      url: "/api/v1/confirmed-orders/import",
+      payload: {
+        fileName: "确定单-映射换池.xlsx",
+        contentBase64: confirmedOrderWorkbookBase64({ rows: [
+          { noticeNo: "TARGET", goodsCode: "EXTERNAL-TARGET", barcode: "EXTERNAL-TARGET", goodsName: "待映射商品", shipQty: "2" },
+          { noticeNo: "POOL-A", goodsCode: "3282770392869", barcode: "2153722460015", goodsName: "雅漾专研保湿修护面膜", shipQty: "4" },
+          { noticeNo: "POOL-B", goodsCode: "SPEC-B", barcode: "BARCODE-B", goodsName: "映射目标B", shipQty: "4" },
+        ] }),
+      },
+      headers: { cookie },
+    });
+    const firstMapping = await app.inject({
+      method: "POST",
+      url: "/api/v1/product-mappings",
+      payload: { externalBarcode: "EXTERNAL-TARGET", externalGoodsCode: "EXTERNAL-TARGET", externalGoodsName: "待映射商品", wdtSpecNo: "3282770392869", sourceBatchId: imported.json().batch.id },
+      headers: { cookie },
+    });
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${imported.json().batch.id}/actions/apply-product-mapping`,
+      payload: { mappingId: firstMapping.json().id },
+      headers: { cookie },
+    });
+
+    const changedMapping = await app.inject({
+      method: "POST",
+      url: "/api/v1/product-mappings",
+      payload: { externalBarcode: "EXTERNAL-TARGET", externalGoodsCode: "EXTERNAL-TARGET", externalGoodsName: "待映射商品", wdtSpecNo: "SPEC-B", sourceBatchId: imported.json().batch.id },
+      headers: { cookie },
+    });
+    const applied = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${imported.json().batch.id}/actions/apply-product-mapping`,
+      payload: { mappingId: changedMapping.json().id },
+      headers: { cookie },
+    });
+    expect(applied.statusCode).toBe(200);
+    expect(applied.json()).toMatchObject({ affectedExternalRowCount: 1, affectedSkuPoolCount: 2, affectedReviewLineCount: 3 });
+    const byNotice = new Map(applied.json().reviewLines.map((line: { orderNoticeNo: string }) => [line.orderNoticeNo, line]));
+    expect(byNotice.get("TARGET")).toMatchObject({ wdtSpecNo: "SPEC-B", suggestedShipQty: 2, approvedShipQty: 2 });
+    expect(byNotice.get("POOL-A")).toMatchObject({ wdtSpecNo: "3282770392869", suggestedShipQty: 4 });
+    expect(byNotice.get("POOL-B")).toMatchObject({ wdtSpecNo: "SPEC-B", suggestedShipQty: 2, approvedShipQty: 4 });
     await app.close();
   });
 
@@ -2939,7 +3118,7 @@ describe("api server", () => {
     expect(downloadResponse.headers["content-type"]).toContain("application/vnd.ms-excel");
 
     const workbook = XLSX.read(downloadResponse.rawPayload, { type: "buffer" });
-    expect(workbook.SheetNames).toEqual(["Sheet1"]);
+    expect(workbook.SheetNames).toEqual(["Sheet1", "不做单表"]);
     const rows = XLSX.utils.sheet_to_json<Record<string, string | number>>(workbook.Sheets["Sheet1"], { defval: "" });
     const header = XLSX.utils.sheet_to_json<string[]>(workbook.Sheets["Sheet1"], { header: 1 })[0];
     expect(header).toEqual([
@@ -2993,7 +3172,11 @@ describe("api server", () => {
       "付款账户",
       "分销商名称",
     ]);
+    const doNotRows = XLSX.utils.sheet_to_json<Record<string, string | number>>(workbook.Sheets["不做单表"], { defval: "" });
+    const doNotHeader = XLSX.utils.sheet_to_json<string[]>(workbook.Sheets["不做单表"], { header: 1 })[0];
+    expect(doNotHeader).toEqual(header);
     expect(rows).toHaveLength(lines.filter((line: { decision: string; approvedShipQty: number }) => line.decision === "ship" && line.approvedShipQty > 0).length);
+    expect(doNotRows).toHaveLength(lines.filter((line: { decision: string }) => line.decision === "do_not_ship").length + 1);
 
     const exportedLine = rows.find(
       (row) =>
@@ -3027,6 +3210,12 @@ describe("api server", () => {
           && row["货品数量"] === pendingLine.approvedShipQty,
       ),
     ).toBe(false);
+    expect(doNotRows).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        商家编码: pendingLine.wdtMakeOrderCode || pendingLine.wdtSpecNo,
+        货品数量: 0,
+      }),
+    ]));
     await app.close();
   });
 
@@ -3318,6 +3507,7 @@ describe("api server", () => {
         { specNo: "3282770392869", warehouseNo: "001", warehouseName: "主仓", availableSendStock: 12 },
         { specNo: "3282770392869", warehouseNo: "LINQI", warehouseName: "临期仓", availableSendStock: 3 },
         { specNo: "3282770392869", warehouseNo: "CIPIN", warehouseName: "次品仓", availableSendStock: 99 },
+        { specNo: "LOW-STOCK-SPEC", warehouseNo: "001", warehouseName: "主仓", availableSendStock: -8 },
       ],
     });
     await database.close();
@@ -3359,6 +3549,7 @@ describe("api server", () => {
           wdtSpecNo: "LOW-STOCK-SPEC",
           score: 82,
           stockTotalAvailable: 0,
+          stockRows: [expect.objectContaining({ warehouseNo: "001", availableSendStock: -8, included: true })],
         }),
       ]),
     );
@@ -3483,6 +3674,8 @@ describe("api server", () => {
       { name: "satisfying-near", main: 1, near: 3, expectedQty: 2, expectedWarehouseNo: "LINQI" },
       { name: "tie-main", main: 1, near: 1, expectedQty: 1, expectedWarehouseNo: "001" },
       { name: "largest-near", main: 0, near: 1, expectedQty: 1, expectedWarehouseNo: "LINQI" },
+      { name: "negative-main", main: -8, near: 0, expectedQty: 0, expectedWarehouseNo: "" },
+      { name: "negative-main-positive-near", main: -8, near: 10, expectedQty: 2, expectedWarehouseNo: "LINQI" },
     ];
 
     for (const scenario of scenarios) {
@@ -3534,10 +3727,13 @@ describe("api server", () => {
         headers: { cookie },
       });
       expect(linesResponse.json()[0]).toMatchObject({
+        mainAvailableBefore: Math.max(0, scenario.main),
+        nearExpiryAvailableBefore: Math.max(0, scenario.near),
         suggestedShipQty: scenario.expectedQty,
         approvedShipQty: scenario.expectedQty,
         suggestedWarehouseNo: scenario.expectedWarehouseNo,
         fulfillmentWarehouseNo: scenario.expectedWarehouseNo,
+        status: scenario.expectedQty === 0 ? "库存不足" : scenario.expectedQty >= 2 ? "库存充足" : "部分满足",
       });
       await app.close();
     }

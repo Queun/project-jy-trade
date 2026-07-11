@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { CheckCheck, ChevronDown, ChevronUp, ClipboardList, Download, FileSpreadsheet, HelpCircle, LogOut, MapPin, PackageCheck, PackageSearch, RefreshCcw, Save, Send, Settings, Trash2, Upload, Warehouse, X } from "lucide-react";
 import type {
   AuthUserDto,
+  ApplyProductMappingResponse,
   BatchSummary,
   ExportDto,
   ImportConfirmedOrderResponse,
@@ -37,7 +38,6 @@ type ConfirmedOrderRebuildStrategy = "preserve" | "replace";
 
 interface ConfirmedOrderRebuildPrompt {
   batch: BatchSummary;
-  mappingLabel?: string;
 }
 
 type FilterKey =
@@ -132,6 +132,7 @@ export function App() {
   const [mappingDialogOpen, setMappingDialogOpen] = useState(false);
   const [recheckingConfirmedOrder, setRecheckingConfirmedOrder] = useState(false);
   const [confirmedOrderRebuildPrompt, setConfirmedOrderRebuildPrompt] = useState<ConfirmedOrderRebuildPrompt | null>(null);
+  const applyingProductMappingBatchIds = useRef(new Set<string>());
   const [unverifiedStockWarning, setUnverifiedStockWarning] = useState<SubmitReviewWarningDto | null>(null);
   const [savingDecisionIds, setSavingDecisionIds] = useState<Set<string>>(() => new Set());
   const [submittingReview, setSubmittingReview] = useState(false);
@@ -492,7 +493,7 @@ export function App() {
   async function recheckConfirmedOrderBatch(
     batch: BatchSummary | null,
     strategy: ConfirmedOrderRebuildStrategy,
-    options: { userTriggered?: boolean; mappingLabel?: string } = {},
+    options: { userTriggered?: boolean } = {},
   ): Promise<ImportConfirmedOrderResponse | null> {
     if (!batch) {
       setMessage("请先选择一个确定单批次");
@@ -523,16 +524,18 @@ export function App() {
       setReviewLines(sortReviewLines(lines));
       setDraftById(buildDrafts(lines));
       setErrorsById({});
-      await refreshExports(rebuild.batch.id);
-      await refreshMakeOrderReadiness(rebuild.batch.id);
-      await refreshBatches();
       const summary = `确定单已重新校验：${rebuild.parsedRowCount} 行，已匹配 ${rebuild.matchedRowCount} 行，待补字段 ${rebuild.unmatchedRowCount} 行`;
-      setMessage(options.mappingLabel ? `长期商品映射已保存并应用：${options.mappingLabel}` : summary);
+      setMessage(summary);
       setSuccessNotice(
         strategy === "preserve"
           ? "系统建议已刷新，当前审核结果已保留；请重新提交审核"
           : "已按最新库存重新分配；请检查结果并重新提交审核",
       );
+      void Promise.allSettled([
+        refreshExports(rebuild.batch.id),
+        refreshMakeOrderReadiness(rebuild.batch.id),
+        refreshBatches(),
+      ]);
       return rebuild;
     } finally {
       setRecheckingConfirmedOrder(false);
@@ -546,12 +549,52 @@ export function App() {
     }
     if (activeBatch.sourceType === "confirmed_order") {
       const mappingLabel = mapping.externalBarcode || mapping.externalGoodsCode || mapping.externalGoodsName;
+      const batch = activeBatch;
       setMappingDialogOpen(false);
-      setConfirmedOrderRebuildPrompt({
-        batch: activeBatch,
-        mappingLabel,
-      });
-      setMessage("长期商品映射已保存，请选择如何重新校验当前确定单");
+      if (applyingProductMappingBatchIds.current.has(batch.id)) {
+        setMessage("长期商品映射已保存，当前确定单正在应用另一条映射");
+        return;
+      }
+      applyingProductMappingBatchIds.current.add(batch.id);
+      setMessage(`长期商品映射已保存，正在应用到当前确定单：${mappingLabel}`);
+      try {
+        const response = await fetch(`/api/v1/batches/${batch.id}/actions/apply-product-mapping`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mappingId: mapping.id }),
+        });
+        if (!response.ok) {
+          const error = await response.json();
+          setMessage(error.message ?? "映射已保存，但应用到当前确定单失败");
+          setSuccessNotice("映射已保存，可手工重新校验确定单恢复当前审核");
+          return;
+        }
+        const result = (await response.json()) as ApplyProductMappingResponse;
+        setActiveBatch(result.batch);
+        if (result.mode === "full_rebuild_fallback") {
+          setReviewLines(sortReviewLines(result.reviewLines));
+          setDraftById(buildDrafts(result.reviewLines));
+          setErrorsById({});
+          setMessage("原库存快照已清理，已按最新库存完整校验当前确定单");
+        } else {
+          const updatedById = new Map(result.reviewLines.map((line) => [line.id, line]));
+          setReviewLines((current) => sortReviewLines(current.map((line) => updatedById.get(line.id) ?? line)));
+          setDraftById((current) => ({ ...current, ...buildDrafts(result.reviewLines) }));
+          setErrorsById((current) => Object.fromEntries(Object.entries(current).filter(([lineId]) => !updatedById.has(lineId))));
+          setMessage(`映射已应用：影响 ${result.affectedExternalRowCount} 行、${result.affectedSkuPoolCount} 个库存池`);
+        }
+        await Promise.all([
+          refreshExports(batch.id),
+          refreshMakeOrderReadiness(batch.id),
+          refreshBatches(),
+        ]);
+        setSuccessNotice("映射已应用到当前批次，请重新提交审核");
+      } catch {
+        setMessage("映射已保存，但应用到当前确定单失败");
+        setSuccessNotice("映射已保存，可手工重新校验确定单恢复当前审核");
+      } finally {
+        applyingProductMappingBatchIds.current.delete(batch.id);
+      }
       return;
     }
     if (activeBatch.mode !== "production_api") {
@@ -577,9 +620,7 @@ export function App() {
     setReviewLines(sortReviewLines(lines));
     setDraftById(buildDrafts(lines));
     setErrorsById({});
-    await refreshExports(activeBatch.id);
-    await refreshMakeOrderReadiness(activeBatch.id);
-    await refreshBatches();
+    await Promise.all([refreshExports(activeBatch.id), refreshMakeOrderReadiness(activeBatch.id), refreshBatches()]);
     setMessage(`长期商品映射已保存，当前批次已刷新：${mapping.externalBarcode || mapping.externalGoodsCode || mapping.externalGoodsName}`);
     setSuccessNotice("映射已应用到当前批次");
   }
@@ -1157,10 +1198,6 @@ export function App() {
         prompt={confirmedOrderRebuildPrompt}
         rechecking={recheckingConfirmedOrder}
         onCancel={() => {
-          if (confirmedOrderRebuildPrompt?.mappingLabel) {
-            setMessage("映射已保存，当前审核尚未重新校验");
-            setSuccessNotice("映射已保存，可稍后手工重新校验确定单");
-          }
           setConfirmedOrderRebuildPrompt(null);
         }}
         onSelect={(strategy) => {
@@ -1168,8 +1205,7 @@ export function App() {
           if (!prompt) return;
           setConfirmedOrderRebuildPrompt(null);
           void recheckConfirmedOrderBatch(prompt.batch, strategy, {
-            userTriggered: !prompt.mappingLabel,
-            mappingLabel: prompt.mappingLabel,
+            userTriggered: true,
           });
         }}
       />
@@ -1206,9 +1242,7 @@ function ConfirmedOrderRebuildDialog({
           <div>
             <h2 className="text-lg font-semibold" id="confirmed-order-rebuild-title">重新校验确定单</h2>
             <p className="mt-1 text-sm leading-6 text-muted-foreground">
-              {prompt.mappingLabel
-                ? "商品映射已经保存。请选择刷新系统建议时，如何处理当前已填写的审核结果。"
-                : "系统将按最新商品映射、库存和仓库设置重新计算建议。重新校验后必须再次提交审核。"}
+              系统将按最新商品映射、库存和仓库设置重新计算建议。重新校验后必须再次提交审核。
             </p>
           </div>
           <Button className="h-8 shrink-0 bg-muted px-2 text-muted-foreground hover:bg-muted/80" disabled={rechecking} onClick={onCancel}>
@@ -1888,7 +1922,7 @@ function ExportTab({
     {
       type: "wdt_import",
       title: "做单表格",
-      description: "按批量导入模板生成给系统导入的做单 Excel。",
+      description: "按批量导入模板生成做单表，并附带同格式的不做单核对表。",
       disabledReason: makeOrderReady
         ? undefined
         : makeOrderReadiness && makeOrderReadiness.missingWarehouseCount > 0
@@ -1928,11 +1962,14 @@ function ExportTab({
         <EmptyState className="mt-4" title="等待审核完成" description="当前批次还没有提交审核，确认发货数量后再生成做单文件。" />
       ) : null}
       {activeBatch && batchReadyForExport ? (
-        <div className="mt-4 grid gap-3 lg:grid-cols-3">
+        <div
+          className="mt-4 grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(min(100%,17rem),1fr))]"
+          data-testid="export-actions"
+        >
           {exportActions.map((action) => {
             const disabled = !canCreateBasicExport || (action.type === "wdt_import" && !makeOrderReady);
             return (
-              <div key={action.type} className={action.type === "wdt_import" ? "rounded-md border border-primary/30 bg-emerald-50/40 p-3" : "rounded-md border border-border bg-background p-3"}>
+              <div key={action.type} className={action.type === "wdt_import" ? "min-w-0 rounded-md border border-primary/30 bg-emerald-50/40 p-3" : "min-w-0 rounded-md border border-border bg-background p-3"}>
                 <div className="flex items-start justify-between gap-2">
                   <div>
                     <div className="text-sm font-semibold">{action.title}</div>
@@ -1940,7 +1977,7 @@ function ExportTab({
                   </div>
                   {action.type === "wdt_import" ? <Badge tone={readinessBadgeTone}>{readinessBadgeText}</Badge> : null}
                 </div>
-                <Button className="mt-3 h-8 px-2" data-testid={`create-export-${action.type}`} disabled={disabled} onClick={() => onCreateExport(action.type)}>
+                <Button className="mt-3 h-auto min-h-8 max-w-full whitespace-normal px-2 text-left" data-testid={`create-export-${action.type}`} disabled={disabled} onClick={() => onCreateExport(action.type)}>
                   <Download className="h-4 w-4" />
                   生成{action.title}
                 </Button>

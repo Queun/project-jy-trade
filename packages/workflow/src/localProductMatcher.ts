@@ -1,6 +1,6 @@
 import { confirmedProductMappingMatchMessage } from "@jy-trade/shared";
 
-import { decideProductMatch, type ProductCandidate, type ProductMatchDecision, type ProductMatchInput } from "./productMatcher.js";
+import { createProductMatcher, type ProductCandidate, type ProductMatchDecision, type ProductMatchInput } from "./productMatcher.js";
 
 export interface ProductMappingCandidate {
   externalBarcode?: string;
@@ -53,6 +53,9 @@ export function decideLocalProductMatch(input: ProductMatchInput, sources: Local
 export function createLocalProductMatcher(sources: LocalProductMatchSources): (input: ProductMatchInput) => ProductMatchDecision {
   const goodsCandidates = sources.goodsSpecs.filter((spec) => spec.deleted !== 1).map(toProductCandidate);
   const suiteCandidates = (sources.suites ?? []).filter((suite) => suite.deleted !== 1).map(toSuiteProductCandidate);
+  const matchGoods = createProductMatcher(goodsCandidates);
+  const matchSuites = createProductMatcher(suiteCandidates);
+  const mappingIndex = buildMappingIndex(sources.mappings);
   const cache = new Map<string, ProductMatchDecision>();
 
   return (input) => {
@@ -60,7 +63,7 @@ export function createLocalProductMatcher(sources: LocalProductMatchSources): (i
     const cached = cache.get(cacheKey);
     if (cached) return cached;
 
-    const decision = decidePreparedLocalProductMatch(input, sources.mappings, goodsCandidates, suiteCandidates);
+    const decision = decidePreparedLocalProductMatch(input, mappingIndex, matchGoods, matchSuites);
     cache.set(cacheKey, decision);
     return decision;
   };
@@ -68,17 +71,17 @@ export function createLocalProductMatcher(sources: LocalProductMatchSources): (i
 
 function decidePreparedLocalProductMatch(
   input: ProductMatchInput,
-  mappings: ProductMappingCandidate[],
-  goodsCandidates: ProductCandidate[],
-  suiteCandidates: ProductCandidate[],
+  mappingIndex: ProductMappingIndex,
+  matchGoods: (input: ProductMatchInput) => ProductMatchDecision,
+  matchSuites: (input: ProductMatchInput) => ProductMatchDecision,
 ): ProductMatchDecision {
-  const goodsDecision = decideProductMatch(input, goodsCandidates);
+  const goodsDecision = matchGoods(input);
   if (isAutomaticCodeDecision(goodsDecision)) return goodsDecision;
 
-  const suiteDecision = decideProductMatch(input, suiteCandidates);
+  const suiteDecision = matchSuites(input);
   if (isAutomaticCodeDecision(suiteDecision)) return suiteDecision;
 
-  const mapping = findConfirmedMapping(input, mappings);
+  const mapping = findConfirmedMapping(input, mappingIndex);
   if (mapping) {
     return {
       status: "matched",
@@ -103,13 +106,33 @@ function decidePreparedLocalProductMatch(
   return goodsDecision;
 }
 
-function findConfirmedMapping(input: ProductMatchInput, mappings: ProductMappingCandidate[]): ProductMappingCandidate | undefined {
-  return mappings.find((mapping) => {
-    if (mapping.status !== "confirmed") return false;
-    if (input.barcode && mapping.externalBarcode && input.barcode === mapping.externalBarcode) return true;
-    if (input.goodsCode && mapping.externalGoodsCode && input.goodsCode === mapping.externalGoodsCode) return true;
-    return false;
+interface IndexedMapping {
+  mapping: ProductMappingCandidate;
+  index: number;
+}
+
+interface ProductMappingIndex {
+  byBarcode: Map<string, IndexedMapping>;
+  byGoodsCode: Map<string, IndexedMapping>;
+}
+
+function buildMappingIndex(mappings: ProductMappingCandidate[]): ProductMappingIndex {
+  const byBarcode = new Map<string, IndexedMapping>();
+  const byGoodsCode = new Map<string, IndexedMapping>();
+  mappings.forEach((mapping, index) => {
+    if (mapping.status !== "confirmed") return;
+    if (mapping.externalBarcode && !byBarcode.has(mapping.externalBarcode)) byBarcode.set(mapping.externalBarcode, { mapping, index });
+    if (mapping.externalGoodsCode && !byGoodsCode.has(mapping.externalGoodsCode)) byGoodsCode.set(mapping.externalGoodsCode, { mapping, index });
   });
+  return { byBarcode, byGoodsCode };
+}
+
+function findConfirmedMapping(input: ProductMatchInput, index: ProductMappingIndex): ProductMappingCandidate | undefined {
+  const barcode = input.barcode ? index.byBarcode.get(input.barcode) : undefined;
+  const goodsCode = input.goodsCode ? index.byGoodsCode.get(input.goodsCode) : undefined;
+  if (!barcode) return goodsCode?.mapping;
+  if (!goodsCode) return barcode.mapping;
+  return barcode.index <= goodsCode.index ? barcode.mapping : goodsCode.mapping;
 }
 
 function toProductCandidate(spec: LocalGoodsSpecCandidate): ProductCandidate {

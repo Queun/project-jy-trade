@@ -334,6 +334,23 @@ export const RebuildConfirmedOrderRequestSchema = z.object({
 });
 export type RebuildConfirmedOrderRequest = z.infer<typeof RebuildConfirmedOrderRequestSchema>;
 
+export const ApplyProductMappingRequestSchema = z.object({
+  mappingId: z.string().min(1),
+});
+export type ApplyProductMappingRequest = z.infer<typeof ApplyProductMappingRequestSchema>;
+
+export const ApplyProductMappingResponseSchema = z.object({
+  batch: BatchSummarySchema,
+  mode: z.enum(["targeted", "full_rebuild_fallback"]),
+  affectedExternalRowCount: z.number().int().min(0),
+  affectedSkuPoolCount: z.number().int().min(0),
+  affectedReviewLineCount: z.number().int().min(0),
+  stockSnapshotRunId: z.string(),
+  stockSnapshotAt: z.string(),
+  reviewLines: z.array(ReviewLineDtoSchema),
+});
+export type ApplyProductMappingResponse = z.infer<typeof ApplyProductMappingResponseSchema>;
+
 export const ImportConfirmedOrderResponseSchema = z.object({
   batch: BatchSummarySchema,
   fileName: z.string(),

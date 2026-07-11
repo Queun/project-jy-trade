@@ -71,10 +71,43 @@ export function scoreProductCandidate(input: ProductMatchInput, candidate: Produ
 }
 
 export function decideProductMatch(input: ProductMatchInput, candidates: ProductCandidate[]): ProductMatchDecision {
+  return createProductMatcher(candidates)(input);
+}
+
+interface PreparedProductCandidate {
+  candidate: ProductCandidate;
+  name?: string;
+  pairCounts?: Map<string, number>;
+  pairCount?: number;
+}
+
+interface ProductNameIndex {
+  exact: Map<string, PreparedProductCandidate[]>;
+  postings: Map<string, Array<{ prepared: PreparedProductCandidate; count: number }>>;
+}
+
+export function createProductMatcher(candidates: ProductCandidate[]): (input: ProductMatchInput) => ProductMatchDecision {
+  const prepared = candidates.map((candidate): PreparedProductCandidate => ({ candidate }));
+  const barcodeIndex = buildCandidateIndex(candidates, (candidate) => candidate.barcodes ?? []);
+  const codeIndex = buildCandidateIndex(candidates, (candidate) => [candidate.goodsNo, candidate.specNo, candidate.specCode]);
+  let nameIndex: ProductNameIndex | undefined;
+
+  return (input) => decidePreparedProductMatch(input, prepared, barcodeIndex, codeIndex, () => {
+    nameIndex ??= buildProductNameIndex(prepared);
+    return nameIndex;
+  });
+}
+
+function decidePreparedProductMatch(
+  input: ProductMatchInput,
+  candidates: PreparedProductCandidate[],
+  barcodeIndex: Map<string, ProductCandidate[]>,
+  codeIndex: Map<string, ProductCandidate[]>,
+  getNameIndex: () => ProductNameIndex,
+): ProductMatchDecision {
   const barcode = normalizeProductText(input.barcode);
   if (barcode) {
-    const barcodeMatches = candidates
-      .filter((candidate) => (candidate.barcodes ?? []).some((value) => normalizeProductText(value) === barcode))
+    const barcodeMatches = (barcodeIndex.get(barcode) ?? [])
       .map((candidate): ScoredProductCandidate => ({ ...candidate, score: 100, basis: "barcode" }))
       .sort((left, right) => candidateKey(left).localeCompare(candidateKey(right)));
     if (barcodeMatches.length === 1) {
@@ -96,9 +129,7 @@ export function decideProductMatch(input: ProductMatchInput, candidates: Product
 
   const goodsCode = normalizeProductText(input.goodsCode);
   if (goodsCode) {
-    const codeMatches = candidates
-      .filter((candidate) => [candidate.goodsNo, candidate.specNo, candidate.specCode]
-        .some((value) => normalizeProductText(value) === goodsCode))
+    const codeMatches = (codeIndex.get(goodsCode) ?? [])
       .map((candidate): ScoredProductCandidate => ({ ...candidate, score: 95, basis: "code" }))
       .sort((left, right) => candidateKey(left).localeCompare(candidateKey(right)));
     if (codeMatches.length === 1) {
@@ -120,8 +151,9 @@ export function decideProductMatch(input: ProductMatchInput, candidates: Product
 
   const inputName = normalizeProductText([input.goodsName, input.specName].filter(Boolean).join(""));
   const variants = inputName ? inputNameVariants(inputName) : [];
-  const scored = candidates
-    .map((candidate) => scoreProductNameCandidate(variants, candidate))
+  const nameCandidates = variants.length > 0 ? selectPossibleNameCandidates(variants, getNameIndex()) : candidates;
+  const scored = nameCandidates
+    .map((candidate) => scorePreparedProductNameCandidate(variants, candidate))
     .filter((candidate): candidate is ScoredProductCandidate => Boolean(candidate))
     .sort((a, b) => b.score - a.score || candidateKey(a).localeCompare(candidateKey(b)));
 
@@ -152,19 +184,73 @@ export function decideProductMatch(input: ProductMatchInput, candidates: Product
   };
 }
 
-function scoreProductNameCandidate(
-  variants: ProductNameVariant[],
-  candidate: ProductCandidate,
-): ScoredProductCandidate | undefined {
-  const candidateName = normalizeProductText([candidate.goodsName, candidate.specName].filter(Boolean).join(""));
-  if (variants.length === 0 || !candidateName) return undefined;
+function buildProductNameIndex(candidates: PreparedProductCandidate[]): ProductNameIndex {
+  const exact = new Map<string, PreparedProductCandidate[]>();
+  const postings = new Map<string, Array<{ prepared: PreparedProductCandidate; count: number }>>();
+  for (const prepared of candidates) {
+    prepared.name ??= normalizeProductText([prepared.candidate.goodsName, prepared.candidate.specName].filter(Boolean).join(""));
+    if (!prepared.name) continue;
+    exact.set(prepared.name, [...(exact.get(prepared.name) ?? []), prepared]);
+    prepared.pairCounts = bigramCounts(prepared.name);
+    prepared.pairCount = countPairs(prepared.pairCounts);
+    for (const [pair, count] of prepared.pairCounts) {
+      postings.set(pair, [...(postings.get(pair) ?? []), { prepared, count }]);
+    }
+  }
+  return { exact, postings };
+}
 
+function selectPossibleNameCandidates(variants: ProductNameVariant[], index: ProductNameIndex): PreparedProductCandidate[] {
+  const selected = new Set<PreparedProductCandidate>();
+  for (const variant of variants) {
+    for (const prepared of index.exact.get(variant.value) ?? []) selected.add(prepared);
+    const variantPairs = bigramCounts(variant.value);
+    const variantPairCount = countPairs(variantPairs);
+    if (variantPairCount === 0) continue;
+    const intersections = new Map<PreparedProductCandidate, number>();
+    for (const [pair, inputCount] of variantPairs) {
+      for (const posting of index.postings.get(pair) ?? []) {
+        intersections.set(posting.prepared, (intersections.get(posting.prepared) ?? 0) + Math.min(inputCount, posting.count));
+      }
+    }
+    for (const [prepared, intersection] of intersections) {
+      const candidatePairCount = prepared.pairCount ?? 0;
+      const canBeContained = variant.value.length >= MIN_NAME_MATCH_LENGTH
+        && (prepared.name?.length ?? 0) >= MIN_NAME_MATCH_LENGTH
+        && intersection >= Math.min(variantPairCount, candidatePairCount);
+      const canReachFuzzyThreshold = 2 * intersection >= 0.72 * (variantPairCount + candidatePairCount);
+      if (canBeContained || canReachFuzzyThreshold) selected.add(prepared);
+    }
+  }
+  return [...selected];
+}
+
+function buildCandidateIndex(
+  candidates: ProductCandidate[],
+  valuesFor: (candidate: ProductCandidate) => Array<string | undefined>,
+): Map<string, ProductCandidate[]> {
+  const index = new Map<string, ProductCandidate[]>();
+  for (const candidate of candidates) {
+    const keys = new Set(valuesFor(candidate).map(normalizeProductText).filter(Boolean));
+    for (const key of keys) index.set(key, [...(index.get(key) ?? []), candidate]);
+  }
+  return index;
+}
+
+function scorePreparedProductNameCandidate(
+  variants: ProductNameVariant[],
+  prepared: PreparedProductCandidate,
+): ScoredProductCandidate | undefined {
+  if (variants.length === 0) return undefined;
+  prepared.name ??= normalizeProductText([prepared.candidate.goodsName, prepared.candidate.specName].filter(Boolean).join(""));
+  const candidateName = prepared.name;
+  if (!candidateName) return undefined;
   const nameScores = variants
     .map((variant) => scoreNameVariant(variant, candidateName))
     .filter((score): score is Pick<ScoredProductCandidate, "score" | "basis"> => Boolean(score))
     .sort((left, right) => right.score - left.score);
   const bestNameScore = nameScores[0];
-  return bestNameScore ? { ...candidate, ...bestNameScore } : undefined;
+  return bestNameScore ? { ...prepared.candidate, ...bestNameScore } : undefined;
 }
 
 function diceCoefficient(a: string, b: string): number {

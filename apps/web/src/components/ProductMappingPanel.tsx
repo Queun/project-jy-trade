@@ -97,6 +97,7 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
   const [activeView, setActiveView] = useState<"lookup" | "current" | "library">(focusProduct ? "current" : "lookup");
   const [isLoadingCandidates, setIsLoadingCandidates] = useState(false);
   const [isSearchingSpecs, setIsSearchingSpecs] = useState(false);
+  const [isSavingMapping, setIsSavingMapping] = useState(false);
   const mappingRequestIdRef = useRef(0);
   const candidateRequestIdRef = useRef(0);
 
@@ -147,23 +148,28 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
 
   async function confirmMapping() {
     setError("");
-    const response = await fetch("/api/v1/product-mappings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...draft, sourceBatchId }),
-    });
-    if (!response.ok) {
-      const body = await response.json();
-      setError(body.message ?? "保存长期映射失败");
-      return;
+    setIsSavingMapping(true);
+    try {
+      const response = await fetch("/api/v1/product-mappings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...draft, sourceBatchId }),
+      });
+      if (!response.ok) {
+        const body = await response.json();
+        setError(body.message ?? "保存长期映射失败");
+        return;
+      }
+      const mapping = (await response.json()) as ProductMappingDto;
+      const nextQuery = mapping.externalBarcode || mapping.externalGoodsCode || mapping.externalGoodsName;
+      setQuery(nextQuery);
+      setDraft(emptyDraft);
+      onMessage("长期商品映射已保存");
+      void onConfirmed?.(mapping);
+      void Promise.all([refreshMappings(nextQuery), refreshCandidates(nextQuery)]).catch(() => undefined);
+    } finally {
+      setIsSavingMapping(false);
     }
-    const mapping = (await response.json()) as ProductMappingDto;
-    setQuery(mapping.externalBarcode || mapping.externalGoodsCode || mapping.externalGoodsName);
-    setDraft(emptyDraft);
-    await refreshMappings(mapping.externalBarcode || mapping.externalGoodsCode || mapping.externalGoodsName);
-    await refreshCandidates(mapping.externalBarcode || mapping.externalGoodsCode || mapping.externalGoodsName);
-    onMessage("长期商品映射已保存");
-    await onConfirmed?.(mapping);
   }
 
   async function updateStatus(mapping: ProductMappingDto, status: Exclude<ProductMappingStatus, "confirmed">) {
@@ -389,9 +395,9 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
             </div>
           ) : null}
           {error ? <div className="mt-3 text-sm text-rose-700">{error}</div> : null}
-          <Button className="mt-3" disabled={!canSaveMapping} onClick={() => void confirmMapping()}>
+          <Button className="mt-3" disabled={!canSaveMapping || isSavingMapping} onClick={() => void confirmMapping()}>
             <Check className="h-4 w-4" />
-            保存长期映射
+            {isSavingMapping ? "保存中..." : "保存长期映射"}
           </Button>
         </div>
       </div> : null}
@@ -422,7 +428,7 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
                   <Badge tone="warn">智能分 {candidate.score}</Badge>
                   <Badge tone="info">{candidateBasisLabel(candidate.basis)}</Badge>
                   <Badge tone="neutral">{candidateSourceLabel(candidate.source)}</Badge>
-                  <StockBadge stockError={candidate.stockError} stockTotalAvailable={candidate.stockTotalAvailable} />
+                  <StockBadge stockError={candidate.stockError} stockRows={candidate.stockRows} stockTotalAvailable={candidate.stockTotalAvailable} />
                 </div>
                 <div className="mt-1 text-muted-foreground">
                   {candidate.externalBarcode || "无条码"} / {candidate.externalGoodsCode || "无编码"}
@@ -549,7 +555,7 @@ function SpecSearchResults({
               <Badge tone={spec.source === "suite" ? "info" : "neutral"}>{spec.source === "suite" ? "组合装" : "商品"}</Badge>
             </span>
             <span className="flex flex-wrap items-center gap-2">
-              <StockBadge stockError={spec.stockError} stockTotalAvailable={spec.stockTotalAvailable} />
+              <StockBadge stockError={spec.stockError} stockRows={spec.stockRows} stockTotalAvailable={spec.stockTotalAvailable} />
               <span className="rounded border border-border bg-background px-1.5 py-0.5 text-xs text-muted-foreground">{actionLabel}</span>
             </span>
           </div>
@@ -580,11 +586,26 @@ function Field({ className = "", label, value, onChange }: { className?: string;
   );
 }
 
-function StockBadge({ stockError, stockTotalAvailable }: { stockError?: string; stockTotalAvailable?: number }) {
+function StockBadge({
+  stockError,
+  stockRows,
+  stockTotalAvailable,
+}: {
+  stockError?: string;
+  stockRows?: Array<{ availableSendStock: number; included: boolean }>;
+  stockTotalAvailable?: number;
+}) {
+  const hasNegativeStock = stockRows?.some((row) => row.included && row.availableSendStock < 0) ?? false;
+  const hasEffectiveStock = stockTotalAvailable !== undefined && stockTotalAvailable > 0;
+  const text = stockError
+    ? "库存未查到"
+    : stockTotalAvailable === undefined
+      ? "库存未查询"
+      : hasNegativeStock && !hasEffectiveStock
+        ? "库存不足 · 可发 0"
+        : `可发 ${stockTotalAvailable}`;
   return (
-    <Badge tone={stockError ? "bad" : stockTotalAvailable && stockTotalAvailable > 0 ? "good" : "neutral"}>
-      {stockError ? "库存未查到" : stockTotalAvailable === undefined ? "库存未查询" : `可发 ${stockTotalAvailable}`}
-    </Badge>
+    <Badge tone={stockError || (hasNegativeStock && !hasEffectiveStock) ? "bad" : hasEffectiveStock ? "good" : "neutral"}>{text}</Badge>
   );
 }
 
@@ -619,9 +640,14 @@ function StockRows({
         {includedRows.map((row) => (
           <span
             key={`${id}-${row.warehouseNo}-${row.warehouseName}`}
-            className="rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-xs text-emerald-900"
+            className={row.availableSendStock < 0
+              ? "rounded border border-rose-200 bg-rose-50 px-1.5 py-0.5 text-xs text-rose-900"
+              : row.availableSendStock > 0
+                ? "rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-xs text-emerald-900"
+                : "rounded border border-border bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"}
           >
             {row.warehouseNo || row.warehouseName || "未命名仓"} {row.warehouseName ? `/${row.warehouseName}` : ""}: {row.availableSendStock}
+            {row.availableSendStock < 0 ? " · 库存不足" : ""}
           </span>
         ))}
       </div>

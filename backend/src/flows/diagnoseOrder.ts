@@ -13,7 +13,7 @@ import XLSX from "xlsx";
 import { createDatabaseContext, type DatabaseContext } from "../../../apps/api/src/db/client.js";
 import { productMappings, productMatchCandidates, wdtGoodsSpecs, wdtGoodsSyncRuns } from "../../../apps/api/src/db/schema.js";
 import { loadOrderLines, type OrderLine } from "../core/orders.js";
-import { getWdtAvailableSendStock, type WdtStockResponse, type WdtStockRow } from "../integrations/wdtClient.js";
+import { effectiveWdtAvailableSendStock, getWdtAvailableSendStock, type WdtStockResponse, type WdtStockRow } from "../integrations/wdtClient.js";
 
 export interface StockLookupClient {
   queryStock(specNo: string): Promise<WdtStockResponse>;
@@ -139,13 +139,26 @@ export function summarizeWarehouseStock(rows: WdtStockRow[]): WarehouseStockSumm
   let nearExpiryAvailableStock = 0;
   let defectAvailableStock = 0;
   let otherAvailableStock = 0;
+  const warehouses = new Map<string, { warehouseNo: string; warehouseName: string; defect: boolean; rawAvailableStock: number }>();
 
   for (const row of rows) {
-    const available = getWdtAvailableSendStock(row);
     const warehouseNo = row.warehouse_no ?? "";
-    if (MAIN_WAREHOUSE_NOS.includes(warehouseNo)) mainAvailableStock += available;
-    else if (NEAR_EXPIRY_WAREHOUSE_NOS.includes(warehouseNo)) nearExpiryAvailableStock += available;
-    else if (DEFECT_WAREHOUSE_NOS.includes(warehouseNo) || row.defect === true) defectAvailableStock += available;
+    const warehouseName = row.warehouse_name ?? "";
+    const key = `${warehouseNo}|${warehouseName}`;
+    const current = warehouses.get(key);
+    warehouses.set(key, {
+      warehouseNo,
+      warehouseName,
+      defect: Boolean(current?.defect || row.defect),
+      rawAvailableStock: (current?.rawAvailableStock ?? 0) + getWdtAvailableSendStock(row),
+    });
+  }
+
+  for (const warehouse of warehouses.values()) {
+    const available = effectiveWdtAvailableSendStock(warehouse.rawAvailableStock);
+    if (MAIN_WAREHOUSE_NOS.includes(warehouse.warehouseNo)) mainAvailableStock += available;
+    else if (NEAR_EXPIRY_WAREHOUSE_NOS.includes(warehouse.warehouseNo)) nearExpiryAvailableStock += available;
+    else if (DEFECT_WAREHOUSE_NOS.includes(warehouse.warehouseNo) || warehouse.defect) defectAvailableStock += available;
     else otherAvailableStock += available;
   }
 
@@ -154,9 +167,8 @@ export function summarizeWarehouseStock(rows: WdtStockRow[]): WarehouseStockSumm
     nearExpiryAvailableStock,
     defectAvailableStock,
     otherAvailableStock,
-    warehouseBreakdown: rows
-      .map((row) => `${row.warehouse_no ?? ""}/${row.warehouse_name ?? ""}:可发库存${getWdtAvailableSendStock(row)}`)
-      .filter(Boolean)
+    warehouseBreakdown: [...warehouses.values()]
+      .map((warehouse) => `${warehouse.warehouseNo}/${warehouse.warehouseName}:可发库存${warehouse.rawAvailableStock}`)
       .join("; "),
     rows,
   };

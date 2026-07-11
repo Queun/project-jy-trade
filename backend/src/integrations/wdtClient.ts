@@ -96,6 +96,14 @@ export function getWdtAvailableSendStock(row: WdtStockRow): number {
   );
 }
 
+export function effectiveWdtAvailableSendStock(value: number): number {
+  return Math.max(0, value);
+}
+
+export function getWdtEffectiveAvailableSendStock(row: WdtStockRow): number {
+  return effectiveWdtAvailableSendStock(getWdtAvailableSendStock(row));
+}
+
 export function getWdtStockNum(row: WdtStockRow): number {
   return numberFromWdtCell(row.stock_num ?? row.库存);
 }

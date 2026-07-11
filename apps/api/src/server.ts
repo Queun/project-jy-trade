@@ -4,6 +4,7 @@ import { ZodError } from "zod";
 import {
   CreateExportRequestSchema,
   CreateBatchRequestSchema,
+  ApplyProductMappingRequestSchema,
   ConfirmProductMappingRequestSchema,
   CreateWdtGoodsSyncRunRequestSchema,
   LoginRequestSchema,
@@ -23,6 +24,7 @@ import {
   UpdateWdtSyncSettingsRequestSchema,
   UploadOrderFileRequestSchema,
   type AuthUserDto,
+  type ApplyProductMappingResponse,
   type BatchSummary,
   type ExportDto,
   type ExternalProductDto,
@@ -190,6 +192,15 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     const { batchId } = request.params as { batchId: string };
     const body = RebuildConfirmedOrderRequestSchema.parse(request.body ?? {});
     const result = await store.rebuildConfirmedOrder(batchId, body, getCurrentUser(request));
+    if (!result) return reply.code(404).send({ message: "Batch not found" });
+    return result;
+  });
+
+  app.post("/api/v1/batches/:batchId/actions/apply-product-mapping", async (request, reply): Promise<ApplyProductMappingResponse | unknown> => {
+    requireRole(request, ["admin", "operator"]);
+    const { batchId } = request.params as { batchId: string };
+    const body = ApplyProductMappingRequestSchema.parse(request.body ?? {});
+    const result = await store.applyProductMapping(batchId, body, getCurrentUser(request));
     if (!result) return reply.code(404).send({ message: "Batch not found" });
     return result;
   });

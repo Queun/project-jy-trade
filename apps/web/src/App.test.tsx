@@ -52,6 +52,7 @@ let externalProductRows: ExternalProductDto[];
 let currentUser: { id: string; username: string; role: "admin" | "operator" | "reviewer"; createdAt: string };
 let failReviewLines: boolean;
 let batchDeleted: boolean;
+let deferredMakeOrderReadinessResponse: ReturnType<typeof json> | null;
 
 describe("App", () => {
   beforeEach(() => {
@@ -97,6 +98,7 @@ describe("App", () => {
     currentUser = { id: "user-1", username: "admin", role: "admin", createdAt: "2026-06-30T00:00:00.000Z" };
     failReviewLines = false;
     batchDeleted = false;
+    deferredMakeOrderReadinessResponse = null;
     vi.stubGlobal("fetch", vi.fn(handleFetch));
     vi.stubGlobal("confirm", vi.fn(() => true));
   });
@@ -663,7 +665,9 @@ describe("App", () => {
     switchToExportTab();
 
     expect(await screen.findByText("做单预检查")).toBeInTheDocument();
+    expect(screen.getByTestId("export-actions").className).toContain("minmax(min(100%,17rem),1fr)");
     expect(screen.getByRole("button", { name: "生成做单表格" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "生成做单表格" })).toHaveClass("whitespace-normal");
     expect(screen.getByText("可做单 2 行 / 未选仓库 0 行 / 缺地址 1 个门店")).toBeInTheDocument();
     expect(screen.getByText("测试门店")).toBeInTheDocument();
     expect(screen.getByText("2 行待做单")).toBeInTheDocument();
@@ -859,6 +863,33 @@ describe("App", () => {
       wdtSpecNo: "3282770392869",
       status: "confirmed",
     });
+  });
+
+  it("shows negative WDT stock as a shortage while keeping the raw warehouse value", async () => {
+    candidateRows = [productCandidate({
+      stockTotalAvailable: 0,
+      stockRows: [{ warehouseNo: "001", warehouseName: "主仓", availableSendStock: -8, included: true }],
+    })];
+    specRows = [wdtSpec({
+      stockTotalAvailable: 0,
+      stockRows: [{ warehouseNo: "001", warehouseName: "主仓", availableSendStock: -8, included: true }],
+    })];
+    render(<App />);
+    await clickBatch();
+    switchToReviewTab();
+
+    fireEvent.click(screen.getByRole("button", { name: "长期映射库" }));
+    expect(await screen.findByText("商品映射确认")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "当前行映射" }));
+    fireEvent.click(screen.getByRole("button", { name: "刷新智能候选" }));
+
+    const negativeStock = await screen.findByText("001 /主仓: -8 · 库存不足");
+    expect(negativeStock).toHaveClass("border-rose-200");
+    expect(screen.getByText("库存不足 · 可发 0")).toHaveClass("bg-rose-100");
+
+    fireEvent.click(screen.getByRole("button", { name: "搜索规格" }));
+    await waitFor(() => expect(screen.getAllByText("001 /主仓: -8 · 库存不足")).toHaveLength(2));
+    expect(screen.getAllByText("库存不足 · 可发 0")).toHaveLength(2);
   });
 
   it("does not show unrelated global candidates when locating a product mapping", async () => {
@@ -1178,7 +1209,7 @@ describe("App", () => {
     expect(screen.queryByText("Name candidate needs human confirmation")).not.toBeInTheDocument();
   });
 
-  it("rechecks confirmed-order batches after confirming a product mapping", async () => {
+  it("applies a mapping directly to a confirmed-order batch without a rebuild prompt", async () => {
     currentBatch = { ...currentBatch, mode: "production_api", sourceType: "confirmed_order", status: "reviewed" };
     mappingRows = [];
     lines = [
@@ -1211,22 +1242,22 @@ describe("App", () => {
     fireEvent.click(within(confirmedOrderRow).getByRole("button", { name: "定位映射" }));
     fireEvent.click(await screen.findByRole("button", { name: /雅漾专研保湿修护面膜25ml/ }));
     fireEvent.click(screen.getByRole("button", { name: "保存长期映射" }));
-    expect(await screen.findByRole("dialog", { name: "重新校验确定单" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /保留当前审核结果/ }));
 
     await waitFor(() =>
-      expect(fetch).toHaveBeenCalledWith("/api/v1/batches/batch-1/actions/rebuild-confirmed-order", {
+      expect(fetch).toHaveBeenCalledWith("/api/v1/batches/batch-1/actions/apply-product-mapping", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ strategy: "preserve" }),
+        body: JSON.stringify({ mappingId: mappingRows[0].id }),
       }),
     );
+    expect(screen.queryByRole("dialog", { name: "重新校验确定单" })).not.toBeInTheDocument();
+    expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining("/actions/rebuild-confirmed-order"), expect.anything());
     expect(fetch).not.toHaveBeenCalledWith("/api/v1/batches/batch-1/actions/run-real-review", expect.anything());
-    expect(await screen.findByText("系统建议已刷新，当前审核结果已保留；请重新提交审核")).toBeInTheDocument();
+    expect(await screen.findByText("映射已应用到当前批次，请重新提交审核")).toBeInTheDocument();
     await waitFor(() => expect(lines.every((line) => line.matchStatus === "matched" && line.decision === "ship")).toBe(true));
   });
 
-  it("keeps a saved mapping without recalculating when the rebuild prompt is cancelled", async () => {
+  it("closes the mapping dialog and automatically applies a saved confirmed-order mapping", async () => {
     currentBatch = { ...currentBatch, mode: "production_api", sourceType: "confirmed_order", status: "review_generated" };
     mappingRows = [];
     lines = [
@@ -1250,10 +1281,9 @@ describe("App", () => {
     fireEvent.click(within(row).getByRole("button", { name: "定位映射" }));
     fireEvent.click(await screen.findByRole("button", { name: /雅漾专研保湿修护面膜25ml/ }));
     fireEvent.click(screen.getByRole("button", { name: "保存长期映射" }));
-    expect(await screen.findByRole("dialog", { name: "重新校验确定单" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "取消" }));
 
-    expect(await screen.findByText("映射已保存，当前审核尚未重新校验")).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "商品映射" })).not.toBeInTheDocument());
+    expect(await screen.findByText("映射已应用到当前批次，请重新提交审核")).toBeInTheDocument();
     expect(mappingRows).toHaveLength(1);
     expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining("/actions/rebuild-confirmed-order"), expect.anything());
   });
@@ -1415,6 +1445,27 @@ describe("App", () => {
     );
     expect(await screen.findByText("已按最新库存重新分配；请检查结果并重新提交审核")).toBeInTheDocument();
     expect(screen.getByText("确定单已重新校验：1 行，已匹配 1 行，待补字段 0 行")).toBeInTheDocument();
+  });
+
+  it("finishes confirmed-order recheck before ancillary panels refresh", async () => {
+    currentBatch = { ...currentBatch, mode: "production_api", sourceType: "confirmed_order", status: "reviewed" };
+    lines = [reviewLine({ id: "line-fast-recheck", externalGoodsName: "快速重校验商品", matchStatus: "matched" })];
+    render(<App />);
+    await clickBatch();
+    switchToReviewTab();
+
+    let resolveReadiness!: (response: Awaited<ReturnType<typeof json>>) => void;
+    deferredMakeOrderReadinessResponse = new Promise((resolve) => {
+      resolveReadiness = resolve;
+    });
+    fireEvent.click(screen.getByRole("button", { name: "重新校验确定单" }));
+    fireEvent.click(await screen.findByRole("button", { name: /保留当前审核结果/ }));
+
+    expect(await screen.findByText("系统建议已刷新，当前审核结果已保留；请重新提交审核")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重新校验确定单" })).not.toBeDisabled();
+
+    deferredMakeOrderReadinessResponse = null;
+    resolveReadiness(await json(makeOrderReadiness));
   });
 
   it("shows confirmed-order quantity semantics and non-blocking final-result warnings", async () => {
@@ -1642,7 +1693,9 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
   if (url.includes("/review-lines") && method === "GET") {
     return failReviewLines ? json({ message: "审核明细读取失败" }, 500) : json(lines);
   }
-  if (url.includes("/make-order-readiness") && method === "GET") return json(makeOrderReadiness);
+  if (url.includes("/make-order-readiness") && method === "GET") {
+    return deferredMakeOrderReadinessResponse ?? json(makeOrderReadiness);
+  }
   if (url.includes("/store-fields") && method === "PATCH") {
     const body = JSON.parse(String(init?.body));
     let updatedLineCount = 0;
@@ -1928,6 +1981,46 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
     return json(saved, 201);
   }
   if (url.includes("/actions/run-mock-review")) return json({ batch: currentBatch });
+  if (url.includes("/actions/apply-product-mapping")) {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { mappingId?: string };
+    const confirmed = mappingRows.find((mapping) => mapping.id === body.mappingId && mapping.status === "confirmed");
+    const affectedIds = new Set<string>();
+    if (confirmed) {
+      lines = lines.map((line) => {
+        if (!reviewLineMatchesMapping(line, confirmed)) return line;
+        affectedIds.add(line.id);
+        return {
+          ...line,
+          goodsName: confirmed.wdtGoodsName,
+          specName: confirmed.wdtSpecName,
+          wdtSpecNo: confirmed.wdtSpecNo,
+          wdtMakeOrderCode: confirmed.wdtMakeOrderCode || confirmed.wdtSpecNo,
+          matchStatus: "matched",
+          matchMessage: confirmedProductMappingMatchMessage,
+          suggestedShipQty: line.plannedShipQty,
+          suggestedWarehouseNo: "001",
+          suggestedWarehouseName: "主仓",
+          status: "库存充足",
+          decision: "ship",
+          approvedShipQty: line.plannedShipQty,
+          fulfillmentWarehouseNo: "001",
+          fulfillmentWarehouseName: "主仓",
+        };
+      });
+    }
+    currentBatch = { ...currentBatch, status: "review_generated" };
+    const updatedLines = lines.filter((line) => affectedIds.has(line.id));
+    return json({
+      batch: currentBatch,
+      mode: "targeted",
+      affectedExternalRowCount: updatedLines.length,
+      affectedSkuPoolCount: updatedLines.length > 0 ? 1 : 0,
+      affectedReviewLineCount: updatedLines.length,
+      stockSnapshotRunId: currentBatch.stockSnapshotRunId,
+      stockSnapshotAt: currentBatch.stockSnapshotAt,
+      reviewLines: updatedLines,
+    });
+  }
   if (url.includes("/actions/rebuild-confirmed-order")) {
     const body = JSON.parse(String(init?.body ?? "{}")) as { strategy?: "preserve" | "replace" };
     const confirmed = mappingRows.find((mapping) => mapping.status === "confirmed");
