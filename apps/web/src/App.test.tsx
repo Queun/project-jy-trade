@@ -1327,6 +1327,10 @@ describe("App", () => {
     switchToReviewTab();
 
     const pendingMappingFilter = await screen.findByRole("button", { name: /待映射商品.*4 种.*5 条/ });
+    const validationErrorStat = (await screen.findAllByText("校验异常"))
+      .map((element) => element.parentElement)
+      .find((element) => element?.textContent === "校验异常1");
+    expect(validationErrorStat).toBeTruthy();
     fireEvent.click(pendingMappingFilter);
     expect(await screen.findByText("货品码 CODE-A · 2 条订单 · 2 个门店")).toBeInTheDocument();
     expect(screen.getByText("Excel 第 21 行 · 1 条订单 · 1 个门店")).toBeInTheDocument();

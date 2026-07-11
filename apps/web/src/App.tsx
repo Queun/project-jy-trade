@@ -1742,7 +1742,7 @@ function ReviewTab({
         <Stat label={confirmedOrderMode ? "可做单" : "已匹配"} value={stats.matched} />
         <Stat label={confirmedOrderMode ? "需选择商家编码" : "需确认"} value={stats.ambiguous} />
         <Stat label={confirmedOrderMode ? "缺商家编码" : "未找到"} value={stats.notFound} />
-        <Stat label={confirmedOrderMode ? "校验异常" : "库存异常"} value={stats.inventoryException} />
+        <Stat label={confirmedOrderMode ? "校验异常" : "库存异常"} value={confirmedOrderMode ? stats.apiError : stats.inventoryException} />
       </div>
       <section className="rounded-md border border-border bg-card p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
@@ -2360,6 +2360,7 @@ function buildStats(lines: ReviewLineDto[]) {
     matched: lines.filter((line) => line.matchStatus === "matched").length,
     ambiguous: lines.filter((line) => line.matchStatus === "ambiguous").length,
     notFound: lines.filter((line) => line.matchStatus === "not_found").length,
+    apiError: lines.filter((line) => line.matchStatus === "api_error").length,
     inventoryException: lines.filter(
       (line) => line.matchStatus === "api_error" || line.status === "库存不足" || line.status === "库存未验证",
     ).length,

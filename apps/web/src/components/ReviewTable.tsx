@@ -421,11 +421,11 @@ export function ReviewTable({
                   <Fragment key={group.key}>
                     <tr className="border-t border-border bg-muted/35">
                       <td className="px-3 py-3" colSpan={columns.length}>
-                        <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="flex flex-wrap items-center gap-3">
                           <button
                             aria-expanded={expanded}
                             aria-label={`${expanded ? "收起" : "展开"} ${representative.externalGoodsName}`}
-                            className="flex min-w-0 flex-1 items-start gap-2 text-left"
+                            className="flex min-w-0 items-start gap-2 text-left"
                             onClick={() => toggleGroup(group.key)}
                           >
                             {expanded ? <ChevronDown className="mt-0.5 h-4 w-4 shrink-0" /> : <ChevronRight className="mt-0.5 h-4 w-4 shrink-0" />}
