@@ -92,26 +92,31 @@ npm run db:migrate
 npm run deploy:check
 ```
 
-## systemd 服务
+## PM2 服务
 
-复制示例服务：
+当前腾讯云服务器以 PM2 管理 API，固定进程名为 `jy-trade-api`。应用会从项目根目录的 `.env` 读取运行配置，因此 PM2 必须使用 `/opt/jy-trade/current` 作为工作目录。
+
+首次创建进程：
 
 ```bash
-cp deploy/jy-trade-api.service.example /etc/systemd/system/jy-trade-api.service
-systemctl daemon-reload
-systemctl enable --now jy-trade-api
-systemctl status jy-trade-api --no-pager
+cd /opt/jy-trade/current
+pm2 start npm --name jy-trade-api --cwd /opt/jy-trade/current -- run start:api
+pm2 save
+pm2 status
 curl http://127.0.0.1:3001/api/v1/health
 ```
 
-如果使用 root 运行，确认 `/etc/systemd/system/jy-trade-api.service` 中：
+如果服务器重启后需要 PM2 自动恢复进程，执行一次 `pm2 startup`。PM2 会输出一条需要以 root 执行的命令；按它的原样执行后，再运行 `pm2 save`。以后更新服务时只使用 `pm2 restart jy-trade-api`，不要重复 `pm2 start` 创建同名进程。
 
-```ini
-User=root
-Group=root
-WorkingDirectory=/opt/jy-trade/current
-EnvironmentFile=/opt/jy-trade/current/.env
+常用诊断命令：
+
+```bash
+pm2 status
+pm2 describe jy-trade-api
+pm2 logs jy-trade-api --lines 100 --nostream
 ```
+
+仓库中的 `deploy/jy-trade-api.service.example` 仅保留为备用的 systemd 示例；当前服务器不使用它。
 
 ## Nginx
 
@@ -158,7 +163,7 @@ grep -E '^(NODE_ENV|DATABASE_URL|JY_TRADE_UPLOAD_DIR|JY_TRADE_EXPORTS_DIR|TZ|WDT
 
 ```bash
 cd /opt/jy-trade/current
-systemctl stop jy-trade-api
+pm2 stop jy-trade-api
 
 OLD_DB=/opt/jy-trade/current/data/jy-trade-prod.db
 STAMP=$(date +%Y%m%d-%H%M%S)
@@ -222,10 +227,10 @@ npm run deploy:check
 ### 5. 启动和基础验收
 
 ```bash
-systemctl restart jy-trade-api
-systemctl status jy-trade-api --no-pager
+pm2 restart jy-trade-api --update-env
+pm2 status
 curl http://127.0.0.1:3001/api/v1/health
-journalctl -u jy-trade-api -n 100 --no-pager
+pm2 logs jy-trade-api --lines 100 --nostream
 ```
 
 预期健康接口返回：
@@ -249,7 +254,7 @@ journalctl -u jy-trade-api -n 100 --no-pager
 如果新版本无法完成健康检查或核心流程，先停止服务：
 
 ```bash
-systemctl stop jy-trade-api
+pm2 stop jy-trade-api
 cd /opt/jy-trade/current
 ```
 
@@ -266,7 +271,7 @@ chmod 600 .env
 OLD_COMMIT=$(cat /opt/jy-trade/backups/pre-production-switch.commit)
 git switch --detach "$OLD_COMMIT"
 npm ci
-systemctl restart jy-trade-api
+pm2 restart jy-trade-api --update-env
 curl http://127.0.0.1:3001/api/v1/health
 ```
 
@@ -281,7 +286,7 @@ curl http://127.0.0.1:3001/api/v1/health
 ```bash
 cd /opt/jy-trade/current
 mkdir -p /opt/jy-trade/backups
-systemctl stop jy-trade-api
+pm2 stop jy-trade-api
 
 set -a
 . ./.env
@@ -309,7 +314,7 @@ set +a
 
 npm run db:migrate
 npm run deploy:check
-systemctl start jy-trade-api
+pm2 restart jy-trade-api --update-env
 systemctl reload nginx
 ```
 
@@ -317,14 +322,8 @@ systemctl reload nginx
 
 ```bash
 curl http://127.0.0.1:3001/api/v1/health
-systemctl status jy-trade-api --no-pager
-tail -n 100 data/logs/api-error.log
-```
-
-如果没有配置日志文件，也可以看 systemd 日志：
-
-```bash
-journalctl -u jy-trade-api -n 100 --no-pager
+pm2 status
+pm2 logs jy-trade-api --lines 100 --nostream
 ```
 
 ## 哪些步骤可以暂时不做
@@ -344,3 +343,31 @@ journalctl -u jy-trade-api -n 100 --no-pager
 4. 导入真实订单，跑一批完整流程。
 
 私有 Excel、真实订单、数据库、上传文件、导出文件都不要提交到 Git。
+
+## 本次部署记录
+
+本节记录 2026-07-11 这次从测试库切换到新运行库的实际部署基线。服务器操作完成后，应在同一节补全“服务器执行结果”，让下一次发布能直接判断现有状态。
+
+| 项目 | 当前记录 |
+| --- | --- |
+| 代码版本 | `9bd11858efda418053084e019b70b22f97e94cad` (`feat: finalize confirmed-order workflow for deployment`) |
+| GitHub 状态 | 已推送到 `origin/main` |
+| 服务器服务管理 | PM2，进程名 `jy-trade-api` |
+| 部署方式 | 腾讯云 CVM，业务 IP 白名单访问，Nginx 反向代理 |
+| 管理员初始账号 | `admin / yjmy` |
+| 数据库切换 | 待在服务器把 `DATABASE_URL` 改为新的 `data/production/jy-trade-prod.db` 后执行迁移 |
+| 服务器执行结果 | 待填写：部署时间、部署前 commit、实际 `DATABASE_URL`、PM2 restart 次数、健康检查与浏览器验收结果 |
+
+服务器切换完成后，在这里追加以下最小记录，不要记录旺店通密钥或 `.env` 完整内容：
+
+```text
+部署时间（Asia/Shanghai）：
+部署前 commit：
+部署后 commit：
+旧数据库路径：
+新数据库路径：
+PM2 状态：online / errored
+健康检查：通过 / 失败
+浏览器验收：登录、库存同步、确定单审核、双表导出
+异常与处理：无 / 具体说明
+```
