@@ -43,6 +43,7 @@
   UpdateProductMappingStatusRequest,
   UpsertStoreAddressRequest,
   WarehouseUsageSettingsDto,
+  WarehouseSnapshotType,
   WdtAutoSyncIntervalHours,
   WdtSyncSettingsDto,
   WdtGoodsSpecSearchResultDto,
@@ -79,6 +80,7 @@ import {
   wdtSyncRuns,
   wdtStockSnapshotSpecs,
   wdtStockSnapshotRows,
+  wdtStockSnapshotWarehouseCoverage,
   wdtSuiteComponents,
   wdtSuites,
 } from "./db/schema.js";
@@ -91,7 +93,7 @@ import {
 } from "./wdtGoodsSync.js";
 import { createWdtReadClientsFromEnv } from "./wdtClientAdapter.js";
 import { ensureRuntimeDir, resolveProjectRoot, resolveRuntimeDir } from "./runtimePaths.js";
-import { startCombinedSync, type CombinedSyncRepository } from "./wdtCombinedSync.js";
+import { startCombinedSync, type CombinedSyncRepository, type StockSyncScope } from "./wdtCombinedSync.js";
 import {
   createLocalProductMatcher,
   decideLocalProductMatch,
@@ -124,8 +126,8 @@ type ExternalProductRow = typeof externalProducts.$inferSelect;
 type ExternalProductComponentRow = typeof externalProductComponents.$inferSelect;
 
 export interface StockLookupClient {
-  queryStock(specNo: string): Promise<WdtStockResponse>;
-  queryStocks?(specNos: string[]): Promise<WdtStockResponse>;
+  queryStock(specNo: string, warehouseNo?: string): Promise<WdtStockResponse>;
+  queryStocks?(specNos: string[], warehouseNo?: string): Promise<WdtStockResponse>;
 }
 
 interface WarehouseStockSummary {
@@ -150,6 +152,8 @@ interface LocalStockSnapshot {
   syncedAt: string;
   stockBySpecNo: Map<string, WarehouseStockSummary>;
   verifiedSpecNos: Set<string>;
+  warehouseTypes: Set<WarehouseSnapshotType>;
+  missingWarehouseTypes: WarehouseSnapshotType[];
 }
 
 interface ReviewAllocation {
@@ -2829,6 +2833,22 @@ function warehouseIncluded(type: WarehouseStockType, settings: WarehouseUsageSet
   return settings.includeOtherWarehouses;
 }
 
+function enabledWarehouseTypes(settings: WarehouseUsageSettingsDto): WarehouseSnapshotType[] {
+  const types: WarehouseSnapshotType[] = [];
+  if (settings.includeMainWarehouse) types.push("main");
+  if (settings.includeNearExpiryWarehouse) types.push("near_expiry");
+  if (settings.includeDefectWarehouse) types.push("defect");
+  if (settings.includeOtherWarehouses) types.push("other");
+  return types;
+}
+
+function concreteWarehouseNo(type: WarehouseSnapshotType | undefined) {
+  if (type === "main") return "001";
+  if (type === "near_expiry") return "LINQI";
+  if (type === "defect") return "CIPIN";
+  return "";
+}
+
 function defaultWarehouseNo(type: WarehouseStockType, warehouseName: string) {
   if (type === "main") return "001";
   if (type === "near_expiry") return "LINQI";
@@ -2851,11 +2871,16 @@ function compareWarehouseCandidates(left: WarehouseStockCandidate, right: Wareho
 }
 
 function stockLookupFromSnapshot(specNos: string[], snapshot: LocalStockSnapshot | undefined) {
-  const error = buildStockLookupError("LOCAL_STOCK_SNAPSHOT_MISSING");
+  const error = snapshot?.missingWarehouseTypes.length
+    ? {
+        userMessage: `当前库存快照未覆盖已启用仓库：${snapshot.missingWarehouseTypes.map(warehouseTypeText).join("、")}，请同步后再使用系统建议`,
+        developerDetail: `LOCAL_STOCK_SNAPSHOT_WAREHOUSE_SCOPE_MISMATCH missing=${snapshot.missingWarehouseTypes.join(",")}`,
+      }
+    : buildStockLookupError("LOCAL_STOCK_SNAPSHOT_MISSING");
   const stockErrorsBySpecNo = new Map<string, StockLookupError>();
   const stockBySpecNo = new Map<string, WarehouseStockSummary>();
   for (const specNo of [...new Set(specNos.filter(Boolean))]) {
-    if (snapshot?.verifiedSpecNos.has(specNo)) {
+    if (snapshot?.missingWarehouseTypes.length === 0 && snapshot.verifiedSpecNos.has(specNo)) {
       stockBySpecNo.set(specNo, snapshot.stockBySpecNo.get(specNo) ?? emptyWarehouseStockSummary());
     } else stockErrorsBySpecNo.set(specNo, error);
   }
@@ -2879,6 +2904,9 @@ async function loadActiveStockSnapshot(database: DatabaseContext, settings: Ware
   if (!run) return undefined;
   const verifiedRows = await database.db.select().from(wdtStockSnapshotSpecs).where(eq(wdtStockSnapshotSpecs.syncRunId, run.id));
   const snapshotRows = await database.db.select().from(wdtStockSnapshotRows).where(eq(wdtStockSnapshotRows.syncRunId, run.id));
+  const coverageRows = await database.db.select().from(wdtStockSnapshotWarehouseCoverage).where(eq(wdtStockSnapshotWarehouseCoverage.syncRunId, run.id));
+  const warehouseTypes = new Set(coverageRows.map((row) => row.warehouseType));
+  const missingWarehouseTypes = enabledWarehouseTypes(settings).filter((type) => !warehouseTypes.has(type));
   const rowsBySpecNo = new Map<string, WdtStockRow[]>();
   for (const row of snapshotRows) {
     const wdtRow: WdtStockRow = {
@@ -2893,6 +2921,8 @@ async function loadActiveStockSnapshot(database: DatabaseContext, settings: Ware
     runId: run.id,
     syncedAt: run.finishedAt,
     verifiedSpecNos: new Set(verifiedRows.map((row) => row.specNo)),
+    warehouseTypes,
+    missingWarehouseTypes,
     stockBySpecNo: new Map(verifiedRows.map((row) => [row.specNo, summarizeWarehouseStock(rowsBySpecNo.get(row.specNo) ?? [], settings)])),
   };
 }
@@ -2910,6 +2940,13 @@ function buildStockLookupError(developerDetail: string): StockLookupError {
 }
 
 type WarehouseStockType = "main" | "near_expiry" | "defect" | "other";
+
+function warehouseTypeText(type: WarehouseSnapshotType) {
+  if (type === "main") return "主仓";
+  if (type === "near_expiry") return "临期仓";
+  if (type === "defect") return "次品仓";
+  return "其他仓";
+}
 
 function classifyWdtWarehouse(row: WdtStockRow): WarehouseStockType {
   const warehouseNo = (row.warehouse_no ?? "").trim().toUpperCase();
@@ -3245,15 +3282,22 @@ function createCombinedSyncRepository(
         .filter((row) => activeSuiteNos.has(row.suiteNo));
       return [...goods, ...components].map((row) => row.specNo);
     },
-    async writeStockBatch(runId, requestedSpecNos, rows, syncedAt) {
+    async loadStockScope() {
+      const settings = toWarehouseUsageSettingsDto(await getWarehouseUsageSettingsRow(database));
+      const warehouseTypes = enabledWarehouseTypes(settings);
+      const apiWarehouseNo = warehouseTypes.length === 1 ? concreteWarehouseNo(warehouseTypes[0]) : "";
+      return { warehouseTypes, apiWarehouseNo };
+    },
+    async writeStockBatch(runId, requestedSpecNos, rows, syncedAt, scope) {
       if (requestedSpecNos.length) await database.db.insert(wdtStockSnapshotSpecs).values(requestedSpecNos.map((specNo) => ({ syncRunId: runId, specNo, syncedAt })));
       const requested = new Set(requestedSpecNos);
+      const enabledTypes = new Set(scope.warehouseTypes);
       const groupedRows = new Map<string, { row: WdtStockRow; availableSendStock: number; rawRows: WdtStockRow[] }>();
       for (const row of rows) {
         const specNo = (row.spec_no ?? "").trim();
         const warehouseNo = (row.warehouse_no ?? "").trim();
         const warehouseName = (row.warehouse_name ?? "").trim();
-        if (!requested.has(specNo) || (!warehouseNo && !warehouseName)) continue;
+        if (!requested.has(specNo) || (!warehouseNo && !warehouseName) || !enabledTypes.has(classifyWdtWarehouse(row))) continue;
         const key = `${specNo}\u0000${warehouseNo}\u0000${warehouseName}`;
         const current = groupedRows.get(key);
         groupedRows.set(key, {
@@ -3275,8 +3319,13 @@ function createCombinedSyncRepository(
       })));
       return validRows.length;
     },
-    async activateRun(runId, finishedAt) {
+    async activateRun(runId, finishedAt, scope) {
       await database.client.batch([
+        ...scope.warehouseTypes.map((warehouseType) => ({
+          sql: `insert into wdt_stock_snapshot_warehouse_coverage
+                (sync_run_id, warehouse_type, api_warehouse_no, synced_at) values (?, ?, ?, ?)`,
+          args: [runId, warehouseType, scope.apiWarehouseNo, finishedAt],
+        })),
         {
           sql: `update wdt_sync_runs
                 set status = 'success', stage = 'complete', finished_at = ?, last_progress_at = ?
@@ -3290,6 +3339,7 @@ function createCombinedSyncRepository(
       await database.client.batch([
         { sql: "delete from wdt_stock_snapshot_rows where sync_run_id = ?", args: [runId] },
         { sql: "delete from wdt_stock_snapshot_specs where sync_run_id = ?", args: [runId] },
+        { sql: "delete from wdt_stock_snapshot_warehouse_coverage where sync_run_id = ?", args: [runId] },
         {
           sql: `update wdt_sync_runs
                 set status = 'failed', stage = 'complete', finished_at = ?, last_progress_at = ?,
@@ -3332,12 +3382,20 @@ function normalizeSyncIntervalHours(value: number): WdtAutoSyncIntervalHours {
 
 async function toWdtSyncRunDto(database: DatabaseContext, row: WdtSyncRunRow | typeof wdtSyncRuns.$inferInsert): Promise<WdtSyncRunDto> {
   const active = await getLatestSuccessfulWdtSyncRun(database);
+  const coverageRows = active
+    ? await database.db.select().from(wdtStockSnapshotWarehouseCoverage).where(eq(wdtStockSnapshotWarehouseCoverage.syncRunId, active.id))
+    : [];
+  const activeSnapshotWarehouseTypes = coverageRows.map((coverage) => coverage.warehouseType);
+  const settings = toWarehouseUsageSettingsDto(await getWarehouseUsageSettingsRow(database));
+  const activeSnapshotMissingWarehouseTypes = enabledWarehouseTypes(settings).filter((type) => !activeSnapshotWarehouseTypes.includes(type));
   return {
     id: row.id, trigger: row.trigger, status: row.status, stage: row.stage, goodsSyncRunId: row.goodsSyncRunId ?? "",
     totalSpecCount: row.totalSpecCount ?? 0, processedSpecCount: row.processedSpecCount ?? 0,
     totalBatchCount: row.totalBatchCount ?? 0, completedBatchCount: row.completedBatchCount ?? 0, stockRowCount: row.stockRowCount ?? 0,
     startedAt: row.startedAt, finishedAt: row.finishedAt ?? "", lastProgressAt: row.lastProgressAt,
     activeSnapshotRunId: active?.id ?? "", activeSnapshotAt: active?.finishedAt ?? "", activeSnapshotTrigger: active?.trigger ?? "",
+    activeSnapshotWarehouseTypes,
+    activeSnapshotMissingWarehouseTypes,
     errorCode: row.errorCode ?? "", errorMessage: row.errorMessage ?? "", errorDetail: row.errorDetail ?? "",
   };
 }
@@ -3348,6 +3406,7 @@ async function pruneOldStockSnapshots(database: DatabaseContext) {
   if (!obsolete.length) return;
   await database.db.delete(wdtStockSnapshotRows).where(inArray(wdtStockSnapshotRows.syncRunId, obsolete));
   await database.db.delete(wdtStockSnapshotSpecs).where(inArray(wdtStockSnapshotSpecs.syncRunId, obsolete));
+  await database.db.delete(wdtStockSnapshotWarehouseCoverage).where(inArray(wdtStockSnapshotWarehouseCoverage.syncRunId, obsolete));
 }
 
 async function recoverInterruptedSyncRuns(database: DatabaseContext) {
@@ -3357,6 +3416,7 @@ async function recoverInterruptedSyncRuns(database: DatabaseContext) {
     await database.client.batch([
       { sql: "delete from wdt_stock_snapshot_rows where sync_run_id = ?", args: [row.id] },
       { sql: "delete from wdt_stock_snapshot_specs where sync_run_id = ?", args: [row.id] },
+      { sql: "delete from wdt_stock_snapshot_warehouse_coverage where sync_run_id = ?", args: [row.id] },
       {
         sql: `update wdt_sync_runs
               set status = 'failed', stage = 'complete', finished_at = ?, last_progress_at = ?,
@@ -3667,6 +3727,7 @@ async function prepareDatabase(database: DatabaseContext, bootstrapUsers: Array<
   await ensureReviewDecisionColumns(database);
   await ensureWarehouseUsageSettings(database);
   await ensureWdtSyncSettings(database);
+  await ensureStockSnapshotWarehouseCoverage(database);
   await ensureStoreAddresses(database);
   await ensureExternalProducts(database);
   await ensureBootstrapUsers(database, bootstrapUsers);
@@ -3799,6 +3860,32 @@ async function ensureWdtSyncSettings(database: DatabaseContext) {
     )
   `);
   await getWdtSyncSettingsRow(database);
+}
+
+async function ensureStockSnapshotWarehouseCoverage(database: DatabaseContext) {
+  const tableExisted = (await getTableColumns(database, "wdt_stock_snapshot_warehouse_coverage")).length > 0;
+  await database.client.execute(`
+    create table if not exists wdt_stock_snapshot_warehouse_coverage (
+      sync_run_id text not null,
+      warehouse_type text not null,
+      api_warehouse_no text not null default '',
+      synced_at text not null
+    )
+  `);
+  await database.client.execute(`
+    create unique index if not exists wdt_stock_snapshot_warehouse_coverage_unique
+    on wdt_stock_snapshot_warehouse_coverage (sync_run_id, warehouse_type)
+  `);
+  if (!tableExisted) {
+    for (const warehouseType of ["main", "near_expiry", "defect", "other"] as const) {
+      await database.client.execute({
+        sql: `insert or ignore into wdt_stock_snapshot_warehouse_coverage
+              (sync_run_id, warehouse_type, api_warehouse_no, synced_at)
+              select id, ?, '', finished_at from wdt_sync_runs where status = 'success'`,
+        args: [warehouseType],
+      });
+    }
+  }
 }
 
 async function ensureStoreAddresses(database: DatabaseContext) {

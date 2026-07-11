@@ -22,13 +22,13 @@ export function createWdtReadClientsFromEnv(profile = normalizeWdtProfile(proces
         },
       },
       stockClient: {
-        async queryStock(specNo) {
-          const response = await client.queryStock(specNo);
+        async queryStock(specNo, warehouseNo) {
+          const response = await client.queryStock(specNo, warehouseNo);
           assertWdtStockSuccess(response);
           return response;
         },
-        async queryStocks(specNos) {
-          const response = await client.queryStocks(specNos);
+        async queryStocks(specNos, warehouseNo) {
+          const response = await client.queryStocks(specNos, warehouseNo);
           assertWdtStockSuccess(response);
           return response;
         },

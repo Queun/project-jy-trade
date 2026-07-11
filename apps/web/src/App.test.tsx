@@ -287,6 +287,7 @@ describe("App", () => {
     await waitFor(() => expect(warehouseSettings.includeNearExpiryWarehouse).toBe(false));
     expect(warehouseSettings.includeOtherWarehouses).toBe(true);
     expect(await screen.findByText("已保存，重新运行初审后生效")).toBeInTheDocument();
+    expect(await screen.findByText(/当前快照未覆盖已启用的其他仓/)).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("自动同步"), { target: { value: "6" } });
     await waitFor(() => expect(wdtSyncSettings.intervalHours).toBe(6));
@@ -1533,6 +1534,18 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
       updatedByUsername: currentUser.username,
       updatedAt: "2026-07-06T00:00:00.000Z",
     };
+    if (latestCombinedSyncRun) {
+      const enabledTypes = [
+        warehouseSettings.includeMainWarehouse ? "main" : "",
+        warehouseSettings.includeNearExpiryWarehouse ? "near_expiry" : "",
+        warehouseSettings.includeDefectWarehouse ? "defect" : "",
+        warehouseSettings.includeOtherWarehouses ? "other" : "",
+      ].filter(Boolean) as Array<"main" | "near_expiry" | "defect" | "other">;
+      latestCombinedSyncRun = {
+        ...latestCombinedSyncRun,
+        activeSnapshotMissingWarehouseTypes: enabledTypes.filter((type) => !latestCombinedSyncRun?.activeSnapshotWarehouseTypes.includes(type)),
+      };
+    }
     return json(warehouseSettings);
   }
   if (url === "/api/v1/settings/wdt-sync" && method === "GET") return json(wdtSyncSettings);
@@ -2292,6 +2305,8 @@ function combinedSyncRun(patch: Partial<WdtSyncRunDto> = {}): WdtSyncRunDto {
     activeSnapshotRunId: "wdt-sync-1",
     activeSnapshotAt: "2026-07-03T00:02:00.000Z",
     activeSnapshotTrigger: "hourly",
+    activeSnapshotWarehouseTypes: ["main", "near_expiry"],
+    activeSnapshotMissingWarehouseTypes: [],
     errorCode: "",
     errorMessage: "",
     errorDetail: "",

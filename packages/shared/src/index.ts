@@ -443,6 +443,8 @@ export const WdtGoodsSyncRunDtoSchema = z.object({
 export type WdtGoodsSyncRunDto = z.infer<typeof WdtGoodsSyncRunDtoSchema>;
 
 export const WdtSyncTriggerSchema = z.enum(["manual", "hourly", "startup"]);
+export const WarehouseSnapshotTypeSchema = z.enum(["main", "near_expiry", "defect", "other"]);
+export type WarehouseSnapshotType = z.infer<typeof WarehouseSnapshotTypeSchema>;
 export const WdtSyncStatusSchema = z.enum(["queued", "running", "success", "failed"]);
 export const WdtSyncStageSchema = z.enum(["queued", "goods", "prepare_stock", "stock", "activate", "complete"]);
 export const WdtSyncRunDtoSchema = z.object({
@@ -462,6 +464,8 @@ export const WdtSyncRunDtoSchema = z.object({
   activeSnapshotRunId: z.string(),
   activeSnapshotAt: z.string(),
   activeSnapshotTrigger: z.union([WdtSyncTriggerSchema, z.literal("")]),
+  activeSnapshotWarehouseTypes: z.array(WarehouseSnapshotTypeSchema),
+  activeSnapshotMissingWarehouseTypes: z.array(WarehouseSnapshotTypeSchema),
   errorCode: z.string(),
   errorMessage: z.string(),
   errorDetail: z.string().optional(),

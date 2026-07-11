@@ -306,6 +306,20 @@ export const wdtStockSnapshotRows = sqliteTable(
   ],
 );
 
+export const wdtStockSnapshotWarehouseCoverage = sqliteTable(
+  "wdt_stock_snapshot_warehouse_coverage",
+  {
+    syncRunId: text("sync_run_id").notNull(),
+    warehouseType: text("warehouse_type", { enum: ["main", "near_expiry", "defect", "other"] }).notNull(),
+    apiWarehouseNo: text("api_warehouse_no").notNull().default(""),
+    syncedAt: text("synced_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("wdt_stock_snapshot_warehouse_coverage_unique").on(table.syncRunId, table.warehouseType),
+    index("wdt_stock_snapshot_warehouse_coverage_run_idx").on(table.syncRunId),
+  ],
+);
+
 export const wdtSuites = sqliteTable(
   "wdt_suites",
   {

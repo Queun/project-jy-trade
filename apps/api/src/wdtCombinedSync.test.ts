@@ -8,6 +8,7 @@ import {
   startCombinedSync,
   WDT_SYNC_BATCH_SIZE,
   type CombinedSyncRepository,
+  type StockSyncScope,
 } from "./wdtCombinedSync.js";
 
 describe("combined WDT goods and stock sync", () => {
@@ -209,6 +210,32 @@ describe("combined WDT goods and stock sync", () => {
     expect(repository.goodsSyncCalls).toBe(0);
     expect(stockQueryCount).toBe(0);
   });
+
+  it("passes a single concrete warehouse filter and skips stock calls when no warehouses are enabled", async () => {
+    const single = new MemoryCombinedSyncRepository();
+    single.specNos = ["SPEC-1"];
+    single.stockScope = { warehouseTypes: ["main"], apiWarehouseNo: "001" };
+    const warehouseFilters: Array<string | undefined> = [];
+    const stockClient: StockLookupClient = {
+      async queryStock() {
+        throw new Error("single lookup should not be used");
+      },
+      async queryStocks(specNos, warehouseNo) {
+        warehouseFilters.push(warehouseNo);
+        return { status: 0, data: { detail_list: specNos.map((specNo) => ({ spec_no: specNo, warehouse_no: "001" })) } };
+      },
+    };
+    await executeCombinedSync(single, stockClient, "run-single-warehouse");
+    expect(warehouseFilters).toEqual(["001"]);
+
+    const none = new MemoryCombinedSyncRepository();
+    none.specNos = ["SPEC-1"];
+    none.stockScope = { warehouseTypes: [], apiWarehouseNo: "" };
+    await executeCombinedSync(none, stockClient, "run-no-warehouse");
+    expect(warehouseFilters).toEqual(["001"]);
+    expect(none.stockWrites[0]).toMatchObject({ requestedSpecNos: ["SPEC-1"], rows: [] });
+    expect(none.run.status).toBe("success");
+  });
 });
 
 function stockClientWithBatchQuery(
@@ -240,6 +267,8 @@ function makeRun(patch: Partial<WdtSyncRunDto> = {}): WdtSyncRunDto {
     activeSnapshotRunId: "",
     activeSnapshotAt: "",
     activeSnapshotTrigger: "",
+    activeSnapshotWarehouseTypes: [],
+    activeSnapshotMissingWarehouseTypes: [],
     errorCode: "",
     errorMessage: "",
     errorDetail: "",
@@ -251,6 +280,7 @@ class MemoryCombinedSyncRepository implements CombinedSyncRepository {
   run = makeRun();
   activeRun?: WdtSyncRunDto;
   specNos: string[] = [];
+  stockScope: StockSyncScope = { warehouseTypes: ["main", "near_expiry", "defect", "other"], apiWarehouseNo: "" };
   goodsRun = { id: "goods-run", status: "success" as const, errorMessage: "" };
   goodsSyncCalls = 0;
   createCalls: Array<{ id: string; trigger: WdtSyncRunDto["trigger"]; now: string }> = [];
@@ -289,6 +319,10 @@ class MemoryCombinedSyncRepository implements CombinedSyncRepository {
 
   async loadStockSpecNos() {
     return [...this.specNos];
+  }
+
+  async loadStockScope() {
+    return this.stockScope;
   }
 
   async writeStockBatch(runId: string, requestedSpecNos: string[], rows: WdtStockRow[]) {

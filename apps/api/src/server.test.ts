@@ -21,6 +21,7 @@ import {
   wdtGoodsSyncRuns,
   wdtStockSnapshotRows,
   wdtStockSnapshotSpecs,
+  wdtStockSnapshotWarehouseCoverage,
   wdtSuiteComponents,
   wdtSuites,
   wdtSyncRuns,
@@ -1778,6 +1779,38 @@ describe("api server", () => {
     });
     expect(confirmed.statusCode).toBe(200);
     expect(confirmed.json()).toMatchObject({ requiresConfirmation: false, batch: { status: "reviewed" } });
+    await app.close();
+  });
+
+  it("treats a matched SKU as unverified when the snapshot does not cover every enabled warehouse", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await seedSuccessfulGoodsCache(database);
+    await seedSuccessfulStockSnapshot(database, {
+      verifiedSpecNos: ["3282770392869"],
+      warehouseTypes: ["main"],
+      rows: [{ specNo: "3282770392869", warehouseNo: "001", warehouseName: "主仓", availableSendStock: 9 }],
+    });
+    await database.close();
+
+    const app = buildTestServer(databaseUrl);
+    const cookie = await loginCookie(app);
+    const imported = await app.inject({
+      method: "POST",
+      url: "/api/v1/confirmed-orders/import",
+      headers: { cookie },
+      payload: { fileName: "确定单-快照范围不足.xlsx", contentBase64: confirmedOrderWorkbookBase64() },
+    });
+    expect(imported.statusCode).toBe(201);
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/v1/batches/${imported.json().batch.id}/review-lines`,
+      headers: { cookie },
+    });
+    expect(response.json()[0]).toMatchObject({ status: "库存未验证", suggestedShipQty: 0, approvedShipQty: 0 });
+    expect(response.json()[0].stockErrorDetail).toContain("LOCAL_STOCK_SNAPSHOT_WAREHOUSE_SCOPE_MISMATCH");
+    expect(response.json()[0].stockErrorDetail).toContain("near_expiry");
     await app.close();
   });
 
@@ -4016,7 +4049,13 @@ describe("api server", () => {
       },
       async queryStocks(specNos) {
         stockCalls += 1;
-        return { status: 0, data: { total_count: specNos.length, detail_list: specNos.map((specNo) => ({ spec_no: specNo, warehouse_no: "001", warehouse_name: "主仓", available_send_stock: 5 })) } };
+        const detailList = specNos.flatMap((specNo) => [
+          { spec_no: specNo, warehouse_no: "001", warehouse_name: "主仓", available_send_stock: 5 },
+          { spec_no: specNo, warehouse_no: "LINQI", warehouse_name: "临期仓", available_send_stock: 2 },
+          { spec_no: specNo, warehouse_no: "CIPIN", warehouse_name: "次品仓", available_send_stock: 99 },
+          { spec_no: specNo, warehouse_no: "OTHER-1", warehouse_name: "外部仓", available_send_stock: 88 },
+        ]);
+        return { status: 0, data: { total_count: detailList.length, detail_list: detailList } };
       },
     });
     const cookie = await loginCookie(app);
@@ -4038,7 +4077,33 @@ describe("api server", () => {
       activeSnapshotTrigger: "manual",
       totalSpecCount: 1,
       processedSpecCount: 1,
+      activeSnapshotWarehouseTypes: ["main", "near_expiry"],
+      activeSnapshotMissingWarehouseTypes: [],
     });
+    const checked = createDatabaseContext(databaseUrl);
+    await checked.ready;
+    const persistedRows = await checked.db.select().from(wdtStockSnapshotRows).where(eq(wdtStockSnapshotRows.syncRunId, first.json().run.id));
+    expect(persistedRows.map((row) => row.warehouseNo).sort()).toEqual(["001", "LINQI"]);
+    const coverage = await checked.db.select().from(wdtStockSnapshotWarehouseCoverage).where(eq(wdtStockSnapshotWarehouseCoverage.syncRunId, first.json().run.id));
+    expect(coverage.map((row) => row.warehouseType)).toEqual(["main", "near_expiry"]);
+    expect(coverage.every((row) => row.apiWarehouseNo === "")).toBe(true);
+    await checked.close();
+    const goodsCallsAfterSync = goodsCalls;
+    const settingsUpdate = await app.inject({
+      method: "PATCH",
+      url: "/api/v1/settings/warehouse-usage",
+      headers: { cookie },
+      payload: {
+        includeMainWarehouse: true,
+        includeNearExpiryWarehouse: true,
+        includeDefectWarehouse: true,
+        includeOtherWarehouses: false,
+      },
+    });
+    expect(settingsUpdate.statusCode).toBe(200);
+    const scopeMismatch = await app.inject({ method: "GET", url: "/api/v1/wdt/sync-runs/latest", headers: { cookie } });
+    expect(scopeMismatch.json()).toMatchObject({ activeSnapshotMissingWarehouseTypes: ["defect"] });
+    expect(goodsCalls).toBe(goodsCallsAfterSync);
     await app.close();
   });
 
@@ -4333,6 +4398,7 @@ async function seedSuccessfulStockSnapshot(
     finishedAt?: string;
     verifiedSpecNos: string[];
     rows?: StockSnapshotRowSeed[];
+    warehouseTypes?: Array<"main" | "near_expiry" | "defect" | "other">;
   },
 ) {
   const runId = options.runId ?? `wdt-sync-${randomUUID()}`;
@@ -4368,6 +4434,15 @@ async function seedSuccessfulStockSnapshot(
       syncRunId: runId,
       ...row,
       rawJson: JSON.stringify(row),
+      syncedAt: finishedAt,
+    })));
+  }
+  const warehouseTypes = options.warehouseTypes ?? ["main", "near_expiry", "defect", "other"];
+  if (warehouseTypes.length) {
+    await database.db.insert(wdtStockSnapshotWarehouseCoverage).values(warehouseTypes.map((warehouseType) => ({
+      syncRunId: runId,
+      warehouseType,
+      apiWarehouseNo: "",
       syncedAt: finishedAt,
     })));
   }

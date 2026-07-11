@@ -726,6 +726,7 @@ export function App() {
     setWarehouseSettings(settings);
     setWarehouseSettingsDraft(settings);
     setWarehouseSettingsMessage("已保存，重新运行初审后生效");
+    await refreshGoodsSyncStatus();
   }
 
   async function saveWdtSyncInterval(intervalHours: WdtAutoSyncIntervalHours) {
@@ -2103,6 +2104,7 @@ function GoodsSyncHeaderStatus({ error, run, settings }: { error: string; run: W
         <Badge tone={snapshotTone}>{run?.activeSnapshotAt ? (stale ? "建议刷新" : "可用") : "未建立"}</Badge>
         {status === "queued" || status === "running" ? <Badge tone="info">更新中</Badge> : null}
         {status === "failed" ? <Badge tone="bad">最近同步失败</Badge> : null}
+        {(run?.activeSnapshotMissingWarehouseTypes?.length ?? 0) > 0 ? <Badge tone="warn">仓库范围待同步</Badge> : null}
         <span className="min-w-0 truncate text-muted-foreground">{snapshotText}</span>
         {run?.activeSnapshotAt ? <span className="text-xs text-muted-foreground">来源：{syncTriggerText(run.activeSnapshotTrigger)}</span> : null}
         {stale ? <Badge tone="warn">超过同步周期</Badge> : null}
@@ -2144,6 +2146,7 @@ function GoodsSyncStatusPanel({
   const percent = total > 0 ? Math.min(100, Math.round((processed / total) * 100)) : 0;
   const intervalHours = syncSettings?.intervalHours ?? 1;
   const stale = combinedRun?.activeSnapshotAt ? Date.now() - Date.parse(combinedRun.activeSnapshotAt) > intervalHours * 60 * 60 * 1000 : false;
+  const missingWarehouseTypes = combinedRun?.activeSnapshotMissingWarehouseTypes ?? [];
   return (
     <section className="rounded-md border border-border bg-card p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -2174,6 +2177,11 @@ function GoodsSyncStatusPanel({
           </div>
           <p className="mt-2 text-xs text-muted-foreground">导入、审核和商品查询均使用这份本地快照，不会临时等待旺店通。</p>
           {syncSettings && !syncSettings.autoSyncEnabled ? <p className="mt-1 text-xs text-amber-800">自动同步已被运维配置关闭，手动立即同步仍可使用。</p> : null}
+          {missingWarehouseTypes.length > 0 ? (
+            <p className="mt-1 text-xs text-amber-800">
+              当前快照未覆盖已启用的{missingWarehouseTypes.map(snapshotWarehouseTypeText).join("、")}，这些仓库不会被当作零库存；请手动同步后再重新校验。
+            </p>
+          ) : null}
           {stale ? <p className="mt-1 text-xs text-amber-800">库存快照已超过当前同步周期，系统仍可使用，建议手动刷新。</p> : null}
           {syncSettingsMessage ? <p className="mt-1 text-xs text-muted-foreground">{syncSettingsMessage}</p> : null}
           {syncing ? (
@@ -2412,6 +2420,13 @@ function syncTriggerText(trigger: WdtSyncRunDto["activeSnapshotTrigger"] | undef
   if (trigger === "hourly") return "整点自动";
   if (trigger === "startup") return "启动补偿";
   return "-";
+}
+
+function snapshotWarehouseTypeText(type: NonNullable<WdtSyncRunDto["activeSnapshotMissingWarehouseTypes"]>[number]) {
+  if (type === "main") return "主仓";
+  if (type === "near_expiry") return "临期仓";
+  if (type === "defect") return "次品仓";
+  return "其他仓";
 }
 
 function batchStatusText(batch: BatchSummary) {
