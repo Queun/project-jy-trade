@@ -64,7 +64,7 @@ export async function executeCombinedSync(repository: CombinedSyncRepository, st
     let rowCount = 0;
     let lastStockRequestStartedAt = 0;
     for (const [index, batch] of batches.entries()) {
-      const minimumInterval = process.env.NODE_ENV === "test" ? 0 : WDT_SYNC_MIN_INTERVAL_MS;
+      const minimumInterval = isTestRuntime() ? 0 : WDT_SYNC_MIN_INTERVAL_MS;
       const waitMs = Math.max(0, lastStockRequestStartedAt + minimumInterval - Date.now());
       if (waitMs > 0) await sleep(waitMs);
       lastStockRequestStartedAt = Date.now();
@@ -117,7 +117,7 @@ class SyncRunError extends Error {
 
 async function queryStockWithRetry(stockClient: StockLookupClient, specNos: string[], warehouseNo: string) {
   let lastError: unknown;
-  const retryDelays = process.env.NODE_ENV === "test" ? [0] : parseRetryDelays(process.env.WDT_STOCK_SYNC_RETRY_DELAYS_MS);
+  const retryDelays = isTestRuntime() ? [0] : parseRetryDelays(process.env.WDT_STOCK_SYNC_RETRY_DELAYS_MS);
   for (const delayMs of [0, ...retryDelays]) {
     if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
     try {
@@ -178,4 +178,8 @@ function chunk<T>(values: T[], size: number): T[][] {
 
 function sleep(ms: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
+function isTestRuntime() {
+  return process.env.VITEST === "true" || process.env.NODE_ENV === "test";
 }

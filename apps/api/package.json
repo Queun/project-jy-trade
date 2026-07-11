@@ -10,7 +10,7 @@
     "db:migrate": "drizzle-kit migrate",
     "trial-acceptance": "tsx src/trialAcceptanceCli.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "node ../../tools/run-vitest.mjs"
   },
   "dependencies": {
     "@fastify/cors": "^11.1.0",

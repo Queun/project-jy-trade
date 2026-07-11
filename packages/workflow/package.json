@@ -7,7 +7,7 @@
   "types": "src/index.ts",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "node ../../tools/run-vitest.mjs"
   },
   "dependencies": {
     "@jy-trade/shared": "0.1.0",

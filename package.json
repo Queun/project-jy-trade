@@ -19,7 +19,7 @@
     "db:migrate": "npm run db:migrate -w @jy-trade/api",
     "test": "npm run test:workspaces && npm run test:probes",
     "test:workspaces": "npm run test --workspaces --if-present",
-    "test:probes": "vitest run backend/src/flows/diagnoseOrder.test.ts",
+    "test:probes": "node tools/run-vitest.mjs backend/src/flows/diagnoseOrder.test.ts",
     "test:backend": "npm run test:probes",
     "test:e2e": "npm run test:e2e -w @jy-trade/web",
     "probe:order": "tsx backend/src/probes/order-import.ts",
