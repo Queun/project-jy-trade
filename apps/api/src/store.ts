@@ -4690,7 +4690,7 @@ function renderConfirmedExportRow(line: ReviewLineDto) {
 
 function renderWdtImportWorkbook(batch: BatchRow, lines: ReviewLineDto[], addressIndex: MakeOrderAddressIndex, actor?: AuthUserDto) {
   const exportLines = lines.filter((line) => line.approvedShipQty > 0);
-  const doNotExportLines = lines.filter((line) => line.decision === "do_not_ship");
+  const doNotExportLines = lines.filter((line) => line.approvedShipQty === 0);
   const rows = renderWdtImportRows(batch, exportLines, addressIndex, actor);
   const doNotRows = renderWdtImportRows(batch, doNotExportLines, addressIndex, actor);
   const workbook = XLSX.utils.book_new();

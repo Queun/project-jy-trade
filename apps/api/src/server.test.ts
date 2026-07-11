@@ -3092,12 +3092,14 @@ describe("api server", () => {
       },
       headers: { cookie },
     });
-    await app.inject({
+    const zeroQuantityDecision = await app.inject({
       method: "PATCH",
       url: `/api/v1/batches/${batch.id}/review-lines/${pendingLine.id}/decision`,
-      payload: { decision: "do_not_ship", approvedShipQty: 0, reason: "" },
+      payload: { decision: "ship", approvedShipQty: 0, reason: "库存不足，最终不发" },
       headers: { cookie },
     });
+    expect(zeroQuantityDecision.statusCode).toBe(200);
+    expect(zeroQuantityDecision.json()).toMatchObject({ decision: "ship", approvedShipQty: 0 });
 
     const exportResponse = await app.inject({
       method: "POST",
@@ -3176,7 +3178,10 @@ describe("api server", () => {
     const doNotHeader = XLSX.utils.sheet_to_json<string[]>(workbook.Sheets["不做单表"], { header: 1 })[0];
     expect(doNotHeader).toEqual(header);
     expect(rows).toHaveLength(lines.filter((line: { decision: string; approvedShipQty: number }) => line.decision === "ship" && line.approvedShipQty > 0).length);
-    expect(doNotRows).toHaveLength(lines.filter((line: { decision: string }) => line.decision === "do_not_ship").length + 1);
+    expect(doNotRows).toHaveLength(lines.filter((line: { approvedShipQty: number }) => line.approvedShipQty === 0).length);
+    expect(doNotRows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ 货品数量: 0 }),
+    ]));
 
     const exportedLine = rows.find(
       (row) =>
