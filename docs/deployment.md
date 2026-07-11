@@ -203,6 +203,7 @@ NODE_ENV=production
 API_PORT=3001
 TZ=Asia/Shanghai
 WDT_AUTO_SYNC_ENABLED=true
+WDT_SUITE_SYNC_START_DATE=2026-06-01
 DATABASE_URL=file:/opt/jy-trade/current/data/production/jy-trade-prod.db
 JY_TRADE_UPLOAD_DIR=/opt/jy-trade/current/data/production/uploads
 JY_TRADE_EXPORTS_DIR=/opt/jy-trade/current/data/production/exports
@@ -244,7 +245,7 @@ pm2 logs jy-trade-api --lines 100 --nostream
 1. 使用 `admin / yjmy` 登录。
 2. 确认历史批次为空，证明已经切到新库。
 3. 在设置中核对启用仓库和自动同步周期。
-4. 手动执行一次“商品与库存同步”，等待成功快照生成。
+4. 手动执行一次“商品与库存同步”，确认依次完成普通商品、组合装档案和分仓库存阶段，等待成功快照生成。
 5. 导入正式门店地址。
 6. 用一个小确定单走完导入、审核、提交和双表导出。
 7. 下载 Excel，确认 `Sheet1` 和“不做单表”均可正常打开。

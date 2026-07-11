@@ -93,6 +93,7 @@ import {
   type WdtGoodsSpecPayload,
   type WdtGoodsWindowClient,
 } from "./wdtGoodsSync.js";
+import { createSuiteSyncRepository, runWdtSuiteSync, type WdtSuiteWindowClient } from "./wdtSuiteSync.js";
 import { createWdtReadClientsFromEnv } from "./wdtClientAdapter.js";
 import { ensureRuntimeDir, resolveProjectRoot, resolveRuntimeDir } from "./runtimePaths.js";
 import { startCombinedSync, type CombinedSyncRepository, type StockSyncScope } from "./wdtCombinedSync.js";
@@ -180,6 +181,7 @@ export interface StoreOptions {
   databaseUrl?: string;
   projectRoot?: string;
   wdtGoodsClient?: WdtGoodsWindowClient;
+  wdtSuiteClient?: WdtSuiteWindowClient;
   stockClient?: StockLookupClient;
   autoSyncEnabled?: boolean;
 }
@@ -203,12 +205,15 @@ export function createSqliteStore(options: StoreOptions = {}) {
     resolve(projectRoot, "inputs/uploads"),
     resolve(projectRoot, "apps/api/inputs/uploads"),
   ]);
-  const wdtClients = options.wdtGoodsClient && options.stockClient ? undefined : createWdtReadClientsFromEnv();
+  const hasInjectedWdtClient = Boolean(options.wdtGoodsClient || options.wdtSuiteClient || options.stockClient);
+  const wdtClients = hasInjectedWdtClient ? undefined : createWdtReadClientsFromEnv();
   const wdtGoodsClient = options.wdtGoodsClient ?? wdtClients?.goodsClient;
+  const wdtSuiteClient = options.wdtSuiteClient ?? wdtClients?.suiteClient;
   const stockClient = options.stockClient ?? wdtClients?.stockClient;
   const ready = prepareDatabase(database, bootstrapUsers);
   const goodsSyncRepository = createGoodsSyncRepository(database);
-  const combinedSyncRepository = createCombinedSyncRepository(database, goodsSyncRepository, wdtGoodsClient);
+  const suiteSyncRepository = createSuiteSyncRepository(database);
+  const combinedSyncRepository = createCombinedSyncRepository(database, goodsSyncRepository, suiteSyncRepository, wdtGoodsClient, wdtSuiteClient);
   let activeSyncTask: Promise<void> | undefined;
   let autoSyncTimer: ReturnType<typeof setTimeout> | undefined;
   let schedulerVersion = 0;
@@ -3542,7 +3547,9 @@ function createGoodsSyncRepository(database: DatabaseContext): GoodsSyncReposito
 function createCombinedSyncRepository(
   database: DatabaseContext,
   goodsRepository: GoodsSyncRepository,
+  suiteRepository: ReturnType<typeof createSuiteSyncRepository>,
   goodsClient: WdtGoodsWindowClient | undefined,
+  suiteClient: WdtSuiteWindowClient | undefined,
 ): CombinedSyncRepository {
   return {
     async findActiveRun() {
@@ -3565,6 +3572,11 @@ function createCombinedSyncRepository(
     async runGoodsIncremental() {
       if (!goodsClient) return { id: "", status: "failed", errorMessage: "WDT goods sync client is not configured" };
       const run = await runWdtGoodsSync(goodsRepository, goodsClient, { mode: "incremental" });
+      return { id: run.id, status: run.status === "success" ? "success" : "failed", errorMessage: run.errorMessage };
+    },
+    async runSuitesIncremental() {
+      if (!suiteClient) return { id: "", status: "failed", errorMessage: "WDT suite sync client is not configured" };
+      const run = await runWdtSuiteSync(suiteRepository, suiteClient, { mode: "incremental" });
       return { id: run.id, status: run.status === "success" ? "success" : "failed", errorMessage: run.errorMessage };
     },
     async loadStockSpecNos() {

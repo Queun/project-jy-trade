@@ -258,7 +258,7 @@ export const wdtSyncRuns = sqliteTable(
     id: text("id").primaryKey(),
     trigger: text("trigger", { enum: ["manual", "hourly", "startup"] }).notNull(),
     status: text("status", { enum: ["queued", "running", "success", "failed"] }).notNull(),
-    stage: text("stage", { enum: ["queued", "goods", "prepare_stock", "stock", "activate", "complete"] }).notNull(),
+    stage: text("stage", { enum: ["queued", "goods", "suites", "prepare_stock", "stock", "activate", "complete"] }).notNull(),
     goodsSyncRunId: text("goods_sync_run_id").notNull().default(""),
     totalSpecCount: integer("total_spec_count").notNull().default(0),
     processedSpecCount: integer("processed_spec_count").notNull().default(0),

@@ -338,6 +338,14 @@ describe("App", () => {
     expect(screen.getByLabelText("同步进度 80%")).toBeInTheDocument();
   });
 
+  it("shows the suite catalog stage during combined synchronization", async () => {
+    latestCombinedSyncRun = combinedSyncRun({ status: "running", stage: "suites" });
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "设置" }));
+    expect(await screen.findByText(/阶段：同步组合装档案/)).toBeInTheDocument();
+  });
+
   it("shows a failed sync while keeping the previous snapshot and hides developer details by default", async () => {
     latestCombinedSyncRun = combinedSyncRun({
       trigger: "manual",

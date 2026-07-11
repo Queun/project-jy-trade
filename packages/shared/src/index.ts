@@ -463,7 +463,7 @@ export const WdtSyncTriggerSchema = z.enum(["manual", "hourly", "startup"]);
 export const WarehouseSnapshotTypeSchema = z.enum(["main", "near_expiry", "defect", "other"]);
 export type WarehouseSnapshotType = z.infer<typeof WarehouseSnapshotTypeSchema>;
 export const WdtSyncStatusSchema = z.enum(["queued", "running", "success", "failed"]);
-export const WdtSyncStageSchema = z.enum(["queued", "goods", "prepare_stock", "stock", "activate", "complete"]);
+export const WdtSyncStageSchema = z.enum(["queued", "goods", "suites", "prepare_stock", "stock", "activate", "complete"]);
 export const WdtSyncRunDtoSchema = z.object({
   id: z.string(),
   trigger: WdtSyncTriggerSchema,

@@ -18,6 +18,7 @@ export interface CombinedSyncRepository {
   createRun(input: { id: string; trigger: WdtSyncRunDto["trigger"]; now: string }): Promise<WdtSyncRunDto>;
   updateRun(runId: string, patch: Partial<WdtSyncRunDto>): Promise<void>;
   runGoodsIncremental(): Promise<{ id: string; status: "success" | "failed"; errorMessage: string }>;
+  runSuitesIncremental(): Promise<{ id: string; status: "success" | "failed"; errorMessage: string }>;
   loadStockSpecNos(): Promise<string[]>;
   loadStockScope(): Promise<StockSyncScope>;
   writeStockBatch(runId: string, requestedSpecNos: string[], rows: WdtStockRow[], syncedAt: string, scope: StockSyncScope): Promise<number>;
@@ -44,7 +45,11 @@ export async function executeCombinedSync(repository: CombinedSyncRepository, st
     await repository.updateRun(runId, { status: "running", stage: "goods", lastProgressAt: now });
     const goodsRun = await repository.runGoodsIncremental();
     if (goodsRun.status !== "success") throw new SyncRunError("GOODS_SYNC_FAILED", "商品档案同步失败", goodsRun.errorMessage);
-    await repository.updateRun(runId, { goodsSyncRunId: goodsRun.id, stage: "prepare_stock", lastProgressAt: new Date().toISOString() });
+    await repository.updateRun(runId, { goodsSyncRunId: goodsRun.id, stage: "suites", lastProgressAt: new Date().toISOString() });
+
+    const suitesRun = await repository.runSuitesIncremental();
+    if (suitesRun.status !== "success") throw new SyncRunError("SUITE_SYNC_FAILED", "组合装档案同步失败", suitesRun.errorMessage);
+    await repository.updateRun(runId, { stage: "prepare_stock", lastProgressAt: new Date().toISOString() });
 
     const specNos = [...new Set((await repository.loadStockSpecNos()).map((value) => value.trim()).filter(Boolean))].sort();
     const scope = await repository.loadStockScope();

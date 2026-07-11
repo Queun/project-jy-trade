@@ -4228,6 +4228,7 @@ describe("api server", () => {
     let releaseGoods!: () => void;
     const goodsGate = new Promise<void>((resolve) => { releaseGoods = resolve; });
     let goodsCalls = 0;
+    let suiteCalls = 0;
     let stockCalls = 0;
     const app = buildTestServer(databaseUrl, {
       async queryGoodsWindow() {
@@ -4253,6 +4254,21 @@ describe("api server", () => {
         ]);
         return { status: 0, data: { total_count: detailList.length, detail_list: detailList } };
       },
+    }, {
+      wdtSuiteClient: {
+        async querySuitesWindow() {
+          suiteCalls += 1;
+          return {
+            totalCount: 1,
+            suites: [{
+              suite_no: "SYNC-SUITE",
+              suite_name: "同步组合装",
+              barcode: "SYNC-SUITE-BARCODE",
+              detail_list: [{ rec_id: "1", spec_no: "SUITE-COMPONENT", goods_name: "组合装组件", num: 1 }],
+            }],
+          };
+        },
+      },
     });
     const cookie = await loginCookie(app);
     const first = await app.inject({ method: "POST", url: "/api/v1/wdt/sync-runs", headers: { cookie } });
@@ -4265,21 +4281,26 @@ describe("api server", () => {
 
     releaseGoods();
     await expect.poll(async () => (await app.inject({ method: "GET", url: "/api/v1/wdt/sync-runs/latest", headers: { cookie } })).json().status).toBe("success");
+    expect(suiteCalls).toBeGreaterThan(0);
     expect(stockCalls).toBe(1);
     const completed = await app.inject({ method: "GET", url: "/api/v1/wdt/sync-runs/latest", headers: { cookie } });
     expect(completed.json()).toMatchObject({
       status: "success",
       activeSnapshotRunId: first.json().run.id,
       activeSnapshotTrigger: "manual",
-      totalSpecCount: 1,
-      processedSpecCount: 1,
+      totalSpecCount: 2,
+      processedSpecCount: 2,
       activeSnapshotWarehouseTypes: ["main", "near_expiry"],
       activeSnapshotMissingWarehouseTypes: [],
     });
     const checked = createDatabaseContext(databaseUrl);
     await checked.ready;
     const persistedRows = await checked.db.select().from(wdtStockSnapshotRows).where(eq(wdtStockSnapshotRows.syncRunId, first.json().run.id));
-    expect(persistedRows.map((row) => row.warehouseNo).sort()).toEqual(["001", "LINQI"]);
+    expect(persistedRows.map((row) => row.warehouseNo).sort()).toEqual(["001", "001", "LINQI", "LINQI"]);
+    const persistedSuites = await checked.db.select().from(wdtSuites);
+    const persistedComponents = await checked.db.select().from(wdtSuiteComponents);
+    expect(persistedSuites).toEqual([expect.objectContaining({ suiteNo: "SYNC-SUITE", barcode: "SYNC-SUITE-BARCODE" })]);
+    expect(persistedComponents).toEqual([expect.objectContaining({ suiteNo: "SYNC-SUITE", specNo: "SUITE-COMPONENT" })]);
     const coverage = await checked.db.select().from(wdtStockSnapshotWarehouseCoverage).where(eq(wdtStockSnapshotWarehouseCoverage.syncRunId, first.json().run.id));
     expect(coverage.map((row) => row.warehouseType)).toEqual(["main", "near_expiry"]);
     expect(coverage.every((row) => row.apiWarehouseNo === "")).toBe(true);
@@ -4420,7 +4441,19 @@ function buildTestServer(
   stockClient?: StockLookupClient,
   options: Partial<StoreOptions> = {},
 ) {
-  return buildApiServer({ ...options, databaseUrl, projectRoot, logger: false, wdtGoodsClient, stockClient });
+  return buildApiServer({
+    wdtSuiteClient: {
+      async querySuitesWindow() {
+        return { totalCount: 0, suites: [] };
+      },
+    },
+    ...options,
+    databaseUrl,
+    projectRoot,
+    logger: false,
+    wdtGoodsClient,
+    stockClient,
+  });
 }
 
 function testDatabaseUrl() {

@@ -54,6 +54,8 @@ describe("combined WDT goods and stock sync", () => {
     });
     expect(repository.activateCalls).toEqual(["run-large"]);
     expect(repository.failCalls).toHaveLength(0);
+    expect(repository.goodsSyncCalls).toBe(1);
+    expect(repository.suiteSyncCalls).toBe(1);
   });
 
   it("deduplicates and trims specs, writes verified zero-stock specs, and activates only after all batches succeed", async () => {
@@ -138,6 +140,31 @@ describe("combined WDT goods and stock sync", () => {
     });
   });
 
+  it("stops before preparing stock when suite sync fails", async () => {
+    const repository = new MemoryCombinedSyncRepository();
+    repository.specNos = ["SPEC-1"];
+    repository.suiteRun = { id: "suite-run", status: "failed", errorMessage: "suite api unavailable" };
+    let stockQueryCount = 0;
+    const stockClient = stockClientWithBatchQuery(async () => {
+      stockQueryCount += 1;
+      return { status: 0, data: { detail_list: [] } };
+    });
+
+    await executeCombinedSync(repository, stockClient, "run-suite-failure");
+
+    expect(repository.goodsSyncCalls).toBe(1);
+    expect(repository.suiteSyncCalls).toBe(1);
+    expect(stockQueryCount).toBe(0);
+    expect(repository.stockWrites).toHaveLength(0);
+    expect(repository.activateCalls).toHaveLength(0);
+    expect(repository.failCalls[0]).toMatchObject({
+      runId: "run-suite-failure",
+      errorCode: "SUITE_SYNC_FAILED",
+      errorMessage: "组合装档案同步失败",
+      errorDetail: "suite api unavailable",
+    });
+  });
+
   it("rejects a paginated or unrelated stock response instead of treating omitted specs as zero stock", async () => {
     const repository = new MemoryCombinedSyncRepository();
     repository.specNos = ["SPEC-1", "SPEC-2"];
@@ -208,6 +235,7 @@ describe("combined WDT goods and stock sync", () => {
     expect(result.task).toBeUndefined();
     expect(repository.createCalls).toHaveLength(0);
     expect(repository.goodsSyncCalls).toBe(0);
+    expect(repository.suiteSyncCalls).toBe(0);
     expect(stockQueryCount).toBe(0);
   });
 
@@ -282,7 +310,9 @@ class MemoryCombinedSyncRepository implements CombinedSyncRepository {
   specNos: string[] = [];
   stockScope: StockSyncScope = { warehouseTypes: ["main", "near_expiry", "defect", "other"], apiWarehouseNo: "" };
   goodsRun = { id: "goods-run", status: "success" as const, errorMessage: "" };
+  suiteRun: { id: string; status: "success" | "failed"; errorMessage: string } = { id: "suite-run", status: "success", errorMessage: "" };
   goodsSyncCalls = 0;
+  suiteSyncCalls = 0;
   createCalls: Array<{ id: string; trigger: WdtSyncRunDto["trigger"]; now: string }> = [];
   progressPatches: Array<Partial<WdtSyncRunDto>> = [];
   stockWrites: Array<{ runId: string; requestedSpecNos: string[]; rows: WdtStockRow[] }> = [];
@@ -315,6 +345,11 @@ class MemoryCombinedSyncRepository implements CombinedSyncRepository {
   async runGoodsIncremental() {
     this.goodsSyncCalls += 1;
     return this.goodsRun;
+  }
+
+  async runSuitesIncremental() {
+    this.suiteSyncCalls += 1;
+    return this.suiteRun;
   }
 
   async loadStockSpecNos() {

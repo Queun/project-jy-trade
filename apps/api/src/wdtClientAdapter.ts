@@ -1,9 +1,11 @@
-import { normalizeWdtProfile, WdtClient, type WdtGoodsResponse, type WdtStockResponse } from "../../../backend/src/integrations/wdtClient.js";
+import { normalizeWdtProfile, WdtClient, type WdtGoodsResponse, type WdtStockResponse, type WdtSuiteResponse } from "../../../backend/src/integrations/wdtClient.js";
 import type { StockLookupClient } from "./store.js";
 import type { WdtGoodsWindowClient } from "./wdtGoodsSync.js";
+import type { WdtSuiteWindowClient } from "./wdtSuiteSync.js";
 
 export interface WdtReadClients {
   goodsClient: WdtGoodsWindowClient;
+  suiteClient: WdtSuiteWindowClient;
   stockClient: StockLookupClient;
 }
 
@@ -18,6 +20,19 @@ export function createWdtReadClientsFromEnv(profile = normalizeWdtProfile(proces
           return {
             totalCount: response.data?.total_count ?? 0,
             goods: response.data?.goods_list ?? [],
+          };
+        },
+      },
+      suiteClient: {
+        async querySuitesWindow(input) {
+          const response = await client.querySuites({
+            start_time: input.startTime,
+            end_time: input.endTime,
+          }, input.pageNo, input.pageSize);
+          assertWdtSuiteSuccess(response);
+          return {
+            totalCount: response.data?.total_count ?? 0,
+            suites: response.data?.suite_list ?? [],
           };
         },
       },
@@ -48,5 +63,11 @@ function assertWdtGoodsSuccess(response: WdtGoodsResponse): void {
 function assertWdtStockSuccess(response: WdtStockResponse): void {
   if (response.status && response.status !== 0) {
     throw new Error(`WDT stock query failed: status=${response.status} message=${response.message ?? ""}`);
+  }
+}
+
+function assertWdtSuiteSuccess(response: WdtSuiteResponse): void {
+  if (response.status && response.status !== 0) {
+    throw new Error(`WDT suite query failed: status=${response.status} message=${response.message ?? ""}`);
   }
 }

@@ -2458,6 +2458,7 @@ function userSyncStatusText(status: WdtGoodsSyncRunDto["status"] | WdtSyncRunDto
 
 function syncStageText(stage: WdtSyncRunDto["stage"] | undefined) {
   if (stage === "goods") return "更新商品档案";
+  if (stage === "suites") return "同步组合装档案";
   if (stage === "prepare_stock") return "准备库存范围";
   if (stage === "stock") return "同步分仓库存";
   if (stage === "activate") return "激活库存快照";
