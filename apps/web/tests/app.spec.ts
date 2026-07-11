@@ -27,6 +27,8 @@ test("checks the stock snapshot sync UI without starting a real sync", async ({ 
         activeSnapshotRunId: "e2e-hourly-sync",
         activeSnapshotAt,
         activeSnapshotTrigger: "hourly",
+        activeSnapshotWarehouseTypes: ["main", "near_expiry"],
+        activeSnapshotMissingWarehouseTypes: [],
         errorCode: "",
         errorMessage: "",
         errorDetail: "",
@@ -58,7 +60,11 @@ test("checks the stock snapshot sync UI without starting a real sync", async ({ 
   const syncHeading = settingsDialog.getByRole("heading", { name: "商品与库存同步" });
   await expect(syncHeading).toBeVisible();
   const syncSection = syncHeading.locator("xpath=ancestor::section[1]");
-  await expect(syncSection.getByText(/每小时整点自动更新/)).toBeVisible();
+  const intervalSelect = syncSection.getByLabel("自动同步");
+  await expect(intervalSelect).toBeVisible();
+  await expect(intervalSelect).toBeEnabled();
+  expect(["1", "2", "6", "24"]).toContain(await intervalSelect.inputValue());
+  await expect(syncSection.getByText("按上海时间自然整点执行", { exact: true })).toBeVisible();
 
   const snapshotSummary = syncSection.getByText(/^当前库存快照：/);
   await expect(snapshotSummary).toBeVisible();
