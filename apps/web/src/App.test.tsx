@@ -1312,6 +1312,40 @@ describe("App", () => {
     }
   });
 
+  it("groups confirmed-order products that need mapping and keeps API errors separate", async () => {
+    currentBatch = { ...currentBatch, mode: "production_api", sourceType: "confirmed_order", status: "review_generated" };
+    lines = [
+      reviewLine({ id: "mapping-a-1", externalGoodsName: "待映射商品A", externalGoodsCode: "CODE-A", externalBarcode: "BAR-A", storeNo: "S-1", storeName: "门店一", matchStatus: "ambiguous", status: "未匹配" }),
+      reviewLine({ id: "mapping-a-2", externalGoodsName: "待映射商品A第二单", externalGoodsCode: "CODE-A", externalBarcode: "BAR-A", storeNo: "S-2", storeName: "门店二", matchStatus: "not_found", status: "未匹配" }),
+      reviewLine({ id: "mapping-b", externalGoodsName: "待映射商品B", externalGoodsCode: "CODE-B", externalBarcode: "BAR-B", storeNo: "S-1", storeName: "门店一", matchStatus: "not_found", status: "未匹配" }),
+      reviewLine({ id: "mapping-empty-1", excelRow: 21, externalGoodsName: "无编码商品一", externalGoodsCode: "", externalBarcode: "", matchStatus: "not_found", status: "未匹配" }),
+      reviewLine({ id: "mapping-empty-2", excelRow: 22, externalGoodsName: "无编码商品二", externalGoodsCode: "", externalBarcode: "", matchStatus: "not_found", status: "未匹配" }),
+      reviewLine({ id: "mapping-api-error", externalGoodsName: "接口校验失败商品", externalGoodsCode: "CODE-ERROR", matchStatus: "api_error", status: "未匹配" }),
+    ];
+    render(<App />);
+    await clickBatch();
+    switchToReviewTab();
+
+    const pendingMappingFilter = await screen.findByRole("button", { name: /待映射商品.*4 种.*5 条/ });
+    fireEvent.click(pendingMappingFilter);
+    expect(await screen.findByText("货品码 CODE-A · 2 条订单 · 2 个门店")).toBeInTheDocument();
+    expect(screen.getByText("Excel 第 21 行 · 1 条订单 · 1 个门店")).toBeInTheDocument();
+    expect(screen.getByText("Excel 第 22 行 · 1 条订单 · 1 个门店")).toBeInTheDocument();
+    expect(screen.queryByText("待映射商品A第二单")).not.toBeInTheDocument();
+    expect(screen.queryByText("接口校验失败商品")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "定位映射" })).toHaveLength(4);
+
+    fireEvent.click(screen.getByRole("button", { name: "展开 待映射商品A" }));
+    expect(await screen.findByText("待映射商品A第二单")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "定位映射" })).toHaveLength(4);
+    expect(screen.getByRole("button", { name: "收起 待映射商品A" })).toHaveAttribute("aria-expanded", "true");
+
+    fireEvent.click(screen.getByRole("button", { name: "校验异常" }));
+    await waitFor(() => expect(screen.getByTestId("review-filter-validation_error")).toHaveClass("bg-primary"));
+    expect(await screen.findByText("接口校验失败商品")).toBeInTheDocument();
+    expect(screen.queryByText("待映射商品A")).not.toBeInTheDocument();
+  });
+
   it("shows confirmed-order stock error details only in developer mode", async () => {
     currentBatch = { ...currentBatch, mode: "production_api", sourceType: "confirmed_order", status: "review_generated" };
     lines = [

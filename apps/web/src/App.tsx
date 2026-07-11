@@ -47,6 +47,7 @@ type FilterKey =
   | "blocked"
   | "unverified"
   | "unmatched"
+  | "validation_error"
   | "pending"
   | "ship"
   | "do_not_ship"
@@ -70,11 +71,12 @@ const orderFilters: Array<{ key: FilterKey; label: string }> = [
 
 const confirmedOrderFilters: Array<{ key: FilterKey; label: string }> = [
   { key: "all", label: "全部" },
+  { key: "unmatched", label: "待映射商品" },
+  { key: "validation_error", label: "校验异常" },
   { key: "ready", label: "全部发货" },
   { key: "partial", label: "部分发货" },
   { key: "blocked", label: "货品不足" },
   { key: "unverified", label: "库存未验证" },
-  { key: "unmatched", label: "商品异常" },
   { key: "pending", label: "待处理" },
   { key: "ship", label: "已做单" },
   { key: "do_not_ship", label: "不做单" },
@@ -896,6 +898,7 @@ export function App() {
     () => reviewLines.filter((line) => matchesFilter(line, activeFilter, activeBatch?.sourceType === "confirmed_order")),
     [reviewLines, activeFilter, activeBatch?.sourceType],
   );
+  const pendingMappingSummary = useMemo(() => summarizePendingMappingGroups(reviewLines), [reviewLines]);
   const permissions = useMemo(() => buildUserPermissions(user), [user]);
 
   if (authLoading) {
@@ -1090,6 +1093,7 @@ export function App() {
                 warehouseSettings={warehouseSettings}
                 canReview={permissions.canReview}
                 stats={stats}
+                pendingMappingSummary={pendingMappingSummary}
                 onBulkApprove={() => void bulkApprove()}
                 onDraftChange={updateDraft}
                 onFilterChange={setActiveFilter}
@@ -1685,6 +1689,7 @@ function ReviewTab({
   canReview,
   recheckingConfirmedOrder,
   stats,
+  pendingMappingSummary,
   onBulkApprove,
   onDraftChange,
   onFilterChange,
@@ -1709,6 +1714,7 @@ function ReviewTab({
   canReview: boolean;
   recheckingConfirmedOrder: boolean;
   stats: ReturnType<typeof buildStats>;
+  pendingMappingSummary: { groupCount: number; rowCount: number };
   onBulkApprove: () => void;
   onDraftChange: (lineId: string, patch: Partial<ReviewDraft>) => void;
   onFilterChange: (filter: FilterKey) => void;
@@ -1800,7 +1806,12 @@ function ReviewTab({
                   data-testid={`review-filter-${filter.key}`}
                   onClick={() => onFilterChange(filter.key)}
                 >
-                  {filter.label}
+                  <span className="block">{filter.label}</span>
+                  {confirmedOrderMode && filter.key === "unmatched" ? (
+                    <span className={filter.key === activeFilter ? "mt-0.5 block text-xs text-primary-foreground/80" : "mt-0.5 block text-xs text-muted-foreground"}>
+                      {pendingMappingSummary.groupCount} 种 / {pendingMappingSummary.rowCount} 条
+                    </span>
+                  ) : null}
                 </button>
               ))}
             </div>
@@ -1819,6 +1830,7 @@ function ReviewTab({
                 onSave={onSave}
                 confirmedOrderMode={confirmedOrderMode}
                 isDeveloperMode={isDeveloperMode}
+                groupPendingMappings={confirmedOrderMode && activeFilter === "unmatched"}
               />
             ) : (
               <EmptyState title="当前筛选没有明细" description="切换筛选条件，或检查本批次是否已经生成初审明细。" />
@@ -2507,7 +2519,12 @@ function matchesFilter(line: ReviewLineDto, filter: FilterKey, confirmedOrderMod
   if (filter === "partial") return line.status === "部分满足";
   if (filter === "blocked") return line.status === "库存不足";
   if (filter === "unverified") return line.status === "库存未验证";
-  if (filter === "unmatched") return line.status === "未匹配" || line.matchStatus !== "matched";
+  if (filter === "unmatched") {
+    return confirmedOrderMode
+      ? line.matchStatus === "ambiguous" || line.matchStatus === "not_found"
+      : line.status === "未匹配" || line.matchStatus !== "matched";
+  }
+  if (filter === "validation_error") return line.matchStatus === "api_error";
   if (filter === "pending") return line.decision === "pending";
   if (filter === "ship") return line.decision === "ship";
   if (filter === "do_not_ship") return line.decision === "do_not_ship";
@@ -2515,6 +2532,25 @@ function matchesFilter(line: ReviewLineDto, filter: FilterKey, confirmedOrderMod
   if (filter === "manual_mapping") return isManualMappingLine(line);
   if (filter === "over_suggested") return line.decision === "ship" && line.approvedShipQty > line.suggestedShipQty;
   return true;
+}
+
+function pendingMappingGroupKey(line: ReviewLineDto) {
+  const goodsCode = line.externalGoodsCode.trim();
+  if (goodsCode) return `goods-code:${goodsCode}`;
+  const barcode = line.externalBarcode.trim();
+  if (barcode) return `barcode:${barcode}`;
+  return `line:${line.id}`;
+}
+
+function summarizePendingMappingGroups(lines: ReviewLineDto[]) {
+  const groups = new Set<string>();
+  let rowCount = 0;
+  for (const line of lines) {
+    if (line.matchStatus !== "ambiguous" && line.matchStatus !== "not_found") continue;
+    groups.add(pendingMappingGroupKey(line));
+    rowCount += 1;
+  }
+  return { groupCount: groups.size, rowCount };
 }
 
 function isManualMappingLine(line: ReviewLineDto) {

@@ -1,6 +1,7 @@
 import { flexRender, getCoreRowModel, useReactTable, type ColumnDef } from "@tanstack/react-table";
 import { isConfirmedProductMappingMatch, type ReviewDecision, type ReviewLineDto, type WarehouseUsageSettingsDto } from "@jy-trade/shared";
-import { Search } from "lucide-react";
+import { ChevronDown, ChevronRight, Search } from "lucide-react";
+import { Fragment, useMemo, useState } from "react";
 
 import { Badge } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
@@ -11,6 +12,7 @@ interface ReviewTableProps {
   draftById: Record<string, ReviewDraft>;
   errorsById: Record<string, string>;
   confirmedOrderMode?: boolean;
+  groupPendingMappings?: boolean;
   isDeveloperMode?: boolean;
   readOnly?: boolean;
   savingDecisionIds?: Set<string>;
@@ -144,6 +146,7 @@ export function ReviewTable({
   draftById,
   errorsById,
   confirmedOrderMode = false,
+  groupPendingMappings = false,
   isDeveloperMode = false,
   readOnly = false,
   savingDecisionIds = new Set<string>(),
@@ -171,7 +174,7 @@ export function ReviewTable({
         const needsMapping = line.matchStatus !== "matched";
         const manualMapping = isManualMappingLine(line);
         const canReviewAlternative = confirmedOrderMode && line.matchStatus === "matched" && (line.status === "库存不足" || line.status === "部分满足");
-        const showMappingAction = needsMapping || manualMapping || canReviewAlternative;
+        const showMappingAction = !groupPendingMappings && (needsMapping || manualMapping || canReviewAlternative);
         const mappingActionLabel = canReviewAlternative ? "查替代编码" : manualMapping ? "复查映射" : "定位映射";
 
         return (
@@ -367,6 +370,33 @@ export function ReviewTable({
     },
   ];
   const table = useReactTable({ data: rows, columns, getCoreRowModel: getCoreRowModel() });
+  const [expandedGroupKeys, setExpandedGroupKeys] = useState<Set<string>>(() => new Set());
+  const pendingMappingGroups = useMemo(() => groupPendingMappingRows(rows), [rows]);
+  const tableRowsByLineId = new Map(table.getRowModel().rows.map((row) => [row.original.id, row]));
+
+  function toggleGroup(groupKey: string) {
+    setExpandedGroupKeys((current) => {
+      const next = new Set(current);
+      if (next.has(groupKey)) next.delete(groupKey);
+      else next.add(groupKey);
+      return next;
+    });
+  }
+
+  function renderReviewRow(row: ReturnType<typeof table.getRowModel>["rows"][number], grouped = false) {
+    const line = row.original;
+    const decision = draftById[line.id]?.decision ?? line.decision;
+    const tone = reviewRowTone(line, decision);
+    return (
+      <tr key={line.id} className={cn("border-t border-border transition-colors", tone.rowClass)} data-review-state={tone.key}>
+        {row.getVisibleCells().map((cell, index) => (
+          <td key={cell.id} className={cn("px-3 py-3 align-top", grouped && index === 0 && "pl-9")}>
+            {flexRender(cell.column.columnDef.cell, cell.getContext())}
+          </td>
+        ))}
+      </tr>
+    );
+  }
 
   return (
     <div className="overflow-x-auto rounded-md border border-border bg-card">
@@ -383,21 +413,46 @@ export function ReviewTable({
           ))}
         </thead>
         <tbody>
-          {table.getRowModel().rows.map((row) => {
-            const line = row.original;
-            const decision = draftById[line.id]?.decision ?? line.decision;
-            const tone = reviewRowTone(line, decision);
-
-            return (
-              <tr key={row.id} className={cn("border-t border-border transition-colors", tone.rowClass)} data-review-state={tone.key}>
-                {row.getVisibleCells().map((cell) => (
-                  <td key={cell.id} className="px-3 py-3 align-top">
-                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                  </td>
-                ))}
-              </tr>
-            );
-          })}
+          {groupPendingMappings
+            ? pendingMappingGroups.map((group) => {
+                const expanded = expandedGroupKeys.has(group.key);
+                const representative = group.rows[0];
+                return (
+                  <Fragment key={group.key}>
+                    <tr className="border-t border-border bg-muted/35">
+                      <td className="px-3 py-3" colSpan={columns.length}>
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <button
+                            aria-expanded={expanded}
+                            aria-label={`${expanded ? "收起" : "展开"} ${representative.externalGoodsName}`}
+                            className="flex min-w-0 flex-1 items-start gap-2 text-left"
+                            onClick={() => toggleGroup(group.key)}
+                          >
+                            {expanded ? <ChevronDown className="mt-0.5 h-4 w-4 shrink-0" /> : <ChevronRight className="mt-0.5 h-4 w-4 shrink-0" />}
+                            <span className="min-w-0">
+                              <span className="block font-semibold text-foreground">{representative.externalGoodsName || "未命名商品"}</span>
+                              <span className="mt-1 block text-xs text-muted-foreground">
+                                {group.identityLabel} · {group.rows.length} 条订单 · {group.storeCount} 个门店
+                              </span>
+                            </span>
+                          </button>
+                          <Button className="h-8 shrink-0 bg-muted px-2 text-xs text-muted-foreground hover:bg-muted/80" onClick={() => onLocateMapping(representative)}>
+                            <Search className="h-3.5 w-3.5" />
+                            定位映射
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                    {expanded
+                      ? group.rows.map((line) => {
+                          const row = tableRowsByLineId.get(line.id);
+                          return row ? renderReviewRow(row, true) : null;
+                        })
+                      : null}
+                  </Fragment>
+                );
+              })
+            : table.getRowModel().rows.map((row) => renderReviewRow(row))}
           {rows.length === 0 ? (
             <tr>
               <td className="px-3 py-8 text-center text-sm text-muted-foreground" colSpan={columns.length}>
@@ -409,6 +464,42 @@ export function ReviewTable({
       </table>
     </div>
   );
+}
+
+interface PendingMappingGroup {
+  key: string;
+  identityLabel: string;
+  rows: ReviewLineDto[];
+  storeCount: number;
+}
+
+function groupPendingMappingRows(rows: ReviewLineDto[]): PendingMappingGroup[] {
+  const groups = new Map<string, ReviewLineDto[]>();
+  for (const line of rows) {
+    const key = pendingMappingGroupKey(line);
+    const groupRows = groups.get(key);
+    if (groupRows) groupRows.push(line);
+    else groups.set(key, [line]);
+  }
+  return [...groups.entries()].map(([key, groupRows]) => {
+    const representative = groupRows[0];
+    const goodsCode = representative.externalGoodsCode.trim();
+    const barcode = representative.externalBarcode.trim();
+    return {
+      key,
+      identityLabel: goodsCode ? `货品码 ${goodsCode}` : barcode ? `条码 ${barcode}` : `Excel 第 ${representative.excelRow} 行`,
+      rows: groupRows,
+      storeCount: new Set(groupRows.map((line) => `${line.storeNo}\u0000${line.storeName}`)).size,
+    };
+  });
+}
+
+function pendingMappingGroupKey(line: ReviewLineDto) {
+  const goodsCode = line.externalGoodsCode.trim();
+  if (goodsCode) return `goods-code:${goodsCode}`;
+  const barcode = line.externalBarcode.trim();
+  if (barcode) return `barcode:${barcode}`;
+  return `line:${line.id}`;
 }
 
 function warehouseOptionsFor(line: ReviewLineDto, settings: WarehouseUsageSettingsDto | null): WarehouseOption[] {
