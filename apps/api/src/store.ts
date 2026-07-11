@@ -36,12 +36,15 @@
   StoreAddressDto,
   StoreAddressImportPreviewItem,
   UpdateWarehouseUsageSettingsRequest,
+  UpdateWdtSyncSettingsRequest,
   UpdateBatchStoreFieldsRequest,
   UpdateBatchStoreFieldsResponse,
   UpdateReviewLinePriorityRequest,
   UpdateProductMappingStatusRequest,
   UpsertStoreAddressRequest,
   WarehouseUsageSettingsDto,
+  WdtAutoSyncIntervalHours,
+  WdtSyncSettingsDto,
   WdtGoodsSpecSearchResultDto,
   WdtGoodsSyncRunDto,
   WdtSyncRunDto,
@@ -70,6 +73,7 @@ import {
   storeAddresses,
   users,
   warehouseUsageSettings,
+  wdtSyncSettings,
   wdtGoodsSpecs,
   wdtGoodsSyncRuns,
   wdtSyncRuns,
@@ -108,6 +112,7 @@ type UserRow = typeof users.$inferSelect;
 type SessionRow = typeof sessions.$inferSelect;
 type StoreAddressRow = typeof storeAddresses.$inferSelect;
 type WarehouseUsageSettingsRow = typeof warehouseUsageSettings.$inferSelect;
+type WdtSyncSettingsRow = typeof wdtSyncSettings.$inferSelect;
 type WdtGoodsSyncRunRow = typeof wdtGoodsSyncRuns.$inferSelect;
 type WdtGoodsSpecRow = typeof wdtGoodsSpecs.$inferSelect;
 type WdtSyncRunRow = typeof wdtSyncRuns.$inferSelect;
@@ -162,7 +167,7 @@ interface ReviewAllocationInput {
   stock: WarehouseStockSummary | undefined;
 }
 
-const STOCK_SNAPSHOT_MAX_AGE_MS = 60 * 60 * 1_000;
+const HOUR_MS = 60 * 60 * 1_000;
 const SHANGHAI_UTC_OFFSET_MS = 8 * 60 * 60 * 1_000;
 
 export interface StoreOptions {
@@ -199,10 +204,12 @@ export function createSqliteStore(options: StoreOptions = {}) {
   const goodsSyncRepository = createGoodsSyncRepository(database);
   const combinedSyncRepository = createCombinedSyncRepository(database, goodsSyncRepository, wdtGoodsClient);
   let activeSyncTask: Promise<void> | undefined;
-  let hourlySyncTimer: ReturnType<typeof setTimeout> | undefined;
+  let autoSyncTimer: ReturnType<typeof setTimeout> | undefined;
+  let schedulerVersion = 0;
   let syncStartQueue: Promise<void> = Promise.resolve();
   let schedulerStarted = false;
   let closed = false;
+  const autoSyncEnabled = options.autoSyncEnabled ?? (process.env.NODE_ENV !== "test" && process.env.WDT_AUTO_SYNC_ENABLED !== "false");
 
   const enqueueSync = async (trigger: WdtSyncRunDto["trigger"], actor?: AuthUserDto): Promise<StartWdtSyncResponseDto> => {
     await ready;
@@ -226,6 +233,22 @@ export function createSqliteStore(options: StoreOptions = {}) {
     } finally {
       releaseStart();
     }
+  };
+
+  const scheduleNextAutoSync = async () => {
+    const version = ++schedulerVersion;
+    if (autoSyncTimer) clearTimeout(autoSyncTimer);
+    autoSyncTimer = undefined;
+    if (!schedulerStarted || closed || !autoSyncEnabled || !wdtGoodsClient || !stockClient) return;
+    const settings = await getWdtSyncSettingsRow(database);
+    if (version !== schedulerVersion || closed) return;
+    const delay = millisecondsUntilNextShanghaiSyncBoundary(Date.now(), normalizeSyncIntervalHours(settings.intervalHours));
+    autoSyncTimer = setTimeout(() => {
+      if (version !== schedulerVersion || closed) return;
+      void enqueueSync("hourly").catch(() => undefined).finally(() => {
+        if (version === schedulerVersion) void scheduleNextAutoSync();
+      });
+    }, delay);
   };
 
   return {
@@ -252,20 +275,14 @@ export function createSqliteStore(options: StoreOptions = {}) {
       if (schedulerStarted || closed) return;
       schedulerStarted = true;
       await recoverInterruptedSyncRuns(database);
-      const enabled = options.autoSyncEnabled ?? (process.env.NODE_ENV !== "test" && process.env.WDT_AUTO_SYNC_ENABLED !== "false");
-      if (!enabled || !wdtGoodsClient || !stockClient) return;
+      if (!autoSyncEnabled || !wdtGoodsClient || !stockClient) return;
+      const settings = await getWdtSyncSettingsRow(database);
+      const maximumAgeMs = normalizeSyncIntervalHours(settings.intervalHours) * HOUR_MS;
       const latest = await getLatestSuccessfulWdtSyncRun(database);
-      if (!latest || snapshotIsOlderThan(latest.finishedAt, Date.now(), STOCK_SNAPSHOT_MAX_AGE_MS)) {
+      if (!latest || snapshotIsOlderThan(latest.finishedAt, Date.now(), maximumAgeMs)) {
         void enqueueSync("startup").catch(() => undefined);
       }
-      const scheduleNext = () => {
-        if (closed) return;
-        const delay = millisecondsUntilNextShanghaiHour(Date.now());
-        hourlySyncTimer = setTimeout(() => {
-          void enqueueSync("hourly").catch(() => undefined).finally(scheduleNext);
-        }, delay);
-      };
-      scheduleNext();
+      await scheduleNextAutoSync();
     },
 
     async login(input: LoginRequest): Promise<LoginResponse | undefined> {
@@ -1033,6 +1050,39 @@ export function createSqliteStore(options: StoreOptions = {}) {
       return toWarehouseUsageSettingsDto(row);
     },
 
+    async getWdtSyncSettings(): Promise<WdtSyncSettingsDto> {
+      await ready;
+      return toWdtSyncSettingsDto(await getWdtSyncSettingsRow(database), autoSyncEnabled);
+    },
+
+    async updateWdtSyncSettings(input: UpdateWdtSyncSettingsRequest, actor?: AuthUserDto): Promise<WdtSyncSettingsDto> {
+      await ready;
+      const previous = await getWdtSyncSettingsRow(database);
+      const now = new Date().toISOString();
+      const row: WdtSyncSettingsRow = {
+        id: "default",
+        intervalHours: input.intervalHours,
+        updatedByUserId: actor?.id ?? null,
+        updatedByUsername: actor?.username ?? null,
+        updatedAt: now,
+      };
+      await database.db.insert(wdtSyncSettings).values(row).onConflictDoUpdate({
+        target: wdtSyncSettings.id,
+        set: {
+          intervalHours: row.intervalHours,
+          updatedByUserId: row.updatedByUserId,
+          updatedByUsername: row.updatedByUsername,
+          updatedAt: row.updatedAt,
+        },
+      });
+      await insertAuditLog(database, actor?.id ?? null, "settings.update_wdt_sync", "settings", "wdt_sync", {
+        previous: toWdtSyncSettingsDto(previous, autoSyncEnabled),
+        next: toWdtSyncSettingsDto(row, autoSyncEnabled),
+      });
+      await scheduleNextAutoSync();
+      return toWdtSyncSettingsDto(row, autoSyncEnabled);
+    },
+
     async updateReviewDecision(
       batchId: string,
       lineId: string,
@@ -1497,7 +1547,8 @@ export function createSqliteStore(options: StoreOptions = {}) {
 
     async close() {
       closed = true;
-      if (hourlySyncTimer) clearTimeout(hourlySyncTimer);
+      schedulerVersion += 1;
+      if (autoSyncTimer) clearTimeout(autoSyncTimer);
       await ready.catch(() => undefined);
       await syncStartQueue.catch(() => undefined);
       await activeSyncTask?.catch(() => undefined);
@@ -1558,6 +1609,20 @@ async function getWarehouseUsageSettingsRow(database: DatabaseContext): Promise<
     updatedAt: now,
   };
   await database.db.insert(warehouseUsageSettings).values(defaultRow);
+  return defaultRow;
+}
+
+async function getWdtSyncSettingsRow(database: DatabaseContext): Promise<WdtSyncSettingsRow> {
+  const [row] = await database.db.select().from(wdtSyncSettings).where(eq(wdtSyncSettings.id, "default")).limit(1);
+  if (row) return row;
+  const defaultRow: WdtSyncSettingsRow = {
+    id: "default",
+    intervalHours: 1,
+    updatedByUserId: null,
+    updatedByUsername: null,
+    updatedAt: new Date().toISOString(),
+  };
+  await database.db.insert(wdtSyncSettings).values(defaultRow);
   return defaultRow;
 }
 
@@ -2953,6 +3018,16 @@ function toWarehouseUsageSettingsDto(row: WarehouseUsageSettingsRow): WarehouseU
   };
 }
 
+function toWdtSyncSettingsDto(row: WdtSyncSettingsRow, autoSyncEnabled: boolean): WdtSyncSettingsDto {
+  return {
+    intervalHours: normalizeSyncIntervalHours(row.intervalHours),
+    autoSyncEnabled,
+    updatedAt: row.updatedAt,
+    updatedByUserId: row.updatedByUserId ?? null,
+    updatedByUsername: row.updatedByUsername ?? null,
+  };
+}
+
 function toStoreAddressDto(row: StoreAddressRow): StoreAddressDto {
   return {
     id: row.id,
@@ -3237,15 +3312,22 @@ async function getLatestSuccessfulWdtSyncRun(database: DatabaseContext) {
   return row;
 }
 
-export function snapshotIsOlderThan(finishedAt: string, nowMs: number, maximumAgeMs = STOCK_SNAPSHOT_MAX_AGE_MS) {
+export function snapshotIsOlderThan(finishedAt: string, nowMs: number, maximumAgeMs = HOUR_MS) {
   const finishedAtMs = Date.parse(finishedAt);
   return !Number.isFinite(finishedAtMs) || nowMs - finishedAtMs > maximumAgeMs;
 }
 
-export function millisecondsUntilNextShanghaiHour(nowMs: number) {
+export function millisecondsUntilNextShanghaiSyncBoundary(nowMs: number, intervalHours: WdtAutoSyncIntervalHours) {
   const shifted = nowMs + SHANGHAI_UTC_OFFSET_MS;
-  const nextHour = Math.floor(shifted / STOCK_SNAPSHOT_MAX_AGE_MS + 1) * STOCK_SNAPSHOT_MAX_AGE_MS;
-  return nextHour - shifted;
+  const intervalMs = intervalHours * HOUR_MS;
+  const nextBoundary = Math.floor(shifted / intervalMs + 1) * intervalMs;
+  return nextBoundary - shifted;
+}
+
+export const millisecondsUntilNextShanghaiHour = (nowMs: number) => millisecondsUntilNextShanghaiSyncBoundary(nowMs, 1);
+
+function normalizeSyncIntervalHours(value: number): WdtAutoSyncIntervalHours {
+  return value === 2 || value === 6 || value === 24 ? value : 1;
 }
 
 async function toWdtSyncRunDto(database: DatabaseContext, row: WdtSyncRunRow | typeof wdtSyncRuns.$inferInsert): Promise<WdtSyncRunDto> {
@@ -3584,6 +3666,7 @@ async function prepareDatabase(database: DatabaseContext, bootstrapUsers: Array<
   await ensureReviewLineColumns(database);
   await ensureReviewDecisionColumns(database);
   await ensureWarehouseUsageSettings(database);
+  await ensureWdtSyncSettings(database);
   await ensureStoreAddresses(database);
   await ensureExternalProducts(database);
   await ensureBootstrapUsers(database, bootstrapUsers);
@@ -3703,6 +3786,19 @@ async function ensureWarehouseUsageSettings(database: DatabaseContext) {
   `);
   await migrateLegacyWarehouseUsageSettings(database);
   await getWarehouseUsageSettingsRow(database);
+}
+
+async function ensureWdtSyncSettings(database: DatabaseContext) {
+  await database.client.execute(`
+    create table if not exists wdt_sync_settings (
+      id text primary key not null,
+      interval_hours integer not null default 1,
+      updated_by_user_id text,
+      updated_by_username text,
+      updated_at text not null
+    )
+  `);
+  await getWdtSyncSettingsRow(database);
 }
 
 async function ensureStoreAddresses(database: DatabaseContext) {

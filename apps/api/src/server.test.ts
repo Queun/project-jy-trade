@@ -26,7 +26,7 @@ import {
   wdtSyncRuns,
 } from "./db/schema.js";
 import { buildApiServer } from "./server.js";
-import { millisecondsUntilNextShanghaiHour, snapshotIsOlderThan, type StockLookupClient, type StoreOptions } from "./store.js";
+import { millisecondsUntilNextShanghaiHour, millisecondsUntilNextShanghaiSyncBoundary, snapshotIsOlderThan, type StockLookupClient, type StoreOptions } from "./store.js";
 import type { WdtGoodsWindowClient } from "./wdtGoodsSync.js";
 
 const projectRoot = resolve(process.cwd(), "../..");
@@ -46,11 +46,14 @@ describe("api server", () => {
     await app.close();
   });
 
-  it("schedules hourly syncs on Asia/Shanghai hour boundaries and evaluates startup snapshot age", () => {
+  it("schedules configured sync intervals on Asia/Shanghai natural boundaries and evaluates snapshot age", () => {
     const beforeBoundary = Date.parse("2026-07-11T03:59:59.500Z"); // 11:59:59.500 in Shanghai
     expect(millisecondsUntilNextShanghaiHour(beforeBoundary)).toBe(500);
     const atBoundary = Date.parse("2026-07-11T04:00:00.000Z"); // 12:00 in Shanghai
     expect(millisecondsUntilNextShanghaiHour(atBoundary)).toBe(60 * 60 * 1_000);
+    expect(millisecondsUntilNextShanghaiSyncBoundary(atBoundary, 2)).toBe(2 * 60 * 60 * 1_000);
+    expect(millisecondsUntilNextShanghaiSyncBoundary(atBoundary, 6)).toBe(6 * 60 * 60 * 1_000);
+    expect(millisecondsUntilNextShanghaiSyncBoundary(atBoundary, 24)).toBe(12 * 60 * 60 * 1_000);
     expect(snapshotIsOlderThan("2026-07-11T03:00:00.000Z", atBoundary)).toBe(false);
     expect(snapshotIsOlderThan("2026-07-11T02:59:59.999Z", atBoundary)).toBe(true);
     expect(snapshotIsOlderThan("invalid", atBoundary)).toBe(true);
@@ -683,6 +686,42 @@ describe("api server", () => {
       includeOtherWarehouses: true,
       updatedByUsername: "admin",
     });
+    await app.close();
+  });
+
+  it("gets and updates the WDT automatic sync interval for admins only", async () => {
+    const app = buildTestServer();
+    const adminCookie = await loginCookie(app);
+    const operatorCookie = await loginCookie(app, "operator", "operator123");
+
+    const defaults = await app.inject({ method: "GET", url: "/api/v1/settings/wdt-sync", headers: { cookie: operatorCookie } });
+    expect(defaults.statusCode).toBe(200);
+    expect(defaults.json()).toMatchObject({ intervalHours: 1, autoSyncEnabled: false });
+
+    const forbidden = await app.inject({
+      method: "PATCH",
+      url: "/api/v1/settings/wdt-sync",
+      payload: { intervalHours: 6 },
+      headers: { cookie: operatorCookie },
+    });
+    expect(forbidden.statusCode).toBe(403);
+
+    const invalid = await app.inject({
+      method: "PATCH",
+      url: "/api/v1/settings/wdt-sync",
+      payload: { intervalHours: 3 },
+      headers: { cookie: adminCookie },
+    });
+    expect(invalid.statusCode).toBe(400);
+
+    const updated = await app.inject({
+      method: "PATCH",
+      url: "/api/v1/settings/wdt-sync",
+      payload: { intervalHours: 6 },
+      headers: { cookie: adminCookie },
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json()).toMatchObject({ intervalHours: 6, autoSyncEnabled: false, updatedByUsername: "admin" });
     await app.close();
   });
 

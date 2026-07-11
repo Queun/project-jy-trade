@@ -364,6 +364,23 @@ export const UpdateWarehouseUsageSettingsRequestSchema = z.object({
 });
 export type UpdateWarehouseUsageSettingsRequest = z.infer<typeof UpdateWarehouseUsageSettingsRequestSchema>;
 
+export const WdtAutoSyncIntervalHoursSchema = z.union([z.literal(1), z.literal(2), z.literal(6), z.literal(24)]);
+export type WdtAutoSyncIntervalHours = z.infer<typeof WdtAutoSyncIntervalHoursSchema>;
+
+export const WdtSyncSettingsDtoSchema = z.object({
+  intervalHours: WdtAutoSyncIntervalHoursSchema,
+  autoSyncEnabled: z.boolean(),
+  updatedAt: z.string(),
+  updatedByUserId: z.string().nullable().optional(),
+  updatedByUsername: z.string().nullable().optional(),
+});
+export type WdtSyncSettingsDto = z.infer<typeof WdtSyncSettingsDtoSchema>;
+
+export const UpdateWdtSyncSettingsRequestSchema = z.object({
+  intervalHours: WdtAutoSyncIntervalHoursSchema,
+});
+export type UpdateWdtSyncSettingsRequest = z.infer<typeof UpdateWdtSyncSettingsRequestSchema>;
+
 export const BulkApproveResponseDtoSchema = z.object({
   batch: BatchSummarySchema,
   updatedCount: z.number(),

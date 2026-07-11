@@ -170,6 +170,14 @@ export const warehouseUsageSettings = sqliteTable("warehouse_usage_settings", {
   updatedAt: text("updated_at").notNull(),
 });
 
+export const wdtSyncSettings = sqliteTable("wdt_sync_settings", {
+  id: text("id").primaryKey(),
+  intervalHours: integer("interval_hours").notNull().default(1),
+  updatedByUserId: text("updated_by_user_id"),
+  updatedByUsername: text("updated_by_username"),
+  updatedAt: text("updated_at").notNull(),
+});
+
 export const storeAddresses = sqliteTable(
   "store_addresses",
   {

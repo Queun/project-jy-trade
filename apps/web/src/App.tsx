@@ -13,6 +13,8 @@ import type {
   SubmitReviewWarningDto,
   UpdateBatchStoreFieldsResponse,
   WarehouseUsageSettingsDto,
+  WdtAutoSyncIntervalHours,
+  WdtSyncSettingsDto,
   WdtGoodsSyncRunDto,
   WdtSyncRunDto,
   StartWdtSyncResponseDto,
@@ -118,6 +120,8 @@ export function App() {
   const [warehouseSettings, setWarehouseSettings] = useState<WarehouseUsageSettingsDto | null>(null);
   const [warehouseSettingsDraft, setWarehouseSettingsDraft] = useState<WarehouseUsageSettingsDto | null>(null);
   const [warehouseSettingsMessage, setWarehouseSettingsMessage] = useState("");
+  const [wdtSyncSettings, setWdtSyncSettings] = useState<WdtSyncSettingsDto | null>(null);
+  const [wdtSyncSettingsMessage, setWdtSyncSettingsMessage] = useState("");
   const [selectedOrderFileName, setSelectedOrderFileName] = useState("");
   const [pendingOrderUpload, setPendingOrderUpload] = useState<File | null>(null);
   const [developerMode, setDeveloperMode] = useState(false);
@@ -201,6 +205,18 @@ export function App() {
     return settings;
   }
 
+  async function refreshWdtSyncSettings() {
+    const response = await fetch("/api/v1/settings/wdt-sync");
+    if (!response.ok) {
+      setWdtSyncSettingsMessage("自动同步设置读取失败");
+      return null;
+    }
+    const settings = (await response.json()) as WdtSyncSettingsDto;
+    setWdtSyncSettings(settings);
+    setWdtSyncSettingsMessage("");
+    return settings;
+  }
+
   async function runGoodsSync() {
     setGoodsSyncing(true);
     setGoodsSyncMessage("正在启动商品与库存后台同步...");
@@ -229,6 +245,7 @@ export function App() {
       await refreshBatches();
       await refreshGoodsSyncStatus();
       await refreshWarehouseSettings();
+      await refreshWdtSyncSettings();
     }
   }
 
@@ -248,6 +265,7 @@ export function App() {
     await refreshBatches();
     await refreshGoodsSyncStatus();
     await refreshWarehouseSettings();
+    await refreshWdtSyncSettings();
   }
 
   async function logout() {
@@ -710,6 +728,22 @@ export function App() {
     setWarehouseSettingsMessage("已保存，重新运行初审后生效");
   }
 
+  async function saveWdtSyncInterval(intervalHours: WdtAutoSyncIntervalHours) {
+    const response = await fetch("/api/v1/settings/wdt-sync", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ intervalHours }),
+    });
+    if (!response.ok) {
+      const error = await response.json();
+      setWdtSyncSettingsMessage(error.message ?? "自动同步周期保存失败");
+      return;
+    }
+    const settings = (await response.json()) as WdtSyncSettingsDto;
+    setWdtSyncSettings(settings);
+    setWdtSyncSettingsMessage(`已改为每 ${settings.intervalHours} 小时自动同步`);
+  }
+
   async function bulkApprove() {
     if (!activeBatch) return;
     const response = await fetch(`/api/v1/batches/${activeBatch.id}/actions/bulk-approve`, { method: "POST" });
@@ -912,7 +946,7 @@ export function App() {
             <p className="text-sm text-muted-foreground">漾锦贸易订单初审平台</p>
             <h1 className="mt-1 text-2xl font-semibold tracking-normal">订单处理工作台</h1>
           </div>
-          <GoodsSyncHeaderStatus error={goodsSyncError} run={combinedSyncRun} />
+          <GoodsSyncHeaderStatus error={goodsSyncError} run={combinedSyncRun} settings={wdtSyncSettings} />
           <div className="flex flex-wrap items-center gap-2">
             {activeBatch ? <Badge tone={batchStatusTone(activeBatch.status)}>{batchStatusText(activeBatch)}</Badge> : null}
             <Button className="h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80" onClick={reopenHelp}>
@@ -958,9 +992,12 @@ export function App() {
             warehouseSettings={warehouseSettings}
             warehouseSettingsDraft={warehouseSettingsDraft}
             warehouseSettingsMessage={warehouseSettingsMessage}
+            wdtSyncSettings={wdtSyncSettings}
+            wdtSyncSettingsMessage={wdtSyncSettingsMessage}
             onClose={() => setShowSettings(false)}
             onRunGoodsSync={() => void runGoodsSync()}
             onSaveWarehouseSettings={() => void saveWarehouseSettings()}
+            onWdtSyncIntervalChange={(intervalHours) => void saveWdtSyncInterval(intervalHours)}
             onWarehouseSettingsDraftChange={setWarehouseSettingsDraft}
           />
         ) : null}
@@ -1386,9 +1423,12 @@ function SettingsPanel({
   warehouseSettings,
   warehouseSettingsDraft,
   warehouseSettingsMessage,
+  wdtSyncSettings,
+  wdtSyncSettingsMessage,
   onClose,
   onRunGoodsSync,
   onSaveWarehouseSettings,
+  onWdtSyncIntervalChange,
   onWarehouseSettingsDraftChange,
 }: {
   canSyncGoods: boolean;
@@ -1402,9 +1442,12 @@ function SettingsPanel({
   warehouseSettings: WarehouseUsageSettingsDto | null;
   warehouseSettingsDraft: WarehouseUsageSettingsDto | null;
   warehouseSettingsMessage: string;
+  wdtSyncSettings: WdtSyncSettingsDto | null;
+  wdtSyncSettingsMessage: string;
   onClose: () => void;
   onRunGoodsSync: () => void;
   onSaveWarehouseSettings: () => void;
+  onWdtSyncIntervalChange: (intervalHours: WdtAutoSyncIntervalHours) => void;
   onWarehouseSettingsDraftChange: (settings: WarehouseUsageSettingsDto) => void;
 }) {
   return (
@@ -1434,13 +1477,17 @@ function SettingsPanel({
           />
           <GoodsSyncStatusPanel
             canSyncGoods={canSyncGoods}
+            canManageSettings={canManageSettings}
             error={goodsSyncError}
             message={goodsSyncMessage}
             run={goodsSyncRun}
             combinedRun={combinedSyncRun}
             developerMode={developerMode}
             syncing={goodsSyncing}
+            syncSettings={wdtSyncSettings}
+            syncSettingsMessage={wdtSyncSettingsMessage}
             onRunSync={onRunGoodsSync}
+            onSyncIntervalChange={onWdtSyncIntervalChange}
           />
         </div>
       </section>
@@ -2043,9 +2090,10 @@ function MetaItem({ label, value }: { label: string; value: string }) {
   );
 }
 
-function GoodsSyncHeaderStatus({ error, run }: { error: string; run: WdtSyncRunDto | null }) {
+function GoodsSyncHeaderStatus({ error, run, settings }: { error: string; run: WdtSyncRunDto | null; settings: WdtSyncSettingsDto | null }) {
   const status = run?.status ?? "none";
-  const stale = run?.activeSnapshotAt ? Date.now() - Date.parse(run.activeSnapshotAt) > 60 * 60 * 1000 : false;
+  const intervalHours = settings?.intervalHours ?? 1;
+  const stale = run?.activeSnapshotAt ? Date.now() - Date.parse(run.activeSnapshotAt) > intervalHours * 60 * 60 * 1000 : false;
   const snapshotText = run?.activeSnapshotAt ? formatShortDate(run.activeSnapshotAt) : error || "尚无成功库存快照";
   const snapshotTone = run?.activeSnapshotAt ? (stale ? "warn" : "good") : "warn";
   return (
@@ -2057,7 +2105,7 @@ function GoodsSyncHeaderStatus({ error, run }: { error: string; run: WdtSyncRunD
         {status === "failed" ? <Badge tone="bad">最近同步失败</Badge> : null}
         <span className="min-w-0 truncate text-muted-foreground">{snapshotText}</span>
         {run?.activeSnapshotAt ? <span className="text-xs text-muted-foreground">来源：{syncTriggerText(run.activeSnapshotTrigger)}</span> : null}
-        {stale ? <Badge tone="warn">超过一小时</Badge> : null}
+        {stale ? <Badge tone="warn">超过同步周期</Badge> : null}
       </div>
     </div>
   );
@@ -2065,28 +2113,37 @@ function GoodsSyncHeaderStatus({ error, run }: { error: string; run: WdtSyncRunD
 
 function GoodsSyncStatusPanel({
   canSyncGoods,
+  canManageSettings,
   error,
   message,
   run,
   combinedRun,
   developerMode,
   syncing,
+  syncSettings,
+  syncSettingsMessage,
   onRunSync,
+  onSyncIntervalChange,
 }: {
   canSyncGoods: boolean;
+  canManageSettings: boolean;
   error: string;
   message: string;
   run: WdtGoodsSyncRunDto | null;
   combinedRun: WdtSyncRunDto | null;
   developerMode: boolean;
   syncing: boolean;
+  syncSettings: WdtSyncSettingsDto | null;
+  syncSettingsMessage: string;
   onRunSync: () => void;
+  onSyncIntervalChange: (intervalHours: WdtAutoSyncIntervalHours) => void;
 }) {
   const status = combinedRun?.status ?? "none";
   const total = combinedRun?.totalSpecCount ?? 0;
   const processed = combinedRun?.processedSpecCount ?? 0;
   const percent = total > 0 ? Math.min(100, Math.round((processed / total) * 100)) : 0;
-  const stale = combinedRun?.activeSnapshotAt ? Date.now() - Date.parse(combinedRun.activeSnapshotAt) > 60 * 60 * 1000 : false;
+  const intervalHours = syncSettings?.intervalHours ?? 1;
+  const stale = combinedRun?.activeSnapshotAt ? Date.now() - Date.parse(combinedRun.activeSnapshotAt) > intervalHours * 60 * 60 * 1000 : false;
   return (
     <section className="rounded-md border border-border bg-card p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -2099,8 +2156,26 @@ function GoodsSyncStatusPanel({
             当前库存快照：{combinedRun?.activeSnapshotAt ? formatShortDate(combinedRun.activeSnapshotAt) : "尚无成功快照"}
             {combinedRun?.activeSnapshotAt ? ` · 来源：${syncTriggerText(combinedRun.activeSnapshotTrigger)}` : ""}
           </p>
-          <p className="mt-1 text-xs text-muted-foreground">每小时整点自动更新；导入、审核和商品查询均使用这份本地快照，不会临时等待旺店通。</p>
-          {stale ? <p className="mt-1 text-xs text-amber-800">库存快照已超过一小时，系统仍可使用，建议手动刷新。</p> : null}
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
+            <label className="font-medium" htmlFor="wdt-sync-interval">自动同步</label>
+            <select
+              id="wdt-sync-interval"
+              className="h-8 rounded-md border border-border bg-background px-2 text-sm disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={!canManageSettings || !syncSettings}
+              value={intervalHours}
+              onChange={(event) => onSyncIntervalChange(Number(event.target.value) as WdtAutoSyncIntervalHours)}
+            >
+              <option value={1}>每 1 小时</option>
+              <option value={2}>每 2 小时</option>
+              <option value={6}>每 6 小时</option>
+              <option value={24}>每 24 小时</option>
+            </select>
+            <span className="text-xs text-muted-foreground">按上海时间自然整点执行</span>
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">导入、审核和商品查询均使用这份本地快照，不会临时等待旺店通。</p>
+          {syncSettings && !syncSettings.autoSyncEnabled ? <p className="mt-1 text-xs text-amber-800">自动同步已被运维配置关闭，手动立即同步仍可使用。</p> : null}
+          {stale ? <p className="mt-1 text-xs text-amber-800">库存快照已超过当前同步周期，系统仍可使用，建议手动刷新。</p> : null}
+          {syncSettingsMessage ? <p className="mt-1 text-xs text-muted-foreground">{syncSettingsMessage}</p> : null}
           {syncing ? (
             <div className="mt-3 space-y-1 text-xs text-muted-foreground">
               <div>阶段：{syncStageText(combinedRun?.stage)} · SKU {processed}/{total || "-"} · 批次 {combinedRun?.completedBatchCount ?? 0}/{combinedRun?.totalBatchCount ?? "-"}</div>

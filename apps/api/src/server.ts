@@ -20,6 +20,7 @@ import {
   UpdateBatchStoreFieldsRequestSchema,
   UpsertStoreAddressRequestSchema,
   UpdateWarehouseUsageSettingsRequestSchema,
+  UpdateWdtSyncSettingsRequestSchema,
   UploadOrderFileRequestSchema,
   type AuthUserDto,
   type BatchSummary,
@@ -37,6 +38,7 @@ import {
   type UpdateBatchStoreFieldsResponse,
   type UserRole,
   type WarehouseUsageSettingsDto,
+  type WdtSyncSettingsDto,
   type WdtGoodsSpecSearchResultDto,
   type WdtGoodsSyncRunDto,
   type WdtSyncRunDto,
@@ -239,6 +241,14 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     requireRole(request, ["admin"]);
     const body = UpdateWarehouseUsageSettingsRequestSchema.parse(request.body ?? {});
     return store.updateWarehouseUsageSettings(body, getCurrentUser(request));
+  });
+
+  app.get("/api/v1/settings/wdt-sync", async (): Promise<WdtSyncSettingsDto> => store.getWdtSyncSettings());
+
+  app.patch("/api/v1/settings/wdt-sync", async (request): Promise<WdtSyncSettingsDto> => {
+    requireRole(request, ["admin"]);
+    const body = UpdateWdtSyncSettingsRequestSchema.parse(request.body ?? {});
+    return store.updateWdtSyncSettings(body, getCurrentUser(request));
   });
 
   app.patch("/api/v1/batches/:batchId/review-lines/:lineId/decision", async (request, reply) => {

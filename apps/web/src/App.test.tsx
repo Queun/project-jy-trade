@@ -13,6 +13,7 @@ import type {
   ReviewLineDto,
   StoreAddressDto,
   WarehouseUsageSettingsDto,
+  WdtSyncSettingsDto,
   WdtGoodsSpecSearchResultDto,
   WdtGoodsSyncRunDto,
   WdtSyncRunDto,
@@ -44,6 +45,7 @@ let latestGoodsSyncRun: WdtGoodsSyncRunDto | null;
 let latestCombinedSyncRun: WdtSyncRunDto | null;
 let combinedSyncStatusReads: number;
 let warehouseSettings: WarehouseUsageSettingsDto;
+let wdtSyncSettings: WdtSyncSettingsDto;
 let makeOrderReadiness: MakeOrderReadinessDto;
 let storeAddressRows: StoreAddressDto[];
 let externalProductRows: ExternalProductDto[];
@@ -80,6 +82,7 @@ describe("App", () => {
     latestCombinedSyncRun = combinedSyncRun();
     combinedSyncStatusReads = 0;
     warehouseSettings = warehouseUsageSettings();
+    wdtSyncSettings = { intervalHours: 1, autoSyncEnabled: true, updatedAt: "2026-07-06T00:00:00.000Z" };
     storeAddressRows = [];
     externalProductRows = [externalProduct()];
     makeOrderReadiness = {
@@ -284,6 +287,10 @@ describe("App", () => {
     await waitFor(() => expect(warehouseSettings.includeNearExpiryWarehouse).toBe(false));
     expect(warehouseSettings.includeOtherWarehouses).toBe(true);
     expect(await screen.findByText("已保存，重新运行初审后生效")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("自动同步"), { target: { value: "6" } });
+    await waitFor(() => expect(wdtSyncSettings.intervalHours).toBe(6));
+    expect(await screen.findByText("已改为每 6 小时自动同步")).toBeInTheDocument();
   });
 
   it("restores a running combined sync after refresh and polls its progress", async () => {
@@ -1527,6 +1534,19 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
       updatedAt: "2026-07-06T00:00:00.000Z",
     };
     return json(warehouseSettings);
+  }
+  if (url === "/api/v1/settings/wdt-sync" && method === "GET") return json(wdtSyncSettings);
+  if (url === "/api/v1/settings/wdt-sync" && method === "PATCH") {
+    if (currentUser.role !== "admin") return json({ message: "Forbidden" }, 403);
+    const body = JSON.parse(String(init?.body));
+    wdtSyncSettings = {
+      ...wdtSyncSettings,
+      intervalHours: body.intervalHours,
+      updatedByUserId: currentUser.id,
+      updatedByUsername: currentUser.username,
+      updatedAt: "2026-07-06T00:00:00.000Z",
+    };
+    return json(wdtSyncSettings);
   }
   if (url === "/api/v1/batches" && method === "GET") return json(batchDeleted ? [] : [currentBatch]);
   if (url === "/api/v1/batches" && method === "POST") {
