@@ -15,6 +15,7 @@ import type {
   WarehouseUsageSettingsDto,
   WdtGoodsSpecSearchResultDto,
   WdtGoodsSyncRunDto,
+  WdtSyncRunDto,
 } from "@jy-trade/shared";
 import { confirmedProductMappingMatchMessage } from "@jy-trade/shared";
 
@@ -27,6 +28,8 @@ const batch: BatchSummary = {
   orderLineCount: 3,
   uniqueBarcodeCount: 3,
   matchedBarcodeCount: 2,
+  stockSnapshotRunId: "",
+  stockSnapshotAt: "",
   createdAt: "2026-06-30T00:00:00.000Z",
   updatedAt: "2026-06-30T00:00:00.000Z",
 };
@@ -38,6 +41,8 @@ let mappingRows: ProductMappingDto[];
 let candidateRows: ProductMatchCandidateDto[];
 let specRows: WdtGoodsSpecSearchResultDto[];
 let latestGoodsSyncRun: WdtGoodsSyncRunDto | null;
+let latestCombinedSyncRun: WdtSyncRunDto | null;
+let combinedSyncStatusReads: number;
 let warehouseSettings: WarehouseUsageSettingsDto;
 let makeOrderReadiness: MakeOrderReadinessDto;
 let storeAddressRows: StoreAddressDto[];
@@ -72,6 +77,8 @@ describe("App", () => {
     candidateRows = [productCandidate()];
     specRows = [wdtSpec()];
     latestGoodsSyncRun = goodsSyncRun();
+    latestCombinedSyncRun = combinedSyncRun();
+    combinedSyncStatusReads = 0;
     warehouseSettings = warehouseUsageSettings();
     storeAddressRows = [];
     externalProductRows = [externalProduct()];
@@ -81,6 +88,8 @@ describe("App", () => {
       shippableLineCount: 2,
       missingAddressCount: 1,
       missingStores: [{ storeNo: "STORE", storeName: "测试门店", shippableLineCount: 2, orderNoticeNos: ["ORDER-1"] }],
+      missingWarehouseCount: 0,
+      missingWarehouseLines: [],
     };
     currentUser = { id: "user-1", username: "admin", role: "admin", createdAt: "2026-06-30T00:00:00.000Z" };
     failReviewLines = false;
@@ -91,6 +100,7 @@ describe("App", () => {
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -237,7 +247,7 @@ describe("App", () => {
     fireEvent.change(await screen.findByLabelText("选择文件"), { target: { files: [file] } });
     const importButton = await screen.findByRole("button", { name: "导入新订单" });
     expect(importButton).toBeDisabled();
-    expect(screen.getByText("商品档案同步可用后才能导入新订单；确定单可先导入，但商品匹配依赖本地已有商品档案和人工映射。")).toBeInTheDocument();
+    expect(screen.getByText("本地商品档案可用后才能导入新订单；确定单可先导入，但商品匹配依赖已有商品档案和人工映射。库存建议统一读取本地快照。")).toBeInTheDocument();
   });
 
   it("requires selecting an order file before import", async () => {
@@ -252,18 +262,17 @@ describe("App", () => {
   it("lets admins save warehouse usage settings", async () => {
     render(<App />);
 
-    expect(await screen.findByText(/商品档案/)).toBeInTheDocument();
-    expect(screen.getByText(/上次更新：/)).toBeInTheDocument();
+    expect((await screen.findAllByText(/库存快照/)).length).toBeGreaterThan(0);
     fireEvent.click(await screen.findByRole("button", { name: "设置" }));
     expect(screen.getByRole("dialog", { name: "设置" })).toBeInTheDocument();
     expect(await screen.findByText("可用仓库范围")).toBeInTheDocument();
-    expect(screen.getByText("商品档案同步")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "手动同步" }));
+    expect(screen.getByText("商品与库存同步")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "立即同步" }));
     await waitFor(() => expect(fetch).toHaveBeenCalledWith(
-      "/api/v1/wdt/goods-sync-runs",
-      expect.objectContaining({ method: "POST", body: JSON.stringify({ mode: "incremental" }) }),
+      "/api/v1/wdt/sync-runs",
+      expect.objectContaining({ method: "POST" }),
     ));
-    expect(await screen.findByText("商品档案同步完成")).toBeInTheDocument();
+    expect(await screen.findByText("同步任务已进入后台队列")).toBeInTheDocument();
     const nearExpiry = screen.getByRole("checkbox", { name: "临期仓" });
     const other = screen.getByRole("checkbox", { name: "其他仓" });
 
@@ -275,6 +284,80 @@ describe("App", () => {
     await waitFor(() => expect(warehouseSettings.includeNearExpiryWarehouse).toBe(false));
     expect(warehouseSettings.includeOtherWarehouses).toBe(true);
     expect(await screen.findByText("已保存，重新运行初审后生效")).toBeInTheDocument();
+  });
+
+  it("restores a running combined sync after refresh and polls its progress", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    latestCombinedSyncRun = combinedSyncRun({
+      trigger: "manual",
+      status: "running",
+      stage: "stock",
+      totalSpecCount: 100,
+      processedSpecCount: 40,
+      totalBatchCount: 3,
+      completedBatchCount: 1,
+      finishedAt: "",
+      activeSnapshotRunId: "snapshot-previous",
+      activeSnapshotAt: "2026-07-03T00:02:00.000Z",
+    });
+    render(<App />);
+
+    await screen.findByText("更新中");
+    fireEvent.click(await screen.findByRole("button", { name: "设置" }));
+    expect(await screen.findByText(/阶段：同步分仓库存 · SKU 40\/100 · 批次 1\/3/)).toBeInTheDocument();
+    expect(screen.getByLabelText("同步进度 40%")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "同步中" })).toBeDisabled();
+    const readsBeforePoll = combinedSyncStatusReads;
+
+    latestCombinedSyncRun = combinedSyncRun({
+      trigger: "manual",
+      status: "running",
+      stage: "stock",
+      totalSpecCount: 100,
+      processedSpecCount: 80,
+      totalBatchCount: 3,
+      completedBatchCount: 2,
+      finishedAt: "",
+      activeSnapshotRunId: "snapshot-previous",
+      activeSnapshotAt: "2026-07-03T00:02:00.000Z",
+    });
+    await vi.advanceTimersByTimeAsync(2000);
+
+    await waitFor(() => expect(combinedSyncStatusReads).toBeGreaterThan(readsBeforePoll));
+    expect(await screen.findByText(/阶段：同步分仓库存 · SKU 80\/100 · 批次 2\/3/)).toBeInTheDocument();
+    expect(screen.getByLabelText("同步进度 80%")).toBeInTheDocument();
+  });
+
+  it("shows a failed sync while keeping the previous snapshot and hides developer details by default", async () => {
+    latestCombinedSyncRun = combinedSyncRun({
+      trigger: "manual",
+      status: "failed",
+      stage: "complete",
+      errorCode: "WDT_STOCK_ERROR",
+      errorMessage: "旺店通库存同步失败",
+      errorDetail: "status=100 raw response body",
+      activeSnapshotRunId: "snapshot-previous",
+      activeSnapshotAt: "2026-07-03T00:02:00.000Z",
+      activeSnapshotTrigger: "hourly",
+    });
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "设置" }));
+    expect(await screen.findByText(/旺店通库存同步失败，仍使用 .* 的成功快照/)).toBeInTheDocument();
+    expect(screen.getAllByText(/来源：整点自动/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/status=100 raw response body/)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "开发者模式" }));
+    expect(await screen.findByText(/同步详情：WDT_STOCK_ERROR status=100 raw response body/)).toBeInTheDocument();
+  });
+
+  it("explains that business work can continue when no successful snapshot exists", async () => {
+    latestCombinedSyncRun = null;
+    render(<App />);
+
+    expect((await screen.findAllByText(/尚无成功库存快照/)).length).toBeGreaterThan(0);
+    fireEvent.click(await screen.findByRole("button", { name: "设置" }));
+    expect(await screen.findByText(/业务仍可继续，库存建议会标记为未验证/)).toBeInTheDocument();
   });
 
   it("disables import and export actions for reviewer accounts", async () => {
@@ -302,7 +385,7 @@ describe("App", () => {
     expect(screen.getByRole("checkbox", { name: "主仓" })).toBeDisabled();
     expect(screen.getByRole("checkbox", { name: "临期仓" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "保存" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "手动同步" })).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: "立即同步" })).not.toBeDisabled();
     expect(screen.getByText("当前账号只能查看仓库范围，请联系管理员调整。")).toBeInTheDocument();
     await clickBatch();
     switchToReviewTab();
@@ -381,7 +464,7 @@ describe("App", () => {
     fireEvent.change(within(row).getByLabelText("审核原因 line-1"), { target: { value: "人工确认额外库存" } });
     fireEvent.click(within(row).getByRole("button", { name: "保存" }));
 
-    await waitFor(() => expect(within(row).getByText("超建议数")).toBeInTheDocument());
+    await waitFor(() => expect(within(row).getByText("超系统建议")).toBeInTheDocument());
     expect(lines.find((line) => line.id === "line-1")).toMatchObject({
       decision: "ship",
       approvedShipQty: 8,
@@ -414,6 +497,40 @@ describe("App", () => {
     fireEvent.click(within(row).getByRole("button", { name: "保存" }));
     await waitFor(() => expect(lines.find((line) => line.id === "line-1")?.reason).toBe("门店备注"));
     expect(within(row).queryByRole("button", { name: "保存" })).not.toBeInTheDocument();
+  });
+
+  it("preselects the suggested warehouse and saves manual warehouse changes", async () => {
+    lines = lines.map((line) => line.id === "line-1"
+      ? { ...line, decision: "ship", approvedShipQty: 5, fulfillmentWarehouseNo: "001", fulfillmentWarehouseName: "主仓" }
+      : line);
+    render(<App />);
+    await clickBatch();
+    switchToReviewTab();
+
+    const row = await rowFor("可发商品");
+    const warehouseSelect = within(row).getByRole("combobox", { name: "发货仓库 line-1" });
+    expect(warehouseSelect).toHaveValue("001");
+    fireEvent.change(warehouseSelect, { target: { value: "LINQI" } });
+    expect(within(row).getByRole("button", { name: "保存" })).toBeInTheDocument();
+    fireEvent.click(within(row).getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(lines.find((line) => line.id === "line-1")).toMatchObject({
+      fulfillmentWarehouseNo: "LINQI",
+      fulfillmentWarehouseName: "临期仓",
+    }));
+  });
+
+  it("shows an inline error when shipping without a warehouse", async () => {
+    lines = lines.map((line) => line.id === "line-1"
+      ? { ...line, suggestedWarehouseNo: "", suggestedWarehouseName: "", fulfillmentWarehouseNo: "", fulfillmentWarehouseName: "" }
+      : line);
+    render(<App />);
+    await clickBatch();
+    switchToReviewTab();
+
+    const row = await rowFor("可发商品");
+    fireEvent.click(within(row).getByRole("button", { name: "发货" }));
+    expect(await within(row).findByText("请选择发货仓库")).toBeInTheDocument();
   });
 
   it("marks priority lines and moves them to the top", async () => {
@@ -476,30 +593,37 @@ describe("App", () => {
     expect(currentBatch.mode).toBe("production_api");
   });
 
-  it("imports confirmed orders directly into make-order flow", async () => {
+  it("imports confirmed orders into review before make-order export", async () => {
     render(<App />);
 
     const file = new File(["confirmed"], "确定单.xlsx", { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
     fireEvent.change(await screen.findByLabelText("选择文件"), { target: { files: [file] } });
     fireEvent.click(await screen.findByRole("button", { name: "导入确定单" }));
 
-    expect(await screen.findByText("确定单导入成功，可以直接进入做单")).toBeInTheDocument();
+    expect(await screen.findByText("确定单导入成功，请确认系统建议并提交审核")).toBeInTheDocument();
     expect(screen.getByText(/确定单已导入/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "生成做单表格" })).toBeInTheDocument();
-    expect(currentBatch.status).toBe("reviewed");
+    expect(screen.getByText("确定单校验")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "提交审核完成" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "生成做单表格" })).not.toBeInTheDocument();
+    expect(currentBatch.status).toBe("review_generated");
     expect(currentBatch.sourceType).toBe("confirmed_order");
     expect(currentBatch.fileName).toBe("确定单.xlsx");
   });
 
   it("blocks real review when latest goods sync failed", async () => {
     latestGoodsSyncRun = goodsSyncRun({ status: "failed", errorMessage: "fetch failed" });
+    latestCombinedSyncRun = combinedSyncRun({
+      status: "failed",
+      errorCode: "SYNC_FAILED",
+      errorMessage: "商品与库存同步失败",
+    });
     render(<App />);
 
-    expect(await screen.findByText("需刷新")).toBeInTheDocument();
+    expect(await screen.findByText("建议刷新")).toBeInTheDocument();
     const importButton = await screen.findByRole("button", { name: "导入新订单" });
 
     expect(importButton).toBeDisabled();
-    expect(screen.getByText("商品档案同步可用后才能导入新订单；确定单可先导入，但商品匹配依赖本地已有商品档案和人工映射。")).toBeInTheDocument();
+    expect(screen.getByText("本地商品档案可用后才能导入新订单；确定单可先导入，但商品匹配依赖已有商品档案和人工映射。库存建议统一读取本地快照。")).toBeInTheDocument();
     expect(fetch).not.toHaveBeenCalledWith(
       "/api/v1/batches",
       expect.objectContaining({
@@ -532,7 +656,7 @@ describe("App", () => {
 
     expect(await screen.findByText("做单预检查")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "生成做单表格" })).toBeDisabled();
-    expect(screen.getByText("可做单 2 行 / 缺地址 1 个门店")).toBeInTheDocument();
+    expect(screen.getByText("可做单 2 行 / 未选仓库 0 行 / 缺地址 1 个门店")).toBeInTheDocument();
     expect(screen.getByText("测试门店")).toBeInTheDocument();
     expect(screen.getByText("2 行待做单")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "修正本批字段" })).toBeInTheDocument();
@@ -1070,7 +1194,7 @@ describe("App", () => {
     switchToReviewTab();
 
     expect(await screen.findByText("确定单校验")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "提交审核完成" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "提交审核完成" })).toBeInTheDocument();
     const confirmedOrderRow = await rowFor("雅漾专研保湿修护面膜25ml*5片");
     expect(within(confirmedOrderRow).getByText("缺商家编码")).toBeInTheDocument();
     expect(within(confirmedOrderRow).getByText("需选择商家编码")).toBeInTheDocument();
@@ -1079,15 +1203,51 @@ describe("App", () => {
     fireEvent.click(within(confirmedOrderRow).getByRole("button", { name: "定位映射" }));
     fireEvent.click(await screen.findByRole("button", { name: /雅漾专研保湿修护面膜25ml/ }));
     fireEvent.click(screen.getByRole("button", { name: "保存长期映射" }));
+    expect(await screen.findByRole("dialog", { name: "重新校验确定单" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /保留当前审核结果/ }));
 
     await waitFor(() =>
       expect(fetch).toHaveBeenCalledWith("/api/v1/batches/batch-1/actions/rebuild-confirmed-order", {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ strategy: "preserve" }),
       }),
     );
     expect(fetch).not.toHaveBeenCalledWith("/api/v1/batches/batch-1/actions/run-real-review", expect.anything());
-    expect(await screen.findByText("映射已应用到当前确定单")).toBeInTheDocument();
+    expect(await screen.findByText("系统建议已刷新，当前审核结果已保留；请重新提交审核")).toBeInTheDocument();
     await waitFor(() => expect(lines.every((line) => line.matchStatus === "matched" && line.decision === "ship")).toBe(true));
+  });
+
+  it("keeps a saved mapping without recalculating when the rebuild prompt is cancelled", async () => {
+    currentBatch = { ...currentBatch, mode: "production_api", sourceType: "confirmed_order", status: "review_generated" };
+    mappingRows = [];
+    lines = [
+      reviewLine({
+        id: "line-confirmed-mapping-cancel",
+        externalBarcode: "2153722460015",
+        externalGoodsCode: "5372246",
+        externalGoodsName: "雅漾专研保湿修护面膜25ml*5片",
+        goodsName: "",
+        wdtSpecNo: "",
+        matchStatus: "ambiguous",
+        matchMessage: "Name candidate needs human confirmation",
+        status: "未匹配",
+      }),
+    ];
+    render(<App />);
+    await clickBatch();
+    switchToReviewTab();
+
+    const row = await rowFor("雅漾专研保湿修护面膜25ml*5片");
+    fireEvent.click(within(row).getByRole("button", { name: "定位映射" }));
+    fireEvent.click(await screen.findByRole("button", { name: /雅漾专研保湿修护面膜25ml/ }));
+    fireEvent.click(screen.getByRole("button", { name: "保存长期映射" }));
+    expect(await screen.findByRole("dialog", { name: "重新校验确定单" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+
+    expect(await screen.findByText("映射已保存，当前审核尚未重新校验")).toBeInTheDocument();
+    expect(mappingRows).toHaveLength(1);
+    expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining("/actions/rebuild-confirmed-order"), expect.anything());
   });
 
   it("shows confirmed-order stock warnings outside the editable remark field", async () => {
@@ -1118,16 +1278,42 @@ describe("App", () => {
     expect(screen.getAllByText("可发 主 5 / 临 0").length).toBeGreaterThanOrEqual(1);
   });
 
+  it("filters confirmed-order rows by fulfillment result", async () => {
+    currentBatch = { ...currentBatch, mode: "production_api", sourceType: "confirmed_order", status: "review_generated" };
+    lines = [
+      reviewLine({ id: "confirmed-ready", externalGoodsName: "全部发货商品", status: "库存充足" }),
+      reviewLine({ id: "confirmed-partial", externalGoodsName: "部分发货商品", status: "部分满足" }),
+      reviewLine({ id: "confirmed-blocked", externalGoodsName: "货品不足商品", status: "库存不足" }),
+      reviewLine({ id: "confirmed-unverified", externalGoodsName: "库存未验证商品", status: "库存未验证" }),
+      reviewLine({ id: "confirmed-zero", externalGoodsName: "零计划量商品", plannedShipQty: 0, status: "库存充足" }),
+    ];
+    render(<App />);
+    await clickBatch();
+    switchToReviewTab();
+
+    for (const [filterName, visibleProduct] of [
+      ["全部发货", "全部发货商品"],
+      ["部分发货", "部分发货商品"],
+      ["货品不足", "货品不足商品"],
+      ["库存未验证", "库存未验证商品"],
+    ] as const) {
+      fireEvent.click(screen.getByRole("button", { name: filterName }));
+      const visibleRow = await rowFor(visibleProduct);
+      expect(visibleRow).toBeInTheDocument();
+      await waitFor(() => expect(screen.getAllByRole("row")).toHaveLength(2));
+    }
+  });
+
   it("shows confirmed-order stock error details only in developer mode", async () => {
-    currentBatch = { ...currentBatch, mode: "production_api", sourceType: "confirmed_order", status: "reviewed" };
+    currentBatch = { ...currentBatch, mode: "production_api", sourceType: "confirmed_order", status: "review_generated" };
     lines = [
       reviewLine({
         id: "line-confirmed-stock-error",
         externalGoodsName: "确定单库存查询失败商品",
         matchStatus: "matched",
-        matchMessage: "Matched by barcode；确定单库存查询失败。仅提示，不调整做单数量",
+        matchMessage: "Matched by barcode；确定单库存查询失败，系统未生成数量和仓库建议，请人工确认",
         stockErrorDetail: "status=100 message=超过每分钟最大调用频率限制，请稍后重试",
-        status: "库存充足",
+        status: "库存未验证",
         decision: "ship",
         suggestedShipQty: 2,
         approvedShipQty: 2,
@@ -1139,7 +1325,8 @@ describe("App", () => {
     switchToReviewTab();
 
     const row = await rowFor("确定单库存查询失败商品");
-    expect(within(row).getByText("确定单库存查询失败。仅提示，不调整做单数量")).toBeInTheDocument();
+    expect(within(row).getByText("确定单库存查询失败，系统未生成数量和仓库建议，请人工确认")).toBeInTheDocument();
+    expect(within(row).getByText("库存待人工确认")).toBeInTheDocument();
     expect(screen.queryByText(/库存查询详情/)).not.toBeInTheDocument();
     expect(document.body.textContent).not.toContain("超过每分钟最大调用频率限制");
 
@@ -1170,14 +1357,89 @@ describe("App", () => {
     expect(await screen.findByText("确定单校验")).toBeInTheDocument();
     const recheckButton = screen.getByRole("button", { name: "重新校验确定单" });
     fireEvent.click(recheckButton);
+    expect(await screen.findByRole("dialog", { name: "重新校验确定单" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /按最新库存重新分配/ }));
 
     await waitFor(() =>
       expect(fetch).toHaveBeenCalledWith("/api/v1/batches/batch-1/actions/rebuild-confirmed-order", {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ strategy: "replace" }),
       }),
     );
-    expect(await screen.findByText("确定单已重新校验，可以继续做单")).toBeInTheDocument();
-    expect(screen.getByText("确定单已重新校验：1 行，可做单 1 行，待补字段 0 行")).toBeInTheDocument();
+    expect(await screen.findByText("已按最新库存重新分配；请检查结果并重新提交审核")).toBeInTheDocument();
+    expect(screen.getByText("确定单已重新校验：1 行，已匹配 1 行，待补字段 0 行")).toBeInTheDocument();
+  });
+
+  it("shows confirmed-order quantity semantics and non-blocking final-result warnings", async () => {
+    currentBatch = { ...currentBatch, mode: "production_api", sourceType: "confirmed_order", status: "review_generated" };
+    lines = [
+      reviewLine({
+        id: "line-confirmed-quantity-semantics",
+        externalGoodsName: "确定单数量语义商品",
+        orderQty: 10,
+        plannedShipQty: 3,
+        suggestedShipQty: 2,
+        decision: "ship",
+        approvedShipQty: 2,
+        suggestedWarehouseNo: "001",
+        suggestedWarehouseName: "主仓",
+        fulfillmentWarehouseNo: "001",
+        fulfillmentWarehouseName: "主仓",
+        status: "部分满足",
+      }),
+    ];
+    render(<App />);
+    await clickBatch();
+    switchToReviewTab();
+
+    const row = await rowFor("确定单数量语义商品");
+    expect(row.textContent).toContain("订货 10");
+    expect(row.textContent).toContain("发货 3");
+    expect(row.textContent).toContain("系统建议 2");
+    expect(within(row).getByText("最终仓库")).toBeInTheDocument();
+    expect(within(row).getByText("最终发货数量")).toBeInTheDocument();
+
+    fireEvent.change(within(row).getByLabelText("审核发货数 line-confirmed-quantity-semantics"), { target: { value: "4" } });
+    fireEvent.change(within(row).getByLabelText("发货仓库 line-confirmed-quantity-semantics"), { target: { value: "LINQI" } });
+
+    expect(within(row).getByText("超系统建议")).toBeInTheDocument();
+    expect(within(row).getByText("偏离原计划")).toBeInTheDocument();
+    expect(within(row).getByText("非建议仓库")).toBeInTheDocument();
+    expect(within(row).getByText("最终数量超过系统建议，可能存在库存风险。")).toBeInTheDocument();
+    expect(within(row).getByText("最终数量超过确定单发货数量，已偏离原计划。")).toBeInTheDocument();
+  });
+
+  it("confirms unverified stock before submitting manually decided quantities", async () => {
+    currentBatch = { ...currentBatch, mode: "production_api", sourceType: "confirmed_order", status: "review_generated" };
+    lines = [
+      reviewLine({
+        id: "line-confirmed-unverified-submit",
+        externalGoodsName: "人工库存确认商品",
+        status: "库存未验证",
+        stockErrorDetail: "status=100 raw=rate-limited",
+        decision: "ship",
+        approvedShipQty: 2,
+        fulfillmentWarehouseNo: "001",
+        fulfillmentWarehouseName: "主仓",
+      }),
+    ];
+    render(<App />);
+    await clickBatch();
+    switchToReviewTab();
+
+    fireEvent.click(screen.getByRole("button", { name: "提交审核完成" }));
+    const confirmationDialog = await screen.findByRole("alertdialog", { name: "库存尚未完成核验" });
+    expect(within(confirmationDialog).getByText(/有 1 条明细未完成库存校验/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "确认并提交 1 条" }));
+
+    await waitFor(() => expect(currentBatch.status).toBe("reviewed"));
+    expect(fetch).toHaveBeenCalledWith("/api/v1/batches/batch-1/actions/submit-review", expect.objectContaining({
+      body: JSON.stringify({ confirmUnverifiedStock: false }),
+    }));
+    expect(fetch).toHaveBeenCalledWith("/api/v1/batches/batch-1/actions/submit-review", expect.objectContaining({
+      body: JSON.stringify({ confirmUnverifiedStock: true }),
+    }));
   });
 });
 
@@ -1239,6 +1501,15 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
   if (url === "/api/v1/wdt/goods-sync-runs/latest") {
     return latestGoodsSyncRun ? json(latestGoodsSyncRun) : json({ message: "WDT goods sync run not found" }, 404);
   }
+  if (url === "/api/v1/wdt/sync-runs/latest") {
+    combinedSyncStatusReads += 1;
+    return latestCombinedSyncRun ? json(latestCombinedSyncRun) : json({ message: "WDT sync run not found" }, 404);
+  }
+  if (url === "/api/v1/wdt/sync-runs" && method === "POST") {
+    if (!["admin", "operator"].includes(currentUser.role)) return json({ message: "Forbidden" }, 403);
+    latestCombinedSyncRun = combinedSyncRun({ status: "queued", stage: "queued", activeSnapshotRunId: "snapshot-1" });
+    return json({ run: latestCombinedSyncRun, alreadyRunning: false }, 202);
+  }
   if (url === "/api/v1/wdt/goods-sync-runs" && method === "POST") {
     if (!["admin", "operator"].includes(currentUser.role)) return json({ message: "Forbidden" }, 403);
     latestGoodsSyncRun = goodsSyncRun({ startedAt: "2026-07-06T00:00:00.000Z", finishedAt: "2026-07-06T00:02:00.000Z" });
@@ -1281,7 +1552,7 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
       fileName: body.fileName,
       mode: "production_api",
       sourceType: "confirmed_order",
-      status: "reviewed",
+      status: "review_generated",
       orderLineCount: lines.length,
       matchedBarcodeCount: lines.filter((line) => line.matchStatus === "matched").length,
       uniqueBarcodeCount: new Set(lines.map((line) => line.externalBarcode)).size,
@@ -1587,6 +1858,7 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
   }
   if (url.includes("/actions/run-mock-review")) return json({ batch: currentBatch });
   if (url.includes("/actions/rebuild-confirmed-order")) {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { strategy?: "preserve" | "replace" };
     const confirmed = mappingRows.find((mapping) => mapping.status === "confirmed");
     if (confirmed) {
       lines = lines.map((line) =>
@@ -1599,15 +1871,29 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
               wdtMakeOrderCode: confirmed.wdtMakeOrderCode || confirmed.wdtSpecNo,
               matchStatus: "matched",
               matchMessage: confirmedProductMappingMatchMessage,
-              suggestedShipQty: line.orderQty,
+              suggestedShipQty: line.plannedShipQty,
+              suggestedWarehouseNo: "001",
+              suggestedWarehouseName: "主仓",
               status: "库存充足",
               decision: "ship",
-              approvedShipQty: line.orderQty,
+              approvedShipQty: line.plannedShipQty,
+              fulfillmentWarehouseNo: "001",
+              fulfillmentWarehouseName: "主仓",
               reason: "",
             }
           : line,
       );
     }
+    if (body.strategy === "replace") {
+      lines = lines.map((line) => ({
+        ...line,
+        decision: line.plannedShipQty === 0 ? "do_not_ship" : line.suggestedShipQty > 0 ? "ship" : "pending",
+        approvedShipQty: line.plannedShipQty === 0 ? 0 : line.suggestedShipQty,
+        fulfillmentWarehouseNo: line.plannedShipQty === 0 ? "" : line.suggestedWarehouseNo,
+        fulfillmentWarehouseName: line.plannedShipQty === 0 ? "" : line.suggestedWarehouseName,
+      }));
+    }
+    currentBatch = { ...currentBatch, status: "review_generated" };
     return json({
       batch: currentBatch,
       fileName: currentBatch.fileName,
@@ -1648,8 +1934,20 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
     return json({ batch: currentBatch, updatedCount: 2 });
   }
   if (url.includes("/actions/submit-review")) {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { confirmUnverifiedStock?: boolean };
+    const unverifiedStockCount = lines.filter(
+      (line) => line.decision === "ship" && line.approvedShipQty > 0 && Boolean(line.stockErrorDetail?.trim()),
+    ).length;
+    if (unverifiedStockCount > 0 && !body.confirmUnverifiedStock) {
+      return json({
+        requiresConfirmation: true,
+        code: "UNVERIFIED_STOCK",
+        affectedCount: unverifiedStockCount,
+        message: `有 ${unverifiedStockCount} 条明细未完成库存校验，当前结果依赖人工决定`,
+      }, 409);
+    }
     currentBatch = { ...currentBatch, status: "reviewed" };
-    return json({ batch: currentBatch, pendingCount: 1, shipCount: 2, doNotShipCount: 0 });
+    return json({ requiresConfirmation: false, batch: currentBatch, pendingCount: 1, shipCount: 2, doNotShipCount: 0 });
   }
   if (url.endsWith("/exports") && method === "GET") return json(exportRows);
   if (url.endsWith("/exports") && method === "POST") {
@@ -1956,6 +2254,31 @@ function goodsSyncRun(patch: Partial<WdtGoodsSyncRunDto> = {}): WdtGoodsSyncRunD
   };
 }
 
+function combinedSyncRun(patch: Partial<WdtSyncRunDto> = {}): WdtSyncRunDto {
+  return {
+    id: "wdt-sync-1",
+    trigger: "hourly",
+    status: "success",
+    stage: "complete",
+    goodsSyncRunId: "sync-1",
+    totalSpecCount: 3829,
+    processedSpecCount: 3829,
+    totalBatchCount: 96,
+    completedBatchCount: 96,
+    stockRowCount: 5000,
+    startedAt: "2026-07-03T00:00:00.000Z",
+    finishedAt: "2026-07-03T00:02:00.000Z",
+    lastProgressAt: "2026-07-03T00:02:00.000Z",
+    activeSnapshotRunId: "wdt-sync-1",
+    activeSnapshotAt: "2026-07-03T00:02:00.000Z",
+    activeSnapshotTrigger: "hourly",
+    errorCode: "",
+    errorMessage: "",
+    errorDetail: "",
+    ...patch,
+  };
+}
+
 function warehouseUsageSettings(patch: Partial<WarehouseUsageSettingsDto> = {}): WarehouseUsageSettingsDto {
   return {
     includeMainWarehouse: true,
@@ -2024,12 +2347,17 @@ function reviewLine(patch: Partial<ReviewLineDto>): ReviewLineDto {
     matchStatus: "matched",
     matchMessage: "matched",
     orderQty: 5,
+    plannedShipQty: 5,
     mainAvailableBefore: 5,
     nearExpiryAvailableBefore: 0,
     suggestedShipQty: 5,
+    suggestedWarehouseNo: "001",
+    suggestedWarehouseName: "主仓",
     status: "库存充足",
     decision: "pending",
     approvedShipQty: 0,
+    fulfillmentWarehouseNo: "",
+    fulfillmentWarehouseName: "",
     reason: "",
     priority: false,
     priorityReason: "",

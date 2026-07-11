@@ -7,6 +7,8 @@ import {
   ConfirmProductMappingRequestSchema,
   CreateWdtGoodsSyncRunRequestSchema,
   LoginRequestSchema,
+  RebuildConfirmedOrderRequestSchema,
+  SubmitReviewRequestSchema,
   UpdateProductMappingStatusRequestSchema,
   ReviewDecisionDtoSchema,
   UpdateReviewLinePriorityRequestSchema,
@@ -37,6 +39,8 @@ import {
   type WarehouseUsageSettingsDto,
   type WdtGoodsSpecSearchResultDto,
   type WdtGoodsSyncRunDto,
+  type WdtSyncRunDto,
+  type StartWdtSyncResponseDto,
 } from "@jy-trade/shared";
 import { readFile, writeFile } from "node:fs/promises";
 import { extname, join } from "node:path";
@@ -58,6 +62,7 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
 
   void app.register(cors, { origin: true });
   app.addHook("onClose", async () => store.close());
+  app.addHook("onReady", async () => store.startAutoSyncScheduler());
   app.addHook("onRequest", async (request) => {
     const sessionId = readSessionId(request.headers.cookie);
     if (sessionId) {
@@ -181,7 +186,8 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   app.post("/api/v1/batches/:batchId/actions/rebuild-confirmed-order", async (request, reply): Promise<ImportConfirmedOrderResponse | unknown> => {
     requireRole(request, ["admin", "operator"]);
     const { batchId } = request.params as { batchId: string };
-    const result = await store.rebuildConfirmedOrder(batchId, getCurrentUser(request));
+    const body = RebuildConfirmedOrderRequestSchema.parse(request.body ?? {});
+    const result = await store.rebuildConfirmedOrder(batchId, body, getCurrentUser(request));
     if (!result) return reply.code(404).send({ message: "Batch not found" });
     return result;
   });
@@ -197,8 +203,10 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   app.post("/api/v1/batches/:batchId/actions/submit-review", async (request, reply) => {
     requireRole(request, ["admin", "reviewer"]);
     const { batchId } = request.params as { batchId: string };
-    const result = await store.submitReview(batchId, getCurrentUser(request));
+    const body = SubmitReviewRequestSchema.parse(request.body ?? {});
+    const result = await store.submitReview(batchId, body, getCurrentUser(request));
     if (!result) return reply.code(404).send({ message: "Batch not found" });
+    if (result.requiresConfirmation) return reply.code(409).send(result);
     return result;
   });
 
@@ -284,6 +292,20 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     const body = CreateWdtGoodsSyncRunRequestSchema.parse(request.body ?? {});
     const run = await store.runWdtGoodsSync(body, getCurrentUser(request));
     return reply.code(201).send(run);
+  });
+
+  app.post("/api/v1/wdt/sync-runs", async (request, reply): Promise<StartWdtSyncResponseDto | unknown> => {
+    requireRole(request, ["admin", "operator"]);
+    const result = await store.startWdtSync("manual", getCurrentUser(request));
+    return reply.code(202).send(result);
+  });
+
+  app.get("/api/v1/wdt/sync-runs", async (): Promise<WdtSyncRunDto[]> => store.listWdtSyncRuns());
+
+  app.get("/api/v1/wdt/sync-runs/latest", async (request, reply): Promise<WdtSyncRunDto | unknown> => {
+    const run = await store.getLatestWdtSyncRun();
+    if (!run) return reply.code(404).send({ message: "WDT sync run not found" });
+    return run;
   });
 
   app.get("/api/v1/wdt/goods-sync-runs", async (): Promise<WdtGoodsSyncRunDto[]> => store.listWdtGoodsSyncRuns());

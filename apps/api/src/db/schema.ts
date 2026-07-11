@@ -30,6 +30,8 @@ export const batches = sqliteTable(
     orderLineCount: integer("order_line_count").notNull().default(0),
     uniqueBarcodeCount: integer("unique_barcode_count").notNull().default(0),
     matchedBarcodeCount: integer("matched_barcode_count").notNull().default(0),
+    stockSnapshotRunId: text("stock_snapshot_run_id").notNull().default(""),
+    stockSnapshotAt: text("stock_snapshot_at").notNull().default(""),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },
@@ -86,12 +88,15 @@ export const reviewLines = sqliteTable(
     matchMessage: text("match_message").notNull().default(""),
     stockErrorDetail: text("stock_error_detail").notNull().default(""),
     orderQty: real("order_qty").notNull(),
+    plannedShipQty: real("planned_ship_qty").notNull().default(0),
     mainAvailableBefore: real("main_available_before").notNull().default(0),
     nearExpiryAvailableBefore: real("near_expiry_available_before").notNull().default(0),
     suggestedShipQty: real("suggested_ship_qty").notNull(),
+    suggestedWarehouseNo: text("suggested_warehouse_no").notNull().default(""),
+    suggestedWarehouseName: text("suggested_warehouse_name").notNull().default(""),
     priority: integer("priority").notNull().default(0),
     priorityReason: text("priority_reason").notNull().default(""),
-    status: text("status", { enum: ["库存充足", "部分满足", "库存不足", "未匹配"] }).notNull(),
+    status: text("status", { enum: ["库存充足", "部分满足", "库存不足", "库存未验证", "未匹配"] }).notNull(),
   },
   (table) => [
     index("review_lines_batch_id_idx").on(table.batchId),
@@ -108,6 +113,8 @@ export const reviewDecisions = sqliteTable(
     reviewerId: text("reviewer_id"),
     decision: text("decision", { enum: ["pending", "ship", "do_not_ship"] }).notNull(),
     approvedShipQty: real("approved_ship_qty").notNull(),
+    fulfillmentWarehouseNo: text("fulfillment_warehouse_no").notNull().default(""),
+    fulfillmentWarehouseName: text("fulfillment_warehouse_name").notNull().default(""),
     reason: text("reason").notNull().default(""),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
@@ -234,6 +241,60 @@ export const wdtGoodsSyncRuns = sqliteTable(
   (table) => [
     index("wdt_goods_sync_runs_started_at_idx").on(table.startedAt),
     index("wdt_goods_sync_runs_status_idx").on(table.status),
+  ],
+);
+
+export const wdtSyncRuns = sqliteTable(
+  "wdt_sync_runs",
+  {
+    id: text("id").primaryKey(),
+    trigger: text("trigger", { enum: ["manual", "hourly", "startup"] }).notNull(),
+    status: text("status", { enum: ["queued", "running", "success", "failed"] }).notNull(),
+    stage: text("stage", { enum: ["queued", "goods", "prepare_stock", "stock", "activate", "complete"] }).notNull(),
+    goodsSyncRunId: text("goods_sync_run_id").notNull().default(""),
+    totalSpecCount: integer("total_spec_count").notNull().default(0),
+    processedSpecCount: integer("processed_spec_count").notNull().default(0),
+    totalBatchCount: integer("total_batch_count").notNull().default(0),
+    completedBatchCount: integer("completed_batch_count").notNull().default(0),
+    stockRowCount: integer("stock_row_count").notNull().default(0),
+    startedAt: text("started_at").notNull(),
+    finishedAt: text("finished_at").notNull().default(""),
+    lastProgressAt: text("last_progress_at").notNull(),
+    errorCode: text("error_code").notNull().default(""),
+    errorMessage: text("error_message").notNull().default(""),
+    errorDetail: text("error_detail").notNull().default(""),
+  },
+  (table) => [index("wdt_sync_runs_status_idx").on(table.status), index("wdt_sync_runs_started_at_idx").on(table.startedAt)],
+);
+
+export const wdtStockSnapshotSpecs = sqliteTable(
+  "wdt_stock_snapshot_specs",
+  {
+    syncRunId: text("sync_run_id").notNull(),
+    specNo: text("spec_no").notNull(),
+    syncedAt: text("synced_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("wdt_stock_snapshot_specs_run_spec_unique").on(table.syncRunId, table.specNo),
+    index("wdt_stock_snapshot_specs_spec_idx").on(table.specNo),
+  ],
+);
+
+export const wdtStockSnapshotRows = sqliteTable(
+  "wdt_stock_snapshot_rows",
+  {
+    id: text("id").primaryKey(),
+    syncRunId: text("sync_run_id").notNull(),
+    specNo: text("spec_no").notNull(),
+    warehouseNo: text("warehouse_no").notNull().default(""),
+    warehouseName: text("warehouse_name").notNull().default(""),
+    availableSendStock: real("available_send_stock").notNull().default(0),
+    rawJson: text("raw_json").notNull().default("{}"),
+    syncedAt: text("synced_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("wdt_stock_snapshot_rows_identity_unique").on(table.syncRunId, table.specNo, table.warehouseNo, table.warehouseName),
+    index("wdt_stock_snapshot_rows_run_spec_idx").on(table.syncRunId, table.specNo),
   ],
 );
 

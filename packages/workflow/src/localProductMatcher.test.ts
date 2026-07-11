@@ -1,9 +1,23 @@
 import { describe, expect, it } from "vitest";
 import { confirmedProductMappingMatchMessage } from "@jy-trade/shared";
 
-import { decideLocalProductMatch } from "./localProductMatcher.js";
+import { createLocalProductMatcher, decideLocalProductMatch } from "./localProductMatcher.js";
 
 describe("local product matcher", () => {
+  it("reuses prepared candidates and decisions within one batch", () => {
+    const matcher = createLocalProductMatcher({
+      mappings: [],
+      goodsSpecs: [{ specNo: "S1", goodsName: "测试商品", barcode: "barcode-1" }],
+    });
+    const input = { barcode: "barcode-1", goodsName: "测试商品" };
+
+    const first = matcher(input);
+    const second = matcher({ ...input });
+
+    expect(first).toBe(second);
+    expect(second.candidate?.specNo).toBe("S1");
+  });
+
   it("uses automatic WDT candidates before confirmed mappings", () => {
     const result = decideLocalProductMatch(
       { barcode: "external-1", goodsName: "外部商品" },

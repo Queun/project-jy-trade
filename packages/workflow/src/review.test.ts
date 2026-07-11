@@ -47,7 +47,7 @@ function orderLine(barcode: string, qty: number, row: number): OrderLine {
 }
 
 describe("buildReviewLines", () => {
-  it("allocates repeated barcode stock in order", () => {
+  it("allocates repeated barcode stock in order without splitting a line across warehouses", () => {
     const lines = buildReviewLines(
       [orderLine("A", 6, 1), orderLine("A", 6, 2), orderLine("A", 6, 3)],
       new Map([
@@ -63,8 +63,13 @@ describe("buildReviewLines", () => {
       ]),
     );
 
-    expect(lines.map((line) => line.status)).toEqual(["库存充足", "库存充足", "库存不足"]);
-    expect(lines.map((line) => line.suggestedShipQty)).toEqual([6, 6, 0]);
+    expect(lines.map((line) => line.status)).toEqual(["库存充足", "部分满足", "部分满足"]);
+    expect(lines.map((line) => line.suggestedShipQty)).toEqual([6, 4, 2]);
+    expect(lines.map((line) => [line.suggestedMainQty, line.suggestedNearExpiryQty])).toEqual([
+      [6, 0],
+      [4, 0],
+      [0, 2],
+    ]);
   });
 
   it("marks unmatched rows as not matched", () => {

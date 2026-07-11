@@ -47,13 +47,38 @@ export interface LocalProductMatchSources {
 }
 
 export function decideLocalProductMatch(input: ProductMatchInput, sources: LocalProductMatchSources): ProductMatchDecision {
-  const goodsDecision = decideProductMatch(input, sources.goodsSpecs.filter((spec) => spec.deleted !== 1).map(toProductCandidate));
+  return createLocalProductMatcher(sources)(input);
+}
+
+export function createLocalProductMatcher(sources: LocalProductMatchSources): (input: ProductMatchInput) => ProductMatchDecision {
+  const goodsCandidates = sources.goodsSpecs.filter((spec) => spec.deleted !== 1).map(toProductCandidate);
+  const suiteCandidates = (sources.suites ?? []).filter((suite) => suite.deleted !== 1).map(toSuiteProductCandidate);
+  const cache = new Map<string, ProductMatchDecision>();
+
+  return (input) => {
+    const cacheKey = JSON.stringify([input.barcode ?? "", input.goodsCode ?? "", input.goodsName ?? "", input.specName ?? ""]);
+    const cached = cache.get(cacheKey);
+    if (cached) return cached;
+
+    const decision = decidePreparedLocalProductMatch(input, sources.mappings, goodsCandidates, suiteCandidates);
+    cache.set(cacheKey, decision);
+    return decision;
+  };
+}
+
+function decidePreparedLocalProductMatch(
+  input: ProductMatchInput,
+  mappings: ProductMappingCandidate[],
+  goodsCandidates: ProductCandidate[],
+  suiteCandidates: ProductCandidate[],
+): ProductMatchDecision {
+  const goodsDecision = decideProductMatch(input, goodsCandidates);
   if (isAutomaticCodeDecision(goodsDecision)) return goodsDecision;
 
-  const suiteDecision = decideProductMatch(input, (sources.suites ?? []).filter((suite) => suite.deleted !== 1).map(toSuiteProductCandidate));
+  const suiteDecision = decideProductMatch(input, suiteCandidates);
   if (isAutomaticCodeDecision(suiteDecision)) return suiteDecision;
 
-  const mapping = findConfirmedMapping(input, sources.mappings);
+  const mapping = findConfirmedMapping(input, mappings);
   if (mapping) {
     return {
       status: "matched",

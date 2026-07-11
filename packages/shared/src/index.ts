@@ -22,7 +22,7 @@ export function isConfirmedProductMappingMatch(message: string) {
   return message.split("；").map((part) => part.trim()).includes(confirmedProductMappingMatchMessage);
 }
 
-export const ReviewStatusSchema = z.enum(["库存充足", "部分满足", "库存不足", "未匹配"]);
+export const ReviewStatusSchema = z.enum(["库存充足", "部分满足", "库存不足", "库存未验证", "未匹配"]);
 export type ReviewStatus = z.infer<typeof ReviewStatusSchema>;
 
 export const ReviewDecisionSchema = z.enum(["pending", "ship", "do_not_ship"]);
@@ -64,6 +64,8 @@ export const BatchSummarySchema = z.object({
   orderLineCount: z.number(),
   uniqueBarcodeCount: z.number(),
   matchedBarcodeCount: z.number(),
+  stockSnapshotRunId: z.string().default(""),
+  stockSnapshotAt: z.string().default(""),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -116,12 +118,17 @@ export const ReviewLineDtoSchema = z.object({
   matchMessage: z.string(),
   stockErrorDetail: z.string().optional(),
   orderQty: z.number(),
+  plannedShipQty: z.number(),
   mainAvailableBefore: z.number(),
   nearExpiryAvailableBefore: z.number(),
   suggestedShipQty: z.number(),
+  suggestedWarehouseNo: z.string(),
+  suggestedWarehouseName: z.string(),
   status: ReviewStatusSchema,
   decision: ReviewDecisionSchema,
   approvedShipQty: z.number(),
+  fulfillmentWarehouseNo: z.string(),
+  fulfillmentWarehouseName: z.string(),
   reason: z.string(),
   priority: z.boolean(),
   priorityReason: z.string(),
@@ -130,7 +137,9 @@ export type ReviewLineDto = z.infer<typeof ReviewLineDtoSchema>;
 
 export const ReviewDecisionDtoSchema = z.object({
   decision: ReviewDecisionSchema,
-  approvedShipQty: z.number().min(0),
+  approvedShipQty: z.number().int().min(0),
+  fulfillmentWarehouseNo: z.string().default(""),
+  fulfillmentWarehouseName: z.string().default(""),
   reason: z.string().max(500).default(""),
 });
 export type ReviewDecisionDto = z.infer<typeof ReviewDecisionDtoSchema>;
@@ -168,12 +177,23 @@ export const MissingMakeOrderStoreDtoSchema = z.object({
 });
 export type MissingMakeOrderStoreDto = z.infer<typeof MissingMakeOrderStoreDtoSchema>;
 
+export const MissingMakeOrderWarehouseDtoSchema = z.object({
+  reviewLineId: z.string(),
+  storeNo: z.string(),
+  storeName: z.string(),
+  goodsName: z.string(),
+  orderNoticeNo: z.string(),
+});
+export type MissingMakeOrderWarehouseDto = z.infer<typeof MissingMakeOrderWarehouseDtoSchema>;
+
 export const MakeOrderReadinessDtoSchema = z.object({
   batchId: z.string(),
   canExport: z.boolean(),
   shippableLineCount: z.number(),
   missingAddressCount: z.number(),
   missingStores: z.array(MissingMakeOrderStoreDtoSchema),
+  missingWarehouseCount: z.number(),
+  missingWarehouseLines: z.array(MissingMakeOrderWarehouseDtoSchema),
 });
 export type MakeOrderReadinessDto = z.infer<typeof MakeOrderReadinessDtoSchema>;
 
@@ -309,6 +329,11 @@ export const ImportConfirmedOrderRequestSchema = z.object({
 });
 export type ImportConfirmedOrderRequest = z.infer<typeof ImportConfirmedOrderRequestSchema>;
 
+export const RebuildConfirmedOrderRequestSchema = z.object({
+  strategy: z.enum(["preserve", "replace"]).default("preserve"),
+});
+export type RebuildConfirmedOrderRequest = z.infer<typeof RebuildConfirmedOrderRequestSchema>;
+
 export const ImportConfirmedOrderResponseSchema = z.object({
   batch: BatchSummarySchema,
   fileName: z.string(),
@@ -346,12 +371,27 @@ export const BulkApproveResponseDtoSchema = z.object({
 export type BulkApproveResponseDto = z.infer<typeof BulkApproveResponseDtoSchema>;
 
 export const SubmitReviewResponseDtoSchema = z.object({
+  requiresConfirmation: z.literal(false).default(false),
   batch: BatchSummarySchema,
   pendingCount: z.number(),
   shipCount: z.number(),
   doNotShipCount: z.number(),
 });
 export type SubmitReviewResponseDto = z.infer<typeof SubmitReviewResponseDtoSchema>;
+
+export const SubmitReviewRequestSchema = z.object({
+  confirmUnverifiedStock: z.boolean().default(false),
+});
+export type SubmitReviewRequest = z.infer<typeof SubmitReviewRequestSchema>;
+
+export const SubmitReviewWarningDtoSchema = z.object({
+  requiresConfirmation: z.literal(true),
+  code: z.literal("UNVERIFIED_STOCK"),
+  affectedCount: z.number().int().positive(),
+  message: z.string(),
+});
+export type SubmitReviewWarningDto = z.infer<typeof SubmitReviewWarningDtoSchema>;
+export type SubmitReviewResultDto = SubmitReviewResponseDto | SubmitReviewWarningDto;
 
 export const WdtGoodsSyncModeSchema = z.enum(["full", "incremental"]);
 export type WdtGoodsSyncMode = z.infer<typeof WdtGoodsSyncModeSchema>;
@@ -384,6 +424,38 @@ export const WdtGoodsSyncRunDtoSchema = z.object({
   errorMessage: z.string(),
 });
 export type WdtGoodsSyncRunDto = z.infer<typeof WdtGoodsSyncRunDtoSchema>;
+
+export const WdtSyncTriggerSchema = z.enum(["manual", "hourly", "startup"]);
+export const WdtSyncStatusSchema = z.enum(["queued", "running", "success", "failed"]);
+export const WdtSyncStageSchema = z.enum(["queued", "goods", "prepare_stock", "stock", "activate", "complete"]);
+export const WdtSyncRunDtoSchema = z.object({
+  id: z.string(),
+  trigger: WdtSyncTriggerSchema,
+  status: WdtSyncStatusSchema,
+  stage: WdtSyncStageSchema,
+  goodsSyncRunId: z.string(),
+  totalSpecCount: z.number(),
+  processedSpecCount: z.number(),
+  totalBatchCount: z.number(),
+  completedBatchCount: z.number(),
+  stockRowCount: z.number(),
+  startedAt: z.string(),
+  finishedAt: z.string(),
+  lastProgressAt: z.string(),
+  activeSnapshotRunId: z.string(),
+  activeSnapshotAt: z.string(),
+  activeSnapshotTrigger: z.union([WdtSyncTriggerSchema, z.literal("")]),
+  errorCode: z.string(),
+  errorMessage: z.string(),
+  errorDetail: z.string().optional(),
+});
+export type WdtSyncRunDto = z.infer<typeof WdtSyncRunDtoSchema>;
+
+export const StartWdtSyncResponseDtoSchema = z.object({
+  run: WdtSyncRunDtoSchema,
+  alreadyRunning: z.boolean(),
+});
+export type StartWdtSyncResponseDto = z.infer<typeof StartWdtSyncResponseDtoSchema>;
 
 export const WdtStockAvailabilityRowDtoSchema = z.object({
   warehouseNo: z.string(),

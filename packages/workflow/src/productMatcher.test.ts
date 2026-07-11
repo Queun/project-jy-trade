@@ -21,6 +21,27 @@ describe("product matcher", () => {
     expect(result.candidate?.specNo).toBe("A11010212");
   });
 
+  it("returns an exact barcode match without scoring unrelated product names", () => {
+    const unrelated = {
+      source: "goods" as const,
+      specNo: "OTHER",
+      barcodes: ["other"],
+      get goodsName(): string {
+        throw new Error("unrelated product name should not be scored");
+      },
+    };
+    const result = decideProductMatch(
+      { barcode: "EXACT", goodsName: "测试商品" },
+      [
+        { source: "goods", specNo: "EXACT", goodsName: "测试商品", barcodes: ["EXACT"] },
+        unrelated,
+      ],
+    );
+
+    expect(result.status).toBe("matched");
+    expect(result.candidate?.specNo).toBe("EXACT");
+  });
+
   it("keeps duplicate barcode candidates ambiguous", () => {
     const result = decideProductMatch(
       { barcode: "test001", goodsName: "测试物品001" },

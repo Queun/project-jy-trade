@@ -9,9 +9,13 @@ import type {
   ProductMappingDto,
   ReviewDecision,
   ReviewLineDto,
+  SubmitReviewResultDto,
+  SubmitReviewWarningDto,
   UpdateBatchStoreFieldsResponse,
   WarehouseUsageSettingsDto,
   WdtGoodsSyncRunDto,
+  WdtSyncRunDto,
+  StartWdtSyncResponseDto,
 } from "@jy-trade/shared";
 import { isConfirmedProductMappingMatch } from "@jy-trade/shared";
 
@@ -27,11 +31,19 @@ const defaultMockFile = "examples/mock_flow_data.json";
 const helpDismissedStorageKey = "jy-trade-help-dismissed-v1";
 
 type WorkTab = "import" | "review" | "export" | "addresses" | "external-products";
+type ConfirmedOrderRebuildStrategy = "preserve" | "replace";
+
+interface ConfirmedOrderRebuildPrompt {
+  batch: BatchSummary;
+  mappingLabel?: string;
+}
+
 type FilterKey =
   | "all"
   | "ready"
   | "partial"
   | "blocked"
+  | "unverified"
   | "unmatched"
   | "pending"
   | "ship"
@@ -56,8 +68,11 @@ const orderFilters: Array<{ key: FilterKey; label: string }> = [
 
 const confirmedOrderFilters: Array<{ key: FilterKey; label: string }> = [
   { key: "all", label: "全部" },
-  { key: "ready", label: "可做单" },
-  { key: "unmatched", label: "待补字段" },
+  { key: "ready", label: "全部发货" },
+  { key: "partial", label: "部分发货" },
+  { key: "blocked", label: "货品不足" },
+  { key: "unverified", label: "库存未验证" },
+  { key: "unmatched", label: "商品异常" },
   { key: "pending", label: "待处理" },
   { key: "ship", label: "已做单" },
   { key: "do_not_ship", label: "不做单" },
@@ -80,7 +95,7 @@ export function App() {
   const [user, setUser] = useState<AuthUserDto | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [loginName, setLoginName] = useState("admin");
-  const [loginPassword, setLoginPassword] = useState("jymy");
+  const [loginPassword, setLoginPassword] = useState("yjmy");
   const [loginError, setLoginError] = useState("");
   const [batches, setBatches] = useState<BatchSummary[]>([]);
   const [activeBatch, setActiveBatch] = useState<BatchSummary | null>(null);
@@ -96,6 +111,7 @@ export function App() {
   const [draftById, setDraftById] = useState<Record<string, ReviewDraft>>({});
   const [errorsById, setErrorsById] = useState<Record<string, string>>({});
   const [goodsSyncRun, setGoodsSyncRun] = useState<WdtGoodsSyncRunDto | null>(null);
+  const [combinedSyncRun, setCombinedSyncRun] = useState<WdtSyncRunDto | null>(null);
   const [goodsSyncError, setGoodsSyncError] = useState("正在读取商品同步状态");
   const [goodsSyncMessage, setGoodsSyncMessage] = useState("");
   const [goodsSyncing, setGoodsSyncing] = useState(false);
@@ -109,6 +125,10 @@ export function App() {
   const [mappingFocusProduct, setMappingFocusProduct] = useState<ProductMappingFocusProduct | null>(null);
   const [mappingDialogOpen, setMappingDialogOpen] = useState(false);
   const [recheckingConfirmedOrder, setRecheckingConfirmedOrder] = useState(false);
+  const [confirmedOrderRebuildPrompt, setConfirmedOrderRebuildPrompt] = useState<ConfirmedOrderRebuildPrompt | null>(null);
+  const [unverifiedStockWarning, setUnverifiedStockWarning] = useState<SubmitReviewWarningDto | null>(null);
+  const [savingDecisionIds, setSavingDecisionIds] = useState<Set<string>>(() => new Set());
+  const [submittingReview, setSubmittingReview] = useState(false);
   const [addressFocus] = useState<{
     store: MakeOrderReadinessDto["missingStores"][number];
     requestId: number;
@@ -143,20 +163,28 @@ export function App() {
   }
 
   async function refreshGoodsSyncStatus() {
+    const combinedResponse = await fetch("/api/v1/wdt/sync-runs/latest");
+    if (combinedResponse.ok) {
+      setCombinedSyncRun((await combinedResponse.json()) as WdtSyncRunDto);
+      setGoodsSyncError("");
+    } else if (combinedResponse.status === 404) {
+      setCombinedSyncRun(null);
+      setGoodsSyncError("尚无成功库存快照");
+    } else {
+      setCombinedSyncRun(null);
+      setGoodsSyncError("商品与库存同步状态读取失败");
+    }
     const response = await fetch("/api/v1/wdt/goods-sync-runs/latest");
     if (response.status === 404) {
       setGoodsSyncRun(null);
-      setGoodsSyncError("还没有可用的商品档案同步记录");
       return null;
     }
     if (!response.ok) {
       setGoodsSyncRun(null);
-      setGoodsSyncError("商品档案同步状态读取失败");
       return null;
     }
     const run = (await response.json()) as WdtGoodsSyncRunDto;
     setGoodsSyncRun(run);
-    setGoodsSyncError("");
     return run;
   }
 
@@ -175,23 +203,21 @@ export function App() {
 
   async function runGoodsSync() {
     setGoodsSyncing(true);
-    setGoodsSyncMessage("正在同步商品档案...");
-    const response = await fetch("/api/v1/wdt/goods-sync-runs", {
+    setGoodsSyncMessage("正在启动商品与库存后台同步...");
+    const response = await fetch("/api/v1/wdt/sync-runs", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: "incremental" }),
     });
     if (!response.ok) {
       const error = await response.json();
-      setGoodsSyncMessage(error.message ?? "商品档案同步失败");
+      setGoodsSyncMessage(error.message ?? "商品与库存同步启动失败");
       setGoodsSyncing(false);
       return;
     }
-    const run = (await response.json()) as WdtGoodsSyncRunDto;
-    setGoodsSyncRun(run);
+    const result = (await response.json()) as StartWdtSyncResponseDto;
+    setCombinedSyncRun(result.run);
     setGoodsSyncError("");
-    setGoodsSyncMessage(run.status === "success" ? "商品档案同步完成" : "商品档案同步已提交");
-    setGoodsSyncing(false);
+    setGoodsSyncMessage(result.alreadyRunning ? "已有同步任务正在运行" : "同步任务已进入后台队列");
+    setGoodsSyncing(result.run.status === "queued" || result.run.status === "running");
   }
 
   async function checkMe() {
@@ -232,7 +258,8 @@ export function App() {
     setExports([]);
     setMakeOrderReadiness(null);
     setGoodsSyncRun(null);
-    setGoodsSyncError("正在读取商品同步状态");
+    setCombinedSyncRun(null);
+    setGoodsSyncError("正在读取商品与库存同步状态");
     setGoodsSyncMessage("");
     setGoodsSyncing(false);
     setWarehouseSettings(null);
@@ -429,7 +456,7 @@ export function App() {
     setPendingOrderUpload(null);
     setSelectedOrderFileName("");
     setActiveBatch(result.batch);
-    setActiveTab(result.unmatchedRowCount > 0 ? "review" : "export");
+    setActiveTab("review");
     const lines = await fetchReviewLines(result.batch.id);
     if (!lines) return;
     setReviewLines(sortReviewLines(lines));
@@ -438,13 +465,14 @@ export function App() {
     await refreshExports(result.batch.id);
     await refreshMakeOrderReadiness(result.batch.id);
     await refreshBatches();
-    setMessage(`确定单已导入：${result.parsedRowCount} 行，可做单 ${result.matchedRowCount} 行，待补字段 ${result.unmatchedRowCount} 行`);
-    setSuccessNotice(result.unmatchedRowCount > 0 ? "确定单导入成功，请先处理做单字段提醒" : "确定单导入成功，可以直接进入做单");
+    setMessage(`确定单已导入：${result.parsedRowCount} 行，已匹配 ${result.matchedRowCount} 行，待补字段 ${result.unmatchedRowCount} 行`);
+    setSuccessNotice("确定单导入成功，请确认系统建议并提交审核");
   }
 
   async function recheckConfirmedOrderBatch(
     batch: BatchSummary | null,
-    options: { userTriggered?: boolean; successMessage?: string } = {},
+    strategy: ConfirmedOrderRebuildStrategy,
+    options: { userTriggered?: boolean; mappingLabel?: string } = {},
   ): Promise<ImportConfirmedOrderResponse | null> {
     if (!batch) {
       setMessage("请先选择一个确定单批次");
@@ -458,7 +486,11 @@ export function App() {
     setRecheckingConfirmedOrder(true);
     setMessage(options.userTriggered ? "正在重新校验确定单..." : "正在重新校验当前确定单...");
     try {
-      const rebuildResponse = await fetch(`/api/v1/batches/${batch.id}/actions/rebuild-confirmed-order`, { method: "POST" });
+      const rebuildResponse = await fetch(`/api/v1/batches/${batch.id}/actions/rebuild-confirmed-order`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ strategy }),
+      });
       if (!rebuildResponse.ok) {
         const error = await rebuildResponse.json();
         setMessage(error.message ?? "确定单重新校验失败");
@@ -474,9 +506,13 @@ export function App() {
       await refreshExports(rebuild.batch.id);
       await refreshMakeOrderReadiness(rebuild.batch.id);
       await refreshBatches();
-      const summary = `确定单已重新校验：${rebuild.parsedRowCount} 行，可做单 ${rebuild.matchedRowCount} 行，待补字段 ${rebuild.unmatchedRowCount} 行`;
-      setMessage(options.successMessage ?? summary);
-      setSuccessNotice(rebuild.unmatchedRowCount > 0 ? "确定单已重新校验，请处理做单字段提醒" : "确定单已重新校验，可以继续做单");
+      const summary = `确定单已重新校验：${rebuild.parsedRowCount} 行，已匹配 ${rebuild.matchedRowCount} 行，待补字段 ${rebuild.unmatchedRowCount} 行`;
+      setMessage(options.mappingLabel ? `长期商品映射已保存并应用：${options.mappingLabel}` : summary);
+      setSuccessNotice(
+        strategy === "preserve"
+          ? "系统建议已刷新，当前审核结果已保留；请重新提交审核"
+          : "已按最新库存重新分配；请检查结果并重新提交审核",
+      );
       return rebuild;
     } finally {
       setRecheckingConfirmedOrder(false);
@@ -489,10 +525,13 @@ export function App() {
       return;
     }
     if (activeBatch.sourceType === "confirmed_order") {
-      const rebuild = await recheckConfirmedOrderBatch(activeBatch, {
-        successMessage: `长期商品映射已保存，当前确定单已重新校验：${mapping.externalBarcode || mapping.externalGoodsCode || mapping.externalGoodsName}`,
+      const mappingLabel = mapping.externalBarcode || mapping.externalGoodsCode || mapping.externalGoodsName;
+      setMappingDialogOpen(false);
+      setConfirmedOrderRebuildPrompt({
+        batch: activeBatch,
+        mappingLabel,
       });
-      if (rebuild?.unmatchedRowCount === 0) setSuccessNotice("映射已应用到当前确定单");
+      setMessage("长期商品映射已保存，请选择如何重新校验当前确定单");
       return;
     }
     if (activeBatch.mode !== "production_api") {
@@ -567,37 +606,60 @@ export function App() {
       return;
     }
 
-    const response = await fetch(`/api/v1/batches/${line.batchId}/review-lines/${line.id}/decision`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        decision: draft.decision,
-        approvedShipQty,
-        reason: draft.reason.trim(),
-      }),
-    });
-    if (!response.ok) {
-      const error = await response.json();
-      setErrorsById((current) => ({ ...current, [line.id]: error.message ?? "保存失败" }));
-      return;
+    setSavingDecisionIds((current) => new Set(current).add(line.id));
+    try {
+      const response = await fetch(`/api/v1/batches/${line.batchId}/review-lines/${line.id}/decision`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          decision: draft.decision,
+          approvedShipQty,
+          fulfillmentWarehouseNo: draft.fulfillmentWarehouseNo,
+          fulfillmentWarehouseName: draft.fulfillmentWarehouseName,
+          reason: draft.reason.trim(),
+        }),
+      });
+      if (!response.ok) {
+        const error = await response.json();
+        setErrorsById((current) => ({ ...current, [line.id]: error.message ?? "保存失败" }));
+        return;
+      }
+      const updated = (await response.json()) as ReviewLineDto;
+      setReviewLines((current) => sortReviewLines(current.map((item) => (item.id === updated.id ? updated : item))));
+      setDraftById((current) => ({ ...current, [updated.id]: toDraft(updated) }));
+      setErrorsById((current) => {
+        const next = { ...current };
+        delete next[updated.id];
+        return next;
+      });
+      if (!options.silent) setMessage("审核决定已保存");
+      await refreshMakeOrderReadiness(line.batchId);
+    } finally {
+      setSavingDecisionIds((current) => {
+        const next = new Set(current);
+        next.delete(line.id);
+        return next;
+      });
     }
-    const updated = (await response.json()) as ReviewLineDto;
-    setReviewLines((current) => sortReviewLines(current.map((item) => (item.id === updated.id ? updated : item))));
-    setDraftById((current) => ({ ...current, [updated.id]: toDraft(updated) }));
-    setErrorsById((current) => {
-      const next = { ...current };
-      delete next[updated.id];
-      return next;
-    });
-    if (!options.silent) setMessage("审核决定已保存");
-    await refreshMakeOrderReadiness(line.batchId);
   }
 
   async function quickDecision(line: ReviewLineDto, decision: ReviewDecision) {
     const nextDraft: ReviewDraft =
       decision === "ship"
-        ? { decision, approvedShipQty: String(line.suggestedShipQty), reason: draftById[line.id]?.reason ?? "" }
-        : { decision, approvedShipQty: "0", reason: draftById[line.id]?.reason ?? "" };
+        ? {
+            decision,
+            approvedShipQty: String(line.suggestedShipQty),
+            fulfillmentWarehouseNo: draftById[line.id]?.fulfillmentWarehouseNo || line.suggestedWarehouseNo,
+            fulfillmentWarehouseName: draftById[line.id]?.fulfillmentWarehouseName || line.suggestedWarehouseName,
+            reason: draftById[line.id]?.reason ?? "",
+          }
+        : {
+            decision,
+            approvedShipQty: "0",
+            fulfillmentWarehouseNo: "",
+            fulfillmentWarehouseName: "",
+            reason: draftById[line.id]?.reason ?? "",
+          };
     setDraftById((current) => ({ ...current, [line.id]: nextDraft }));
     await saveDecision(line, nextDraft);
   }
@@ -662,19 +724,52 @@ export function App() {
     setMessage(`已批量通过 ${result.updatedCount} 行`);
   }
 
-  async function submitReview() {
+  async function submitReview(confirmUnverifiedStock = false) {
     if (!activeBatch) return;
-    const response = await fetch(`/api/v1/batches/${activeBatch.id}/actions/submit-review`, { method: "POST" });
-    if (!response.ok) {
-      setMessage("提交审核失败");
+    if (recheckingConfirmedOrder) {
+      setMessage("当前批次仍在重新校验，请稍候再提交审核");
       return;
     }
-    const result = await response.json();
-    setActiveBatch(result.batch);
-    await refreshMakeOrderReadiness(result.batch.id);
-    await refreshBatches();
-    setMessage(`审核已提交：待审核 ${result.pendingCount}，发货 ${result.shipCount}，不发 ${result.doNotShipCount}`);
-    setSuccessNotice("审核完成，当前批次可以进入做单");
+    if (savingDecisionIds.size > 0) {
+      setMessage("还有审核结果正在保存，请稍候再提交");
+      return;
+    }
+    const unsavedCount = reviewLines.filter((line) => reviewDraftIsDirty(line, draftById[line.id])).length;
+    if (unsavedCount > 0) {
+      setMessage(`还有 ${unsavedCount} 条审核修改尚未保存，请先保存后再提交`);
+      return;
+    }
+    if (Object.keys(errorsById).length > 0) {
+      setMessage("仍有审核结果保存失败，请处理行内错误后再提交");
+      return;
+    }
+
+    setSubmittingReview(true);
+    try {
+      const response = await fetch(`/api/v1/batches/${activeBatch.id}/actions/submit-review`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirmUnverifiedStock }),
+      });
+      const result = (await response.json()) as SubmitReviewResultDto | { message?: string };
+      if (response.status === 409 && "requiresConfirmation" in result && result.requiresConfirmation) {
+        setUnverifiedStockWarning(result);
+        setMessage(result.message);
+        return;
+      }
+      if (!response.ok || !("batch" in result)) {
+        setMessage("message" in result ? result.message ?? "提交审核失败" : "提交审核失败");
+        return;
+      }
+      setUnverifiedStockWarning(null);
+      setActiveBatch(result.batch);
+      await refreshMakeOrderReadiness(result.batch.id);
+      await refreshBatches();
+      setMessage(`审核已提交：待审核 ${result.pendingCount}，发货 ${result.shipCount}，不发 ${result.doNotShipCount}`);
+      setSuccessNotice("审核完成，当前批次可以进入做单");
+    } finally {
+      setSubmittingReview(false);
+    }
   }
 
   async function createExport(type: ExportDto["type"]) {
@@ -737,13 +832,35 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    if (combinedSyncRun?.status !== "queued" && combinedSyncRun?.status !== "running") return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      await refreshGoodsSyncStatus();
+      if (!cancelled) timer = window.setTimeout(() => { void poll(); }, 2000);
+    };
+    timer = window.setTimeout(() => { void poll(); }, 2000);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [combinedSyncRun?.status]);
+
+  useEffect(() => {
+    setGoodsSyncing(combinedSyncRun?.status === "queued" || combinedSyncRun?.status === "running");
+  }, [combinedSyncRun?.status]);
+
+  useEffect(() => {
     if (!successNotice) return;
     const timer = window.setTimeout(() => setSuccessNotice(""), 5000);
     return () => window.clearTimeout(timer);
   }, [successNotice]);
 
   const stats = useMemo(() => buildStats(reviewLines), [reviewLines]);
-  const filteredLines = useMemo(() => reviewLines.filter((line) => matchesFilter(line, activeFilter)), [reviewLines, activeFilter]);
+  const filteredLines = useMemo(
+    () => reviewLines.filter((line) => matchesFilter(line, activeFilter, activeBatch?.sourceType === "confirmed_order")),
+    [reviewLines, activeFilter, activeBatch?.sourceType],
+  );
   const permissions = useMemo(() => buildUserPermissions(user), [user]);
 
   if (authLoading) {
@@ -795,7 +912,7 @@ export function App() {
             <p className="text-sm text-muted-foreground">漾锦贸易订单初审平台</p>
             <h1 className="mt-1 text-2xl font-semibold tracking-normal">订单处理工作台</h1>
           </div>
-          <GoodsSyncHeaderStatus error={goodsSyncError} run={goodsSyncRun} />
+          <GoodsSyncHeaderStatus error={goodsSyncError} run={combinedSyncRun} />
           <div className="flex flex-wrap items-center gap-2">
             {activeBatch ? <Badge tone={batchStatusTone(activeBatch.status)}>{batchStatusText(activeBatch)}</Badge> : null}
             <Button className="h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80" onClick={reopenHelp}>
@@ -836,6 +953,8 @@ export function App() {
             goodsSyncing={goodsSyncing}
             goodsSyncMessage={goodsSyncMessage}
             goodsSyncRun={goodsSyncRun}
+            combinedSyncRun={combinedSyncRun}
+            developerMode={developerMode}
             warehouseSettings={warehouseSettings}
             warehouseSettingsDraft={warehouseSettingsDraft}
             warehouseSettingsMessage={warehouseSettingsMessage}
@@ -928,6 +1047,9 @@ export function App() {
                 errorsById={errorsById}
                 filteredLines={filteredLines}
                 isDeveloperMode={developerMode}
+                savingDecisionIds={savingDecisionIds}
+                submittingReview={submittingReview}
+                warehouseSettings={warehouseSettings}
                 canReview={permissions.canReview}
                 stats={stats}
                 onBulkApprove={() => void bulkApprove()}
@@ -937,7 +1059,9 @@ export function App() {
                 onOpenMappingLibrary={openProductMappingLibrary}
                 onPriorityChange={togglePriority}
                 onQuickDecision={quickDecision}
-                onRecheckConfirmedOrder={() => void recheckConfirmedOrderBatch(activeBatch, { userTriggered: true })}
+                onRecheckConfirmedOrder={() => {
+                  if (activeBatch) setConfirmedOrderRebuildPrompt({ batch: activeBatch });
+                }}
                 onSave={saveDecision}
                 onSubmitReview={() => void submitReview()}
                 canRecheckConfirmedOrder={permissions.canImport}
@@ -987,7 +1111,117 @@ export function App() {
         onMessage={setMessage}
         onConfirmed={rerunActiveBatchAfterMapping}
       />
+      <ConfirmedOrderRebuildDialog
+        prompt={confirmedOrderRebuildPrompt}
+        rechecking={recheckingConfirmedOrder}
+        onCancel={() => {
+          if (confirmedOrderRebuildPrompt?.mappingLabel) {
+            setMessage("映射已保存，当前审核尚未重新校验");
+            setSuccessNotice("映射已保存，可稍后手工重新校验确定单");
+          }
+          setConfirmedOrderRebuildPrompt(null);
+        }}
+        onSelect={(strategy) => {
+          const prompt = confirmedOrderRebuildPrompt;
+          if (!prompt) return;
+          setConfirmedOrderRebuildPrompt(null);
+          void recheckConfirmedOrderBatch(prompt.batch, strategy, {
+            userTriggered: !prompt.mappingLabel,
+            mappingLabel: prompt.mappingLabel,
+          });
+        }}
+      />
+      <UnverifiedStockConfirmDialog
+        warning={unverifiedStockWarning}
+        submitting={submittingReview}
+        onCancel={() => setUnverifiedStockWarning(null)}
+        onConfirm={() => {
+          setUnverifiedStockWarning(null);
+          void submitReview(true);
+        }}
+      />
     </main>
+  );
+}
+
+function ConfirmedOrderRebuildDialog({
+  prompt,
+  rechecking,
+  onCancel,
+  onSelect,
+}: {
+  prompt: ConfirmedOrderRebuildPrompt | null;
+  rechecking: boolean;
+  onCancel: () => void;
+  onSelect: (strategy: ConfirmedOrderRebuildStrategy) => void;
+}) {
+  if (!prompt) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4 py-6" role="dialog" aria-modal="true" aria-labelledby="confirmed-order-rebuild-title">
+      <section className="w-full max-w-lg rounded-lg border border-border bg-background p-5 shadow-lg">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-semibold" id="confirmed-order-rebuild-title">重新校验确定单</h2>
+            <p className="mt-1 text-sm leading-6 text-muted-foreground">
+              {prompt.mappingLabel
+                ? "商品映射已经保存。请选择刷新系统建议时，如何处理当前已填写的审核结果。"
+                : "系统将按最新商品映射、库存和仓库设置重新计算建议。重新校验后必须再次提交审核。"}
+            </p>
+          </div>
+          <Button className="h-8 shrink-0 bg-muted px-2 text-muted-foreground hover:bg-muted/80" disabled={rechecking} onClick={onCancel}>
+            <X className="h-4 w-4" />
+            取消
+          </Button>
+        </div>
+        <div className="mt-5 grid gap-3">
+          <button
+            className="rounded-md border border-border bg-card p-4 text-left transition hover:border-primary/40 hover:bg-muted/40 disabled:opacity-50"
+            disabled={rechecking}
+            onClick={() => onSelect("preserve")}
+          >
+            <span className="block text-sm font-semibold">保留当前审核结果</span>
+            <span className="mt-1 block text-sm leading-6 text-muted-foreground">更新匹配、库存、系统建议和建议仓库；保留最终数量、最终仓库与备注。</span>
+          </button>
+          <button
+            className="rounded-md border border-border bg-card p-4 text-left transition hover:border-primary/40 hover:bg-muted/40 disabled:opacity-50"
+            disabled={rechecking}
+            onClick={() => onSelect("replace")}
+          >
+            <span className="block text-sm font-semibold">按最新库存重新分配</span>
+            <span className="mt-1 block text-sm leading-6 text-muted-foreground">用最新系统建议覆盖最终数量和最终仓库；已填写的备注仍会保留。</span>
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function UnverifiedStockConfirmDialog({
+  warning,
+  submitting,
+  onCancel,
+  onConfirm,
+}: {
+  warning: SubmitReviewWarningDto | null;
+  submitting: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  if (!warning) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4 py-6" role="alertdialog" aria-modal="true" aria-labelledby="unverified-stock-title">
+      <section className="w-full max-w-md rounded-lg border border-amber-200 bg-background p-5 shadow-lg">
+        <Badge tone="warn">需要人工确认</Badge>
+        <h2 className="mt-3 text-lg font-semibold" id="unverified-stock-title">库存尚未完成核验</h2>
+        <p className="mt-2 text-sm leading-6 text-muted-foreground">{warning.message}。如果继续，系统会保留人工填写的最终数量和仓库，并允许后续做单。</p>
+        <div className="mt-5 flex flex-wrap justify-end gap-2">
+          <Button className="bg-muted text-muted-foreground hover:bg-muted/80" disabled={submitting} onClick={onCancel}>返回检查</Button>
+          <Button disabled={submitting} onClick={onConfirm}>{submitting ? "提交中..." : `确认并提交 ${warning.affectedCount} 条`}</Button>
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -1110,6 +1344,7 @@ function CurrentBatchPanel({ batch, message, reviewLines }: { batch: BatchSummar
           <MetaItem label="更新时间" value={formatShortDate(batch.updatedAt)} />
           <MetaItem label="订单时间跨度" value={detail.orderTimeRange} />
           <MetaItem label="门店 / 订单" value={`${detail.storeCount} 个门店 / ${detail.orderCount} 个订单`} />
+          <MetaItem label="计算库存快照" value={batch.stockSnapshotAt ? formatShortDate(batch.stockSnapshotAt) : "未使用可验证快照"} />
         </dl>
       ) : null}
     </section>
@@ -1146,6 +1381,8 @@ function SettingsPanel({
   goodsSyncing,
   goodsSyncMessage,
   goodsSyncRun,
+  combinedSyncRun,
+  developerMode,
   warehouseSettings,
   warehouseSettingsDraft,
   warehouseSettingsMessage,
@@ -1160,6 +1397,8 @@ function SettingsPanel({
   goodsSyncing: boolean;
   goodsSyncMessage: string;
   goodsSyncRun: WdtGoodsSyncRunDto | null;
+  combinedSyncRun: WdtSyncRunDto | null;
+  developerMode: boolean;
   warehouseSettings: WarehouseUsageSettingsDto | null;
   warehouseSettingsDraft: WarehouseUsageSettingsDto | null;
   warehouseSettingsMessage: string;
@@ -1198,6 +1437,8 @@ function SettingsPanel({
             error={goodsSyncError}
             message={goodsSyncMessage}
             run={goodsSyncRun}
+            combinedRun={combinedSyncRun}
+            developerMode={developerMode}
             syncing={goodsSyncing}
             onRunSync={onRunGoodsSync}
           />
@@ -1284,7 +1525,7 @@ function ImportTab({
   const realImportHint = !canImport
     ? "当前账号不能导入订单"
     : goodsSyncRun?.status !== "success"
-      ? "商品档案同步成功后才能导入新订单"
+      ? "商品档案可用后才能导入新订单"
       : !selectedOrderFileName && !isDeveloperMode
         ? "请先选择订货单 Excel 文件"
         : "导入原始订货单，系统会先生成初审结果";
@@ -1292,7 +1533,7 @@ function ImportTab({
     ? "当前账号不能导入订单"
     : !selectedOrderFileName
       ? "请先选择确定单 Excel 文件"
-      : "导入已经审核过的确定单，直接进入做单准备";
+      : "导入上游确定单，生成建议后进入审核";
 
   return (
     <section className="mt-4">
@@ -1355,7 +1596,7 @@ function ImportTab({
               <PackageCheck className="h-4 w-4 shrink-0" />
               <span className="grid gap-0.5">
                 <span>导入确定单</span>
-                <span className="text-xs font-normal text-current opacity-75">已审核的单据，直接做单</span>
+                <span className="text-xs font-normal text-current opacity-75">按库存快照生成建议，确认后再做单</span>
               </span>
             </Button>
           </span>
@@ -1370,7 +1611,7 @@ function ImportTab({
           <PermissionHint message="当前账号不能导入订单，请联系管理员或切换到运营账号。" />
         ) : goodsSyncRun?.status !== "success" ? (
           <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
-            商品档案同步可用后才能导入新订单；确定单可先导入，但商品匹配依赖本地已有商品档案和人工映射。
+            本地商品档案可用后才能导入新订单；确定单可先导入，但商品匹配依赖已有商品档案和人工映射。库存建议统一读取本地快照。
           </div>
         ) : !selectedOrderFileName && !isDeveloperMode ? (
           <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
@@ -1389,6 +1630,9 @@ function ReviewTab({
   errorsById,
   filteredLines,
   isDeveloperMode,
+  savingDecisionIds,
+  submittingReview,
+  warehouseSettings,
   canRecheckConfirmedOrder,
   canReview,
   recheckingConfirmedOrder,
@@ -1410,6 +1654,9 @@ function ReviewTab({
   errorsById: Record<string, string>;
   filteredLines: ReviewLineDto[];
   isDeveloperMode: boolean;
+  savingDecisionIds: Set<string>;
+  submittingReview: boolean;
+  warehouseSettings: WarehouseUsageSettingsDto | null;
   canRecheckConfirmedOrder: boolean;
   canReview: boolean;
   recheckingConfirmedOrder: boolean;
@@ -1461,6 +1708,10 @@ function ReviewTab({
                 <RefreshCcw className={recheckingConfirmedOrder ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
                 {recheckingConfirmedOrder ? "校验中..." : "重新校验确定单"}
               </Button>
+              <Button disabled={!activeBatch || !canReview || recheckingConfirmedOrder || submittingReview || savingDecisionIds.size > 0} onClick={onSubmitReview}>
+                <Send className="h-4 w-4" />
+                {submittingReview ? "提交中..." : "提交审核完成"}
+              </Button>
             </div>
           ) : (
             <div className="flex flex-wrap items-center gap-2">
@@ -1481,6 +1732,9 @@ function ReviewTab({
         </div>
         {confirmedOrderMode && !canRecheckConfirmedOrder ? (
           <PermissionHint className="mb-3" message="当前账号不能重新校验确定单，请联系管理员或切换到运营账号。" />
+        ) : null}
+        {confirmedOrderMode && !canReview ? (
+          <PermissionHint className="mb-3" message="当前账号不能提交确定单审核，请联系管理员或切换到审核账号。" />
         ) : !confirmedOrderMode && !canReview ? (
           <PermissionHint className="mb-3" message="当前账号不能审核发货，请联系管理员或切换到审核账号。" />
         ) : null}
@@ -1508,6 +1762,8 @@ function ReviewTab({
                 errorsById={errorsById}
                 rows={filteredLines}
                 readOnly={!canReview}
+                savingDecisionIds={savingDecisionIds}
+                warehouseSettings={warehouseSettings}
                 onDraftChange={onDraftChange}
                 onLocateMapping={onLocateMapping}
                 onPriorityChange={onPriorityChange}
@@ -1559,7 +1815,13 @@ function ExportTab({
   const makeOrderReady = makeOrderReadiness?.canExport === true;
   const canCreateBasicExport = canExport && batchReadyForExport;
   const readinessBadgeTone = !makeOrderReadiness ? "neutral" : makeOrderReadiness.canExport ? "good" : "bad";
-  const readinessBadgeText = !makeOrderReadiness ? "检查中" : makeOrderReadiness.canExport ? "可生成" : "需补地址";
+  const readinessBadgeText = !makeOrderReadiness
+    ? "检查中"
+    : makeOrderReadiness.canExport
+      ? "可生成"
+      : makeOrderReadiness.missingWarehouseCount > 0
+        ? "需选仓库"
+        : "需补地址";
   const exportActions: Array<{ type: ExportDto["type"]; title: string; description: string; disabledReason?: string }> = [
     { type: "review", title: "初审单", description: "导出当前批次的初审明细，便于内部复核。" },
     { type: "confirmed", title: "确定发货单", description: "导出最终确认的发货数量和处理结果。" },
@@ -1567,7 +1829,11 @@ function ExportTab({
       type: "wdt_import",
       title: "做单表格",
       description: "按批量导入模板生成给系统导入的做单 Excel。",
-      disabledReason: makeOrderReady ? undefined : "需先补齐发货地址",
+      disabledReason: makeOrderReady
+        ? undefined
+        : makeOrderReadiness && makeOrderReadiness.missingWarehouseCount > 0
+          ? "需先为所有发货明细选择仓库"
+          : "需先补齐发货地址",
     },
   ];
 
@@ -1630,11 +1896,24 @@ function ExportTab({
             <div>
               <div className="text-sm font-medium">做单预检查</div>
               <div className="mt-1 text-sm text-muted-foreground">
-                可做单 {makeOrderReadiness?.shippableLineCount ?? "-"} 行 / 缺地址 {makeOrderReadiness?.missingAddressCount ?? "-"} 个门店
+                可做单 {makeOrderReadiness?.shippableLineCount ?? "-"} 行 / 未选仓库 {makeOrderReadiness?.missingWarehouseCount ?? "-"} 行 / 缺地址 {makeOrderReadiness?.missingAddressCount ?? "-"} 个门店
               </div>
             </div>
             <Badge tone={readinessBadgeTone}>{readinessBadgeText}</Badge>
           </div>
+          {makeOrderReadiness && makeOrderReadiness.missingWarehouseLines.length > 0 ? (
+            <div className="mt-3 space-y-2">
+              {makeOrderReadiness.missingWarehouseLines.slice(0, 5).map((line) => (
+                <div key={line.reviewLineId} className="flex flex-wrap items-center justify-between gap-2 border-t border-border/70 pt-2 text-sm">
+                  <span className="font-medium">{line.goodsName || line.orderNoticeNo}</span>
+                  <span className="text-muted-foreground">{line.storeName || line.storeNo} · 未选择仓库</span>
+                </div>
+              ))}
+              {makeOrderReadiness.missingWarehouseLines.length > 5 ? (
+                <div className="text-sm text-muted-foreground">还有 {makeOrderReadiness.missingWarehouseLines.length - 5} 行未选择仓库</div>
+              ) : null}
+            </div>
+          ) : null}
           {makeOrderReadiness && makeOrderReadiness.missingStores.length > 0 ? (
             <div className="mt-3 space-y-2">
               {makeOrderReadiness.missingStores.slice(0, 5).map((store) => (
@@ -1764,14 +2043,21 @@ function MetaItem({ label, value }: { label: string; value: string }) {
   );
 }
 
-function GoodsSyncHeaderStatus({ error, run }: { error: string; run: WdtGoodsSyncRunDto | null }) {
+function GoodsSyncHeaderStatus({ error, run }: { error: string; run: WdtSyncRunDto | null }) {
   const status = run?.status ?? "none";
+  const stale = run?.activeSnapshotAt ? Date.now() - Date.parse(run.activeSnapshotAt) > 60 * 60 * 1000 : false;
+  const snapshotText = run?.activeSnapshotAt ? formatShortDate(run.activeSnapshotAt) : error || "尚无成功库存快照";
+  const snapshotTone = run?.activeSnapshotAt ? (stale ? "warn" : "good") : "warn";
   return (
-    <div className="flex min-w-[260px] flex-1 justify-center">
-      <div className="inline-flex max-w-full items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-sm">
-        <span className="font-medium">商品档案</span>
-        <Badge tone={status === "success" ? "good" : status === "failed" ? "bad" : "warn"}>{userSyncStatusText(status)}</Badge>
-        <span className="truncate text-muted-foreground">上次更新：{run ? formatShortDate(run.finishedAt || run.startedAt) : error}</span>
+    <div className="flex min-w-0 flex-1 justify-center max-lg:order-last max-lg:basis-full">
+      <div className="flex max-w-full flex-wrap items-center justify-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-sm">
+        <span className="font-medium">库存快照</span>
+        <Badge tone={snapshotTone}>{run?.activeSnapshotAt ? (stale ? "建议刷新" : "可用") : "未建立"}</Badge>
+        {status === "queued" || status === "running" ? <Badge tone="info">更新中</Badge> : null}
+        {status === "failed" ? <Badge tone="bad">最近同步失败</Badge> : null}
+        <span className="min-w-0 truncate text-muted-foreground">{snapshotText}</span>
+        {run?.activeSnapshotAt ? <span className="text-xs text-muted-foreground">来源：{syncTriggerText(run.activeSnapshotTrigger)}</span> : null}
+        {stale ? <Badge tone="warn">超过一小时</Badge> : null}
       </div>
     </div>
   );
@@ -1782,6 +2068,8 @@ function GoodsSyncStatusPanel({
   error,
   message,
   run,
+  combinedRun,
+  developerMode,
   syncing,
   onRunSync,
 }: {
@@ -1789,25 +2077,52 @@ function GoodsSyncStatusPanel({
   error: string;
   message: string;
   run: WdtGoodsSyncRunDto | null;
+  combinedRun: WdtSyncRunDto | null;
+  developerMode: boolean;
   syncing: boolean;
   onRunSync: () => void;
 }) {
-  const status = run?.status ?? "none";
+  const status = combinedRun?.status ?? "none";
+  const total = combinedRun?.totalSpecCount ?? 0;
+  const processed = combinedRun?.processedSpecCount ?? 0;
+  const percent = total > 0 ? Math.min(100, Math.round((processed / total) * 100)) : 0;
+  const stale = combinedRun?.activeSnapshotAt ? Date.now() - Date.parse(combinedRun.activeSnapshotAt) > 60 * 60 * 1000 : false;
   return (
     <section className="rounded-md border border-border bg-card p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="flex flex-wrap items-center gap-2">
-            <h3 className="text-sm font-semibold">商品档案同步</h3>
+            <h3 className="text-sm font-semibold">商品与库存同步</h3>
             <Badge tone={status === "success" ? "good" : status === "failed" ? "bad" : "warn"}>{userSyncStatusText(status)}</Badge>
           </div>
-          <p className="mt-2 text-sm text-muted-foreground">上次更新：{run ? formatShortDate(run.finishedAt || run.startedAt) : error}</p>
+          <p className="mt-2 text-sm text-muted-foreground">
+            当前库存快照：{combinedRun?.activeSnapshotAt ? formatShortDate(combinedRun.activeSnapshotAt) : "尚无成功快照"}
+            {combinedRun?.activeSnapshotAt ? ` · 来源：${syncTriggerText(combinedRun.activeSnapshotTrigger)}` : ""}
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">每小时整点自动更新；导入、审核和商品查询均使用这份本地快照，不会临时等待旺店通。</p>
+          {stale ? <p className="mt-1 text-xs text-amber-800">库存快照已超过一小时，系统仍可使用，建议手动刷新。</p> : null}
+          {syncing ? (
+            <div className="mt-3 space-y-1 text-xs text-muted-foreground">
+              <div>阶段：{syncStageText(combinedRun?.stage)} · SKU {processed}/{total || "-"} · 批次 {combinedRun?.completedBatchCount ?? 0}/{combinedRun?.totalBatchCount ?? "-"}</div>
+              <div className="h-2 overflow-hidden rounded bg-muted" aria-label={`同步进度 ${percent}%`}>
+                <div className="h-full bg-primary transition-[width] duration-200" style={{ width: `${percent}%` }} />
+              </div>
+            </div>
+          ) : null}
+          {combinedRun?.status === "failed" ? (
+            <p className="mt-1 text-xs text-rose-700">
+              {combinedRun.errorMessage || "本次同步失败"}，{combinedRun.activeSnapshotAt ? `仍使用 ${formatShortDate(combinedRun.activeSnapshotAt)} 的成功快照。` : "当前尚无可用库存快照。"}
+            </p>
+          ) : null}
+          {!combinedRun && error ? <p className="mt-1 text-xs text-amber-800">{error}；业务仍可继续，库存建议会标记为未验证。</p> : null}
+          {run?.status === "success" && run.finishedAt ? <p className="mt-1 text-xs text-muted-foreground">商品档案更新完成：{formatShortDate(run.finishedAt)}</p> : null}
+          {developerMode && combinedRun?.errorDetail ? <p className="mt-1 break-all text-xs text-muted-foreground">同步详情：{combinedRun.errorCode} {combinedRun.errorDetail}</p> : null}
           {message ? <p className="mt-1 text-sm text-muted-foreground">{message}</p> : null}
           {!canSyncGoods ? <p className="mt-1 text-xs text-amber-700">当前账号只能查看同步状态，请联系管理员或运营账号处理。</p> : null}
         </div>
         <Button className="h-8 px-2" disabled={!canSyncGoods || syncing} onClick={onRunSync}>
           <RefreshCcw className="h-4 w-4" />
-          {syncing ? "同步中" : "手动同步"}
+          {syncing ? "同步中" : "立即同步"}
         </Button>
       </div>
     </section>
@@ -1923,8 +2238,21 @@ function toDraft(line: ReviewLineDto): ReviewDraft {
   return {
     decision: line.decision,
     approvedShipQty: String(line.approvedShipQty),
+    fulfillmentWarehouseNo: line.fulfillmentWarehouseNo || (line.decision === "do_not_ship" ? "" : line.suggestedWarehouseNo),
+    fulfillmentWarehouseName: line.fulfillmentWarehouseName || (line.decision === "do_not_ship" ? "" : line.suggestedWarehouseName),
     reason: line.reason,
   };
+}
+
+function reviewDraftIsDirty(line: ReviewLineDto, draft?: ReviewDraft) {
+  if (!draft) return false;
+  const persistedWarehouseNo = line.fulfillmentWarehouseNo || (line.decision === "do_not_ship" ? "" : line.suggestedWarehouseNo);
+  const persistedWarehouseName = line.fulfillmentWarehouseName || (line.decision === "do_not_ship" ? "" : line.suggestedWarehouseName);
+  return draft.decision !== line.decision
+    || draft.approvedShipQty !== String(line.approvedShipQty)
+    || draft.fulfillmentWarehouseNo !== persistedWarehouseNo
+    || draft.fulfillmentWarehouseName !== persistedWarehouseName
+    || draft.reason !== line.reason;
 }
 
 function buildDrafts(lines: ReviewLineDto[]): Record<string, ReviewDraft> {
@@ -1937,7 +2265,9 @@ function buildStats(lines: ReviewLineDto[]) {
     matched: lines.filter((line) => line.matchStatus === "matched").length,
     ambiguous: lines.filter((line) => line.matchStatus === "ambiguous").length,
     notFound: lines.filter((line) => line.matchStatus === "not_found").length,
-    inventoryException: lines.filter((line) => line.matchStatus === "api_error" || line.status === "库存不足").length,
+    inventoryException: lines.filter(
+      (line) => line.matchStatus === "api_error" || line.status === "库存不足" || line.status === "库存未验证",
+    ).length,
     pending: lines.filter((line) => line.decision === "pending").length,
     ship: lines.filter((line) => line.decision === "ship").length,
     doNotShip: lines.filter((line) => line.decision === "do_not_ship").length,
@@ -1980,24 +2310,42 @@ function buildUserPermissions(user: AuthUserDto | null) {
 }
 
 function realReviewBlockedMessage(run: WdtGoodsSyncRunDto | null, error: string) {
-  if (!run) return `真实初审已暂停：${error || "未读取到商品同步记录"}。请先完成商品档案同步。`;
-  if (run.status === "running") return "真实初审已暂停：商品档案仍在同步中，请等待同步完成后刷新状态。";
-  if (run.status === "failed") return "真实初审已暂停：最近一次商品档案同步失败，请先修复并重新同步。";
+  if (!run) return `真实初审已暂停：${error || "未读取到商品档案记录"}。请先完成商品与库存同步。`;
+  if (run.status === "running") return "真实初审已暂停：商品档案仍在更新，请等待完成后刷新状态。";
+  if (run.status === "failed") return "真实初审已暂停：最近一次商品档案更新失败，请先修复并重新同步。";
   return `真实初审已暂停：最近同步状态为 ${run.status}，不能作为正式审核依据。`;
 }
 
-function userSyncStatusText(status: WdtGoodsSyncRunDto["status"] | "none") {
+function userSyncStatusText(status: WdtGoodsSyncRunDto["status"] | WdtSyncRunDto["status"] | "none") {
   if (status === "success") return "已更新";
   if (status === "failed") return "需刷新";
-  if (status === "running") return "更新中";
+  if (status === "running" || status === "queued") return "更新中";
   return "未更新";
+}
+
+function syncStageText(stage: WdtSyncRunDto["stage"] | undefined) {
+  if (stage === "goods") return "更新商品档案";
+  if (stage === "prepare_stock") return "准备库存范围";
+  if (stage === "stock") return "同步分仓库存";
+  if (stage === "activate") return "激活库存快照";
+  if (stage === "complete") return "已完成";
+  return "等待执行";
+}
+
+function syncTriggerText(trigger: WdtSyncRunDto["activeSnapshotTrigger"] | undefined) {
+  if (trigger === "manual") return "手动同步";
+  if (trigger === "hourly") return "整点自动";
+  if (trigger === "startup") return "启动补偿";
+  return "-";
 }
 
 function batchStatusText(batch: BatchSummary) {
   const status = batch.status;
   if (batch.sourceType === "confirmed_order") {
     if (status === "uploaded") return "已导入";
-    if (status === "matched" || status === "review_generated" || status === "reviewed") return "已校验";
+    if (status === "matched") return "已匹配";
+    if (status === "review_generated") return "待审核";
+    if (status === "reviewed") return "已审核";
     if (status === "exported") return "已生成做单";
     return status;
   }
@@ -2063,11 +2411,12 @@ function fileToBase64(file: File) {
   });
 }
 
-function matchesFilter(line: ReviewLineDto, filter: FilterKey) {
+function matchesFilter(line: ReviewLineDto, filter: FilterKey, confirmedOrderMode = false) {
   if (filter === "all") return true;
-  if (filter === "ready") return line.status === "库存充足";
+  if (filter === "ready") return line.status === "库存充足" && (!confirmedOrderMode || line.plannedShipQty > 0);
   if (filter === "partial") return line.status === "部分满足";
   if (filter === "blocked") return line.status === "库存不足";
+  if (filter === "unverified") return line.status === "库存未验证";
   if (filter === "unmatched") return line.status === "未匹配" || line.matchStatus !== "matched";
   if (filter === "pending") return line.decision === "pending";
   if (filter === "ship") return line.decision === "ship";
@@ -2083,6 +2432,9 @@ function isManualMappingLine(line: ReviewLineDto) {
 }
 
 function validateDraft(line: ReviewLineDto, draft: ReviewDraft, approvedShipQty: number) {
-  if (!Number.isFinite(approvedShipQty) || approvedShipQty < 0) return "发货数量不能小于 0";
+  if (draft.approvedShipQty.trim() === "" || !Number.isInteger(approvedShipQty) || approvedShipQty < 0) return "最终发货数量必须是非负整数";
+  if (draft.decision === "ship" && approvedShipQty > 0 && (!draft.fulfillmentWarehouseNo || !draft.fulfillmentWarehouseName)) {
+    return "请选择发货仓库";
+  }
   return "";
 }

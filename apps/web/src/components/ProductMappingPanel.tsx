@@ -273,7 +273,7 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           {surface === "panel" ? <h2 className="text-lg font-semibold">商品映射确认</h2> : null}
-          <p className="mt-1 text-sm text-muted-foreground">查询旺店通可发库存，选择替代编码，并把核实后的关系保存为长期映射</p>
+          <p className="mt-1 text-sm text-muted-foreground">查询本地库存快照，选择替代编码，并把核实后的关系保存为长期映射</p>
         </div>
         <Badge tone="warn">WDT 只读</Badge>
       </div>

@@ -8,6 +8,7 @@ User=root
 Group=root
 WorkingDirectory=/opt/jy-trade/current
 EnvironmentFile=/opt/jy-trade/current/.env
+Environment=TZ=Asia/Shanghai
 ExecStart=/usr/bin/npm run start:api
 Restart=always
 RestartSec=5

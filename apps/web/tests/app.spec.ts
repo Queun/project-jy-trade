@@ -1,46 +1,85 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
-test("logs in, runs review workflow, exports, and logs out", async ({ page }) => {
+test("checks the stock snapshot sync UI without starting a real sync", async ({ page }) => {
+  const syncStartRequests: string[] = [];
+  const activeSnapshotAt = new Date().toISOString();
+  page.on("request", (request) => {
+    if (request.method() === "POST" && new URL(request.url()).pathname === "/api/v1/wdt/sync-runs") {
+      syncStartRequests.push(request.url());
+    }
+  });
+  await page.route("**/api/v1/wdt/sync-runs/latest", async (route) => {
+    await route.fulfill({
+      json: {
+        id: "e2e-hourly-sync",
+        trigger: "hourly",
+        status: "success",
+        stage: "complete",
+        goodsSyncRunId: "e2e-goods-sync",
+        totalSpecCount: 100,
+        processedSpecCount: 100,
+        totalBatchCount: 3,
+        completedBatchCount: 3,
+        stockRowCount: 200,
+        startedAt: activeSnapshotAt,
+        finishedAt: activeSnapshotAt,
+        lastProgressAt: activeSnapshotAt,
+        activeSnapshotRunId: "e2e-hourly-sync",
+        activeSnapshotAt,
+        activeSnapshotTrigger: "hourly",
+        errorCode: "",
+        errorMessage: "",
+        errorDetail: "",
+      },
+    });
+  });
+
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
 
   await expect(page.getByRole("heading", { name: "登录工作台" })).toBeVisible();
   await page.getByLabel("用户名").fill("admin");
-  await page.getByLabel("密码").fill("jymy");
+  await page.getByLabel("密码").fill("yjmy");
   await page.getByRole("button", { name: "登录" }).click();
 
-  await expect(page.getByRole("heading", { name: "批次审核工作台" })).toBeVisible();
-  await page.getByRole("button", { name: "创建批次并初审" }).click();
-  await expect(page.getByText("mock 初审已完成")).toBeVisible();
-  await expect(page.locator("tbody tr").first()).toBeVisible();
+  await expect(page.getByRole("heading", { name: "订单处理工作台" })).toBeVisible();
 
-  await page.getByRole("button", { name: "批量通过可发项" }).click();
-  await expect(page.getByText(/已批量通过/)).toBeVisible();
+  const header = page.locator("header");
+  await expect(header.getByText("库存快照", { exact: true })).toBeVisible();
+  await expect(header.getByText("可用", { exact: true })).toBeVisible();
+  await expect(header.getByText("来源：整点自动", { exact: true })).toBeVisible();
 
-  const firstRow = page.locator("tbody tr").first();
-  await firstRow.getByLabel(/审核发货数/).fill("999");
-  await firstRow.getByLabel(/审核原因/).fill("人工确认额外库存");
-  await firstRow.getByRole("button", { name: "保存" }).click();
-  await expect(firstRow.getByText("超建议数")).toBeVisible();
+  await expectNoHorizontalOverflow(page);
 
-  const secondRow = page.locator("tbody tr").nth(1);
-  await secondRow.getByRole("button", { name: "不发" }).click();
-  await expect(secondRow.getByText("不发货必须填写原因")).toBeVisible();
-  await secondRow.getByLabel(/审核原因/).fill("负责人确认暂不发货");
-  await secondRow.getByRole("button", { name: "保存" }).click();
-  await expect(secondRow).toContainText("不发");
+  await page.getByRole("button", { name: "设置" }).click();
+  const settingsDialog = page.getByRole("dialog", { name: "设置" });
+  await expect(settingsDialog).toBeVisible();
 
-  await page.getByRole("button", { name: "提交审核完成" }).click();
-  await expect(page.getByText(/审核已提交/)).toBeVisible();
-  await expect(page.getByText("reviewed").first()).toBeVisible();
+  const syncHeading = settingsDialog.getByRole("heading", { name: "商品与库存同步" });
+  await expect(syncHeading).toBeVisible();
+  const syncSection = syncHeading.locator("xpath=ancestor::section[1]");
+  await expect(syncSection.getByText(/每小时整点自动更新/)).toBeVisible();
 
-  await page.getByRole("button", { name: "生成导出" }).click();
-  await expect(page.getByText("导出文件已生成")).toBeVisible();
-  await expect(page.getByText("ready").first()).toBeVisible();
+  const snapshotSummary = syncSection.getByText(/^当前库存快照：/);
+  await expect(snapshotSummary).toBeVisible();
+  await expect(snapshotSummary).toHaveText(/^当前库存快照：.+ · 来源：整点自动$/);
 
-  await page.reload();
-  await page.getByText("订货通知单 .xls").first().click();
-  await expect(page.getByText("ready").first()).toBeVisible();
+  const syncButton = syncSection.getByRole("button", { name: "立即同步" });
+  await expect(syncButton).toBeVisible();
+  await expect(syncButton).toBeEnabled();
+  await expectNoHorizontalOverflow(page);
+
+  await settingsDialog.getByRole("button", { name: "关闭" }).click();
+  await expect(settingsDialog).toBeHidden();
+  expect(syncStartRequests).toEqual([]);
 
   await page.getByRole("button", { name: "退出" }).click();
   await expect(page.getByRole("heading", { name: "登录工作台" })).toBeVisible();
+  expect(syncStartRequests).toEqual([]);
 });
+
+async function expectNoHorizontalOverflow(page: Page) {
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth))
+    .toBeLessThanOrEqual(0);
+}

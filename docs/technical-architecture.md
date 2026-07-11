@@ -1,140 +1,149 @@
 # 技术架构
 
-## 结论
+本文只描述当前真实架构、模块边界和仍然有效的技术取舍。产品进度和待办以 `docs/project-plan.md` 为准。
 
-正式产品使用 Node.js / TypeScript 实现前后端和核心业务逻辑。Python 保留为探索、数据核验、临时脚本，不作为主链路依赖。
+## 技术栈
 
-当前暂定技术栈：
-
-- Node.js 24 LTS。
-- npm workspaces。
-- TypeScript。
+- 运行时：Node.js 24 LTS。
+- 工程组织：npm workspaces + TypeScript。
 - 后端：Fastify + Zod。
 - 前端：Vite + React + TypeScript。
-- UI：Tailwind v4 + shadcn/ui 风格组件。
+- UI：Tailwind v4、项目内基础组件和 Lucide 图标。
 - 表格：TanStack Table。
-- 数据层：SQLite + Drizzle。
-- 测试：Vitest + Testing Library + Playwright。
+- 数据层：SQLite/libSQL client + Drizzle ORM。
+- Excel：SheetJS `xlsx`。
+- 测试：Vitest、Testing Library、Playwright。
 
-## 选择理由
+Python 只用于历史探索、数据核验和临时脚本，不是正式运行依赖。
 
-Node/TypeScript：
-
-- 项目前后端预计都使用 Node，统一运行时能减少部署、日志、权限、环境变量和进程管理复杂度。
-- 订货单读取、旺店通签名、API 请求、滚动库存初审这些核心逻辑在 TypeScript 中已经验证可行。
-- 订单批量处理规模较小，性能瓶颈更可能来自旺店通 API 请求和人工审核，而不是语言运行时。
-- 以 Node 调 Python 并非性能问题，但会引入双运行时、依赖安装、错误处理和部署运维复杂度。除非后续遇到 Node 难以稳定处理的 Excel 模板问题，否则不作为主方案。
-
-Fastify：
-
-- 足够轻量，适合内部低并发业务平台。
-- 路由、插件、schema 校验、测试注入能力成熟。
-- 后续做登录、审计、文件上传、导出任务时扩展成本低。
-
-Vite + React：
-
-- 初始化和开发反馈快。
-- 适合做审核工作台、批次列表、表格操作和导出中心。
-- 与 TanStack Table、Testing Library、Playwright 配合成熟。
-
-SQLite + Drizzle：
-
-- 10 多人低并发场景足够。
-- 本地开发和部署简单。
-- Drizzle schema 让后续迁移 PostgreSQL 有清晰边界。
-- 当前已经接入 API 持久化，默认开发库为 `data/jy-trade-dev.db`。
-
-## 分层设计
+## 模块边界
 
 ```text
 apps/web
-  调用后端 API，不接触旺店通凭据和签名逻辑
+  React 业务界面，只调用本项目 API
 
 apps/api
-  Fastify 路由、请求校验、权限预留、批次和审核接口、SQLite 持久化
+  Fastify 路由、登录与角色校验、SQLite 持久化、旺店通只读编排、文件导出
 
 packages/shared
-  Zod schema、DTO、状态枚举
+  Zod schema、DTO、角色、状态和跨 workspace 契约
 
 packages/workflow
-  订单解析、商品匹配输入输出、库存初审、Excel 导出
+  Excel 解析、商品匹配、库存分配和不依赖 Web 框架的业务逻辑
 
 apps/api/src/wdtClientAdapter.ts
-  旺店通只读 client 装配、环境变量读取
+  旺店通只读 client 装配和环境变量边界
 
 backend/src/probes
-  legacy 诊断脚本和历史探针，不作为新功能入口
+  历史诊断脚本和人工探针，不作为新功能入口
+
+src/jy_trade
+  早期 Python 实验代码，不被正式主链路依赖
 ```
 
-核心原则：
+前端不接触旺店通凭据、签名和数据库。API 负责权限、批次状态、外部系统调用和审计；可复用的确定性业务规则优先放入 `packages/workflow`。
 
-- 前端只处理展示和用户操作。
-- 后端 API 负责权限、批次状态、审核决策和外部系统编排。
-- workflow 包保持纯业务逻辑，尽量不依赖 Web 框架。
-- 旺店通细节封装在 integration 层，避免泄露到前端或共享 DTO。
+## 运行流程
 
-审核闭环数据流：
+### 登录和权限
 
-- 前端加载批次和初审明细后，在本地进行筛选、数量和原因编辑。
-- 单行保存通过 `PATCH review-lines/:lineId/decision` 写入 `review_decisions`。
-- 批量通过由后端选择 matched 且库存充足/部分满足的行，避免前端误传范围。
-- 提交审核只更新 `batches.status=reviewed`，不锁死后续修改。
-- 单行审核、批量通过、提交审核都写入 `audit_logs`。
+- 用户密码以哈希形式保存在 `users`，登录后使用 session cookie。
+- 生产环境要求显式配置强管理员密码，并在 API 启动时同步配置管理员的密码；开发/测试示例账号不会自动进入新的生产数据库。
+- 后端对受保护接口统一验证 session，并对关键写操作验证 `admin`、`operator`、`reviewer` 角色。
+- `admin` 可执行全部操作；`operator` 负责导入、同步、维护和导出；`reviewer` 负责审核决定和优先处理。
+- 重要写操作记录 actor、时间和变更内容到 `audit_logs`。
 
-商品匹配与库存查询数据流：
+### 正式订单
 
-- 后台同步任务从旺店通 `goods.Goods.queryWithSpec` 读取商品档案，保存到本地 SQLite 缓存。
-- 货品档案同步默认使用 `page_size=1000`；正式环境只读验证表明该分页可正常返回，适合减少全量同步请求次数。
-- 订单上传后，后端先查本地人工映射，再查本地商品缓存的条码、`spec_no`、`goods_no` 精确索引。
-- 外部条码查不到时，后端基于本地商品名称和规格候选做打分，只生成候选，不自动确认。
-- 条码不同但名称相近的候选必须进入人工确认；确认结果写入商品映射表，后续订单复用。
-- 已确认到旺店通 `spec_no` 后，再调用 `wms.StockSpec.search2` 读取所有仓库库存行。
-- 库存服务按仓库配置归类主仓、临期仓、次品仓和其他仓，输出给库存初审逻辑。
-- 前端审核工作台只展示匹配结果、候选、库存拆分和审核操作，不直接接触旺店通 API。
+1. `operator` 上传订货单并创建批次。
+2. API 从本地 WDT 商品、组合装和长期映射缓存完成商品匹配。
+3. 对已确认的库存组件读取最新成功的本地库存快照；业务操作不调用旺店通库存接口。
+4. workflow 按仓库配置、VIP 优先级和同规格库存生成建议发货数量，并为每条明细只建议一个仓库。
+5. `reviewer` 调整数量和最终仓库后提交审核；系统建议不覆盖人工决定。
+6. `operator` 检查最终仓库、地址和做单字段后生成 Excel。
 
-计划新增的数据模型方向：
+正式初审要求可用商品档案。`allowStaleCache=true` 只用于人工诊断商品档案缓存，不是正式审核口径；库存快照过期只提醒，不阻断。
 
-- `wdt_goods_specs`：旺店通商品/规格本地缓存。
-- `wdt_goods_sync_runs`：商品档案同步任务记录。
-- `product_mappings`：外部订货单商品到旺店通规格的人工确认映射。
-- `product_match_candidates`：批次内候选匹配快照，便于审核和回查。
+### 上游已审核确定单（系统内仍须审核）
 
-## 多用户协作预留
+1. `operator` 导入确定单，API 固定读取 `订货数量` 和 `实际发货数量`；后者持久化为 `plannedShipQty`。
+2. API 使用本地商品缓存和长期映射完成匹配，并通过与正式订单相同的分配器生成 `suggestedShipQty` 和建议仓库。分配需求上限是 `plannedShipQty`。
+3. 确定单 `主仓` / `临期仓` 原值只进入 `orderRawJson`，不参与库存分配、最终仓库初始化或差异提示。
+4. 系统把建议数量和建议仓库初始化为最终审核结果；`reviewer` 可以修改 `approvedShipQty` 和最终仓库。导入后批次状态为 `review_generated`。
+5. 库存查询失败时保留 `库存未验证` 行，建议量为 0、仓库为空，`stockErrorDetail` 保存开发者诊断信息。人工决定正数后，提交审核先返回结构化 `UNVERIFIED_STOCK` 警告，显式确认后可以进入 `reviewed`。
+6. 重新校验请求显式携带 `preserve` 或 `replace`：前者合并保留现有最终结果，后者以最新建议覆盖最终数量和仓库；备注、优先标记以及既有审核决定元数据保留。两种策略都把批次恢复为 `review_generated`。
+7. 做单导出要求批次已经 `reviewed`，并且只读取最终审核结果，不在导出阶段重新查询库存或分仓。
 
-当前先不做正式登录，但数据模型和 API 设计预留：
+### 商品匹配和库存
 
-- `users`
-- `sessions`
-- `reviewerId`
-- `auditLogs`
-- `review_decisions`
+- `goods.Goods.queryWithSpec` 同步普通商品规格到 `wdt_goods_specs`。
+- `goods.Suite.search` 同步组合装和明细到 `wdt_suites`、`wdt_suite_components`。
+- 精确条码/编码和已确认长期映射可以自动命中；名称相似只写入候选快照，不能自动确认。
+- 单组件组合装的库存目标是组件 `spec_no`，做单目标是组合装 `suite_no`。
+- `wms.StockSpec.search2` 返回的 `available_send_stock` 是库存初审主字段。
+- 后台组合任务按 40 个 SKU 一批、至少 1.1 秒请求间隔同步库存；频控或并发错误按 `WDT_STOCK_SYNC_RETRY_DELAYS_MS` 重试。商品增量和所有库存批次完整成功后，才把任务状态原子更新为 `success`。
+- 业务查询始终选择最新成功任务。库存同步失败会删除本次临时库存快照并保留旧库存快照；已经成功写入的商品档案增量不回滚，新商品在旧库存快照未覆盖时标记“库存未验证”。最近两份成功库存快照明细用于回退。
+- `wdt_stock_snapshot_specs` 区分“本次已核验为 0”和“快照未覆盖”，`wdt_stock_snapshot_rows` 保存分仓可发库存和原始响应。
+- 自动调度固定使用 `Asia/Shanghai` 每小时整点；无快照或启动时快照超过一小时会排队补跑，同一时间只允许一个组合任务。
+- 库存行先按仓库用途分类，只有启用的仓库参与建议发货。
+- 自动建议遵守单行单仓：有仓库可完整满足时选择满足仓，否则选择可发库存更多的仓，并列优先主仓。一条订单明细不会拆成多个仓库行。
 
-后续登录方案可从简单账号密码 + session cookie 开始，不需要一开始接入复杂 SSO。审核动作需要落审计日志，包括操作者、时间、原值、新值和原因。
+### Excel 导出
 
-## 当前验证结果
+- 初审单和确定发货单输出 `.xlsx`。
+- 旺店通做单文件按现有模板输出 BIFF8 `.xls`，Sheet 为 `Sheet1`。
+- 做单行只来自已决定发货且最终数量大于 0 的审核行。
+- 做单导出是审核结果的纯投影，不查询库存、不重新分配数量或仓库。
+- `原始单号` 按“门店 + 最终仓库”分组生成并重复到组内各商品行；不同门店或不同仓库使用不同编号，相同批次重复导出保持稳定。
+- 同一门店的通知单号汇总到 `客服备注`。
+- `商家编码` 使用 `wdtMakeOrderCode`，缺少时回退到 `wdtSpecNo`。
 
-Node 版已跑通：
+字段和模板细节以 `docs/excel-field-dictionary.md` 为准，并应由导出测试保护。
 
-- 读取样例订货单 `.xls`。
-- 输出订单明细统计。
-- 按上传时间排序。
-- 对重复条码做滚动库存扣减。
-- 使用本地 `.env` 调用旺店通测试环境。
-- 查询测试仓库、测试商品、测试库存。
-- Fastify API 创建批次、运行 mock 初审、获取明细、修改审核决策。
-- SQLite 持久化批次、初审明细、审核决定、导出记录和审计日志。
-- React 页面运行 mock 批次并展示初审表格。
+## 数据模型
 
-Python 版已跑通：
+当前 SQLite 持久化模型分为：
 
-- 样表探测。
-- 订货单导入。
-- 滚动库存初审。
-- 旺店通 API 探测。
+- 账号与审计：`users`、`sessions`、`audit_logs`。
+- 批次与审核：`batches`、`review_lines`、`review_decisions`。`batches` 保存本次建议所用的 `stockSnapshotRunId` / `stockSnapshotAt`；`review_lines` 保存 `orderQty`、`plannedShipQty`、系统建议数量、建议仓库和库存诊断；`review_decisions` 保存 `approvedShipQty`、最终发货仓库、用户备注和审核元数据。
+- 导出与地址：`exports`、`store_addresses`。
+- 仓库策略：`warehouse_usage_settings`。
+- WDT 缓存：`wdt_goods_specs`、`wdt_goods_sync_runs`、`wdt_suites`、`wdt_suite_components`、`wdt_suite_sync_runs`、`wdt_sync_runs`、`wdt_stock_snapshot_specs`、`wdt_stock_snapshot_rows`。
+- 商品维护：`product_mappings`、`product_match_candidates`、`external_products`、`external_product_components`。
 
-## 需要重新评估的点
+Drizzle schema、migration、DTO、API 测试和相关文档必须在同一功能变更中保持一致。
 
-- 如果最终必须输出老式 `.xls` 且要高度保留格式，Node 生态支持会弱一些；届时可评估继续输出 `.xlsx`，或保留 Python/LibreOffice 导出 worker。
-- 如果做单模板中存在大量公式、样式、合并单元格和打印格式，导出模块需要单独验证。
-- 如果正式旺店通接口存在频控，需要在 Node 后端做队列、缓存和重试。
-- 如果并发或数据量显著超过当前预期，再评估 SQLite 到 PostgreSQL 的迁移。
+`0016_confirmed_order_planned_ship_qty.sql` 为历史数据增加 `planned_ship_qty`：旧确定单从原 `suggested_ship_qty` 回填，旧普通订单从 `order_qty` 回填。兼容性启动检查也会补列并回填，迁移不会删除批次、审核决定或测试数据。兼容检查只覆盖 `0016`，不替代部署和升级时执行 `npm run db:migrate`。
+
+## 运行数据边界
+
+- `.env` 保存本地或服务器凭据，不提交。
+- `data/` 保存 SQLite、上传和导出等运行数据，不提交。
+- `outputs/` 保存测试产物、诊断结果和截图，不提交。
+- 自动测试不得依赖私有 Excel、生产数据库或真实旺店通写操作。
+- 旺店通正式环境只允许读取；任何写接口都不在当前系统边界内。
+
+## 关键取舍
+
+### TypeScript 主链路
+
+前后端统一 TypeScript 可以减少双运行时部署、错误传递和依赖维护成本。除非后续出现 Node 无法稳定处理的 Excel 格式要求，不增加 Python/LibreOffice worker。
+
+### SQLite
+
+当前是低并发内部工具，瓶颈主要来自外部 API 和人工审核。SQLite 部署、备份和迁移成本低，现阶段不为未出现的并发问题迁移 PostgreSQL。
+
+### 本地商品缓存
+
+旺店通名称查询召回不稳定且存在时间窗口、分页和频控约束。正式流程先同步本地缓存，再做确定性匹配和候选排序，避免订单上传时实时扫描全量商品。
+
+### 增量 UI
+
+当前操作路径已经被用户熟悉。前端继续在现有工作台上增量优化，不以大规模重构换取纯视觉变化。
+
+## 重新评估条件
+
+- 并发写入或数据量使 SQLite 出现可复现的锁竞争或性能问题。
+- 最终模板要求高度保留 `.xls` 公式、样式、合并单元格或打印设置，SheetJS 无法稳定满足。
+- 旺店通频控要求持久化任务队列、跨进程限流或更复杂的失败重试。
+- 业务正式要求写入旺店通；届时必须单独设计权限、幂等、审计、回滚和灰度边界。

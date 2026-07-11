@@ -131,8 +131,9 @@ export function buildReviewLines(orderLines: OrderLine[], inventoryByBarcode: Ma
     const nearBefore = remainingNearExpiry.get(key) ?? 0;
     const defectBefore = snapshot.defectAvailableStock ?? 0;
     const otherBefore = snapshot.otherAvailableStock ?? 0;
-    const suggestedMainQty = Math.min(line.orderQty, mainBefore);
-    const suggestedNearExpiryQty = Math.min(line.orderQty - suggestedMainQty, nearBefore);
+    const useMainWarehouse = mainBefore >= line.orderQty || (nearBefore < line.orderQty && mainBefore >= nearBefore);
+    const suggestedMainQty = useMainWarehouse ? Math.min(line.orderQty, mainBefore) : 0;
+    const suggestedNearExpiryQty = useMainWarehouse ? 0 : Math.min(line.orderQty, nearBefore);
     const suggestedShipQty = suggestedMainQty + suggestedNearExpiryQty;
     const mainAfter = mainBefore - suggestedMainQty;
     const nearAfter = nearBefore - suggestedNearExpiryQty;

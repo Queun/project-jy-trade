@@ -10,6 +10,9 @@ export default defineConfig({
   webServer: [
     {
       command: "npm run dev -w @jy-trade/api",
+      env: {
+        WDT_AUTO_SYNC_ENABLED: "false",
+      },
       port: 3001,
       reuseExistingServer: true,
     },

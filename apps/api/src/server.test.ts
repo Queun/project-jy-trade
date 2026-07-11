@@ -19,11 +19,14 @@ import {
   storeAddresses,
   wdtGoodsSpecs,
   wdtGoodsSyncRuns,
+  wdtStockSnapshotRows,
+  wdtStockSnapshotSpecs,
   wdtSuiteComponents,
   wdtSuites,
+  wdtSyncRuns,
 } from "./db/schema.js";
 import { buildApiServer } from "./server.js";
-import type { StockLookupClient, StoreOptions } from "./store.js";
+import { millisecondsUntilNextShanghaiHour, snapshotIsOlderThan, type StockLookupClient, type StoreOptions } from "./store.js";
 import type { WdtGoodsWindowClient } from "./wdtGoodsSync.js";
 
 const projectRoot = resolve(process.cwd(), "../..");
@@ -41,6 +44,80 @@ describe("api server", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ ok: true, service: "jy-trade-api" });
     await app.close();
+  });
+
+  it("schedules hourly syncs on Asia/Shanghai hour boundaries and evaluates startup snapshot age", () => {
+    const beforeBoundary = Date.parse("2026-07-11T03:59:59.500Z"); // 11:59:59.500 in Shanghai
+    expect(millisecondsUntilNextShanghaiHour(beforeBoundary)).toBe(500);
+    const atBoundary = Date.parse("2026-07-11T04:00:00.000Z"); // 12:00 in Shanghai
+    expect(millisecondsUntilNextShanghaiHour(atBoundary)).toBe(60 * 60 * 1_000);
+    expect(snapshotIsOlderThan("2026-07-11T03:00:00.000Z", atBoundary)).toBe(false);
+    expect(snapshotIsOlderThan("2026-07-11T02:59:59.999Z", atBoundary)).toBe(true);
+    expect(snapshotIsOlderThan("invalid", atBoundary)).toBe(true);
+  });
+
+  it("requires an explicit strong bootstrap password in production", () => {
+    process.env.NODE_ENV = "production";
+    delete process.env.JY_TRADE_BOOTSTRAP_PASSWORD;
+
+    expect(() => buildTestServer()).toThrow("生产环境必须通过 JY_TRADE_BOOTSTRAP_PASSWORD 配置至少 12 位的非示例密码");
+  });
+
+  it("only bootstraps the configured admin account in production", async () => {
+    process.env.NODE_ENV = "production";
+    process.env.JY_TRADE_BOOTSTRAP_USERNAME = "release-admin";
+    process.env.JY_TRADE_BOOTSTRAP_PASSWORD = "correct-horse-battery-staple";
+    const app = buildTestServer();
+
+    const adminLogin = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      payload: { username: "release-admin", password: "correct-horse-battery-staple" },
+    });
+    expect(adminLogin.statusCode).toBe(200);
+
+    for (const [username, password] of [["operator", "operator123"], ["reviewer", "reviewer123"]]) {
+      const demoLogin = await app.inject({
+        method: "POST",
+        url: "/api/v1/auth/login",
+        payload: { username, password },
+      });
+      expect(demoLogin.statusCode).toBe(401);
+    }
+
+    await app.close();
+  });
+
+  it("synchronizes the configured production admin password for an existing database", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const developmentApp = buildTestServer(databaseUrl);
+    const initialLogin = await developmentApp.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      payload: { username: "admin", password: "yjmy" },
+    });
+    expect(initialLogin.statusCode).toBe(200);
+    await developmentApp.close();
+
+    process.env.NODE_ENV = "production";
+    process.env.JY_TRADE_BOOTSTRAP_USERNAME = "admin";
+    process.env.JY_TRADE_BOOTSTRAP_PASSWORD = "new-production-password";
+    const productionApp = buildTestServer(databaseUrl);
+
+    const updatedLogin = await productionApp.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      payload: { username: "admin", password: "new-production-password" },
+    });
+    expect(updatedLogin.statusCode).toBe(200);
+
+    const oldLogin = await productionApp.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      payload: { username: "admin", password: "yjmy" },
+    });
+    expect(oldLogin.statusCode).toBe(401);
+    await productionApp.close();
   });
 
   it("creates a batch and runs mock review", async () => {
@@ -159,7 +236,7 @@ describe("api server", () => {
     const login = await app.inject({
       method: "POST",
       url: "/api/v1/auth/login",
-      payload: { username: "admin", password: "jymy" },
+      payload: { username: "admin", password: "yjmy" },
     });
     expect(login.statusCode).toBe(200);
     expect(login.json().user.username).toBe("admin");
@@ -375,7 +452,8 @@ describe("api server", () => {
   });
 
   it("validates review decisions", async () => {
-    const app = buildTestServer();
+    const databaseUrl = testDatabaseUrl();
+    const app = buildTestServer(databaseUrl);
     const { batch, firstLine, cookie } = await createReviewedBatch(app);
 
     const negativeQty = await app.inject({
@@ -394,10 +472,52 @@ describe("api server", () => {
     });
     expect(doNotShipWithoutReason.statusCode).toBe(200);
 
+    const positiveQtyNormalizesToShip = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/batches/${batch.id}/review-lines/${firstLine.id}/decision`,
+      payload: {
+        decision: "do_not_ship",
+        approvedShipQty: 1,
+        fulfillmentWarehouseNo: firstLine.suggestedWarehouseNo,
+        fulfillmentWarehouseName: firstLine.suggestedWarehouseName,
+        reason: "最终数量优先",
+      },
+      headers: { cookie },
+    });
+    expect(positiveQtyNormalizesToShip.statusCode).toBe(200);
+    expect(positiveQtyNormalizesToShip.json()).toMatchObject({
+      decision: "ship",
+      approvedShipQty: 1,
+      fulfillmentWarehouseNo: firstLine.suggestedWarehouseNo,
+      fulfillmentWarehouseName: firstLine.suggestedWarehouseName,
+    });
+
+    const shipWithoutWarehouse = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/batches/${batch.id}/review-lines/${firstLine.id}/decision`,
+      payload: { decision: "ship", approvedShipQty: firstLine.suggestedShipQty, reason: "" },
+      headers: { cookie },
+    });
+    expect(shipWithoutWarehouse.statusCode).toBe(200);
+    const submitWithoutWarehouse = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${batch.id}/actions/submit-review`,
+      payload: { confirmUnverifiedStock: false },
+      headers: { cookie },
+    });
+    expect(submitWithoutWarehouse.statusCode).toBe(400);
+    expect(submitWithoutWarehouse.json().message).toContain("未选择仓库");
+
     const overSuggestedWithoutReason = await app.inject({
       method: "PATCH",
       url: `/api/v1/batches/${batch.id}/review-lines/${firstLine.id}/decision`,
-      payload: { decision: "ship", approvedShipQty: firstLine.suggestedShipQty + 1, reason: "" },
+      payload: {
+        decision: "ship",
+        approvedShipQty: firstLine.suggestedShipQty + 1,
+        fulfillmentWarehouseNo: firstLine.suggestedWarehouseNo,
+        fulfillmentWarehouseName: firstLine.suggestedWarehouseName,
+        reason: "",
+      },
       headers: { cookie },
     });
     expect(overSuggestedWithoutReason.statusCode).toBe(200);
@@ -405,7 +525,13 @@ describe("api server", () => {
     const overSuggestedWithReason = await app.inject({
       method: "PATCH",
       url: `/api/v1/batches/${batch.id}/review-lines/${firstLine.id}/decision`,
-      payload: { decision: "ship", approvedShipQty: firstLine.suggestedShipQty + 1, reason: "人工确认额外库存" },
+      payload: {
+        decision: "ship",
+        approvedShipQty: firstLine.suggestedShipQty + 1,
+        fulfillmentWarehouseNo: firstLine.suggestedWarehouseNo,
+        fulfillmentWarehouseName: firstLine.suggestedWarehouseName,
+        reason: "人工确认额外库存",
+      },
       headers: { cookie },
     });
     expect(overSuggestedWithReason.statusCode).toBe(200);
@@ -415,6 +541,15 @@ describe("api server", () => {
       reason: "人工确认额外库存",
     });
     await app.close();
+    const auditDatabase = createDatabaseContext(databaseUrl);
+    await auditDatabase.ready;
+    const decisionLogs = await auditDatabase.db.select().from(auditLogs).where(eq(auditLogs.action, "review_line.update_decision"));
+    expect(decisionLogs.some((log) => {
+      const payload = JSON.parse(log.payloadJson) as { next?: { fulfillmentWarehouseNo?: string; fulfillmentWarehouseName?: string } };
+      return payload.next?.fulfillmentWarehouseNo === firstLine.suggestedWarehouseNo
+        && payload.next?.fulfillmentWarehouseName === firstLine.suggestedWarehouseName;
+    })).toBe(true);
+    await auditDatabase.close();
   });
 
   it("updates priority lines with review permissions and sorts them first", async () => {
@@ -613,6 +748,8 @@ describe("api server", () => {
     const approved = lines.json().filter((line: { decision: string }) => line.decision === "ship");
     expect(approved).toHaveLength(2);
     expect(approved.every((line: { matchStatus: string }) => line.matchStatus === "matched")).toBe(true);
+    expect(approved.every((line: { suggestedWarehouseNo: string; fulfillmentWarehouseNo: string }) =>
+      line.fulfillmentWarehouseNo === line.suggestedWarehouseNo && Boolean(line.fulfillmentWarehouseNo))).toBe(true);
     await app.close();
   });
 
@@ -727,7 +864,7 @@ describe("api server", () => {
       订货数量: firstLine.orderQty,
       订货箱数: firstLine.orderBoxQty,
       合同进价: firstLine.contractPrice,
-      主仓: "",
+      主仓: firstLine.suggestedWarehouseName.includes("主仓") ? firstLine.suggestedShipQty : "",
       临期仓: "",
     });
     await app.close();
@@ -744,7 +881,13 @@ describe("api server", () => {
     await app.inject({
       method: "PATCH",
       url: `/api/v1/batches/${batch.id}/review-lines/${shipLine.id}/decision`,
-      payload: { decision: "ship", approvedShipQty: 3, reason: "" },
+      payload: {
+        decision: "ship",
+        approvedShipQty: 3,
+        fulfillmentWarehouseNo: shipLine.suggestedWarehouseNo,
+        fulfillmentWarehouseName: shipLine.suggestedWarehouseName,
+        reason: "",
+      },
       headers: { cookie },
     });
     await app.inject({
@@ -811,7 +954,7 @@ describe("api server", () => {
       订货数量: shipLine.orderQty,
       发货数量: 3,
       合同进价: shipLine.contractPrice,
-      主仓: "",
+      主仓: 3,
       临期仓: "",
       备注: "",
     });
@@ -819,11 +962,12 @@ describe("api server", () => {
     await app.close();
   });
 
-  it("imports confirmed orders as reviewed batches and exports make-order rows directly", async () => {
+  it("requires confirmed-order review submission before exporting final make-order rows", async () => {
     const databaseUrl = testDatabaseUrl();
     const database = createDatabaseContext(databaseUrl);
     await database.ready;
     await seedSuccessfulGoodsCache(database);
+    await seedSingleWarehouseSnapshot(database, "3282770392869");
     await database.db.insert(storeAddresses).values({
       id: "store-address-confirmed-order",
       storeNo: "S001",
@@ -845,7 +989,7 @@ describe("api server", () => {
     });
     await database.close();
 
-    const app = buildTestServer(databaseUrl);
+    const app = buildTestServer(databaseUrl, undefined, fixedWarehouseStockClient());
     const cookie = await loginCookie(app);
     const imported = await app.inject({
       method: "POST",
@@ -863,7 +1007,7 @@ describe("api server", () => {
       parsedRowCount: 2,
       matchedRowCount: 2,
       unmatchedRowCount: 0,
-      batch: { status: "reviewed", orderLineCount: 2 },
+      batch: { status: "review_generated", orderLineCount: 2 },
     });
 
     const linesResponse = await app.inject({
@@ -879,6 +1023,24 @@ describe("api server", () => {
       approvedShipQty: 2,
       wdtSpecNo: "3282770392869",
     });
+
+    const blockedExport = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${imported.json().batch.id}/exports`,
+      payload: { type: "wdt_import" },
+      headers: { cookie },
+    });
+    expect(blockedExport.statusCode).toBe(400);
+    expect(blockedExport.json().message).toContain("提交审核");
+
+    const submitted = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${imported.json().batch.id}/actions/submit-review`,
+      payload: { confirmUnverifiedStock: false },
+      headers: { cookie },
+    });
+    expect(submitted.statusCode).toBe(200);
+    expect(submitted.json().batch.status).toBe("reviewed");
 
     const exportResponse = await app.inject({
       method: "POST",
@@ -897,7 +1059,7 @@ describe("api server", () => {
     const workbook = XLSX.read(downloadResponse.rawPayload, { type: "buffer" });
     const rows = XLSX.utils.sheet_to_json<Record<string, string | number>>(workbook.Sheets["Sheet1"], { defval: "" });
     expect(rows).toHaveLength(2);
-    expect(new Set(rows.map((row) => row["原始单号"]))).toHaveLength(2);
+    expect(new Set(rows.map((row) => row["原始单号"]))).toHaveLength(1);
     for (const row of rows) {
       expect(String(row["原始单号"])).toMatch(/^JY\d{6}[A-Z0-9]{8}$/);
       expect(row).toMatchObject({
@@ -905,20 +1067,160 @@ describe("api server", () => {
         手机: "18800005555",
         地址: "确定单测试地址",
         客服备注: "NOTICE-1、NOTICE-2",
+        仓库名称: "主仓",
         业务员: "admin",
         商家编码: "3282770392869",
       });
     }
     expect(rows.map((row) => row["货品数量"])).toEqual([2, 3]);
     expect(rows.map((row) => row["货品价格"])).toEqual([12.5, 12.5]);
+
+    const repeatedExport = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${imported.json().batch.id}/exports`,
+      payload: { type: "wdt_import" },
+      headers: { cookie },
+    });
+    const repeatedDownload = await app.inject({
+      method: "GET",
+      url: repeatedExport.json().downloadUrl,
+      headers: { cookie },
+    });
+    const repeatedWorkbook = XLSX.read(repeatedDownload.rawPayload, { type: "buffer" });
+    const repeatedRows = XLSX.utils.sheet_to_json<Record<string, string | number>>(repeatedWorkbook.Sheets["Sheet1"], { defval: "" });
+    expect(repeatedRows.map((row) => row["原始单号"])).toEqual(rows.map((row) => row["原始单号"]));
     await app.close();
   });
 
-  it("checks confirmed-order stock without changing make-order quantities", async () => {
+  it("keeps make-order groups separate when the same store uses different warehouses", async () => {
     const databaseUrl = testDatabaseUrl();
     const database = createDatabaseContext(databaseUrl);
     await database.ready;
     await seedSuccessfulGoodsCache(database);
+    await seedSingleWarehouseSnapshot(database, "3282770392869");
+    await database.close();
+
+    const app = buildTestServer(databaseUrl, undefined, fixedWarehouseStockClient());
+    const cookie = await loginCookie(app);
+    const imported = await app.inject({
+      method: "POST",
+      url: "/api/v1/confirmed-orders/import",
+      payload: {
+        fileName: "确定单-分仓.xlsx",
+        contentBase64: confirmedOrderWorkbookBase64({
+          rows: [
+            { noticeNo: "NOTICE-MAIN", goodsCode: "3282770392869", barcode: "2153722460015", goodsName: "雅漾专研保湿修护面膜", shipQty: "2", mainWarehouseQty: "2" },
+            { noticeNo: "NOTICE-NEAR", goodsCode: "3282770392869", barcode: "2153722460015", goodsName: "雅漾专研保湿修护面膜", shipQty: "3", mainWarehouseQty: "", nearExpiryWarehouseQty: "3" },
+            { noticeNo: "NOTICE-OTHER-STORE", storeNo: "S002", storeName: "Ole确定单二店", goodsCode: "3282770392869", barcode: "2153722460015", goodsName: "雅漾专研保湿修护面膜", shipQty: "1", mainWarehouseQty: "1" },
+          ],
+        }),
+      },
+      headers: { cookie },
+    });
+    expect(imported.statusCode).toBe(201);
+
+    const linesResponse = await app.inject({
+      method: "GET",
+      url: `/api/v1/batches/${imported.json().batch.id}/review-lines`,
+      headers: { cookie },
+    });
+    const lines = linesResponse.json();
+    expect(lines.map((line: { suggestedWarehouseName: string }) => line.suggestedWarehouseName)).toEqual(["主仓", "主仓", "主仓"]);
+    for (const line of lines) {
+      const nearExpiry = line.orderNoticeNo === "NOTICE-NEAR";
+      const decisionResponse = await app.inject({
+        method: "PATCH",
+        url: `/api/v1/batches/${imported.json().batch.id}/review-lines/${line.id}/decision`,
+        payload: {
+          decision: "ship",
+          approvedShipQty: line.plannedShipQty,
+          fulfillmentWarehouseNo: nearExpiry ? "LINQI" : "001",
+          fulfillmentWarehouseName: nearExpiry ? "临期仓" : "主仓",
+          reason: nearExpiry ? "人工改为临期仓" : "",
+        },
+        headers: { cookie },
+      });
+      expect(decisionResponse.statusCode).toBe(200);
+    }
+    await seedStoreAddresses(app, cookie, lines);
+    const submitted = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${imported.json().batch.id}/actions/submit-review`,
+      payload: { confirmUnverifiedStock: false },
+      headers: { cookie },
+    });
+    expect(submitted.statusCode).toBe(200);
+
+    const exportResponse = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${imported.json().batch.id}/exports`,
+      payload: { type: "wdt_import" },
+      headers: { cookie },
+    });
+    expect(exportResponse.statusCode).toBe(201);
+    const downloadResponse = await app.inject({ method: "GET", url: exportResponse.json().downloadUrl, headers: { cookie } });
+    const workbook = XLSX.read(downloadResponse.rawPayload, { type: "buffer" });
+    const rows = XLSX.utils.sheet_to_json<Record<string, string | number>>(workbook.Sheets["Sheet1"], { defval: "" });
+    expect(rows.map((row) => row["仓库名称"])).toEqual(["主仓", "临期仓", "主仓"]);
+    expect(new Set(rows.map((row) => row["原始单号"]))).toHaveLength(3);
+    await app.close();
+  });
+
+  it("keeps confirmed-order source warehouse fields only in raw data and does not use them for allocation", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await seedSuccessfulGoodsCache(database);
+    await database.close();
+
+    const app = buildTestServer(databaseUrl);
+    const cookie = await loginCookie(app);
+    const imported = await app.inject({
+      method: "POST",
+      url: "/api/v1/confirmed-orders/import",
+      payload: {
+        fileName: "确定单-仓库待确认.xlsx",
+        contentBase64: confirmedOrderWorkbookBase64({
+          rows: [
+            { noticeNo: "NOTICE-MISSING", goodsCode: "3282770392869", barcode: "2153722460015", goodsName: "雅漾专研保湿修护面膜", shipQty: "2", mainWarehouseQty: "", nearExpiryWarehouseQty: "" },
+            { noticeNo: "NOTICE-CONFLICT", goodsCode: "3282770392869", barcode: "2153722460015", goodsName: "雅漾专研保湿修护面膜", shipQty: "3", mainWarehouseQty: "1", nearExpiryWarehouseQty: "2" },
+          ],
+        }),
+      },
+      headers: { cookie },
+    });
+    expect(imported.statusCode).toBe(201);
+    const linesResponse = await app.inject({ method: "GET", url: `/api/v1/batches/${imported.json().batch.id}/review-lines`, headers: { cookie } });
+    expect(linesResponse.json()).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        orderNoticeNo: "NOTICE-MISSING",
+        plannedShipQty: 2,
+        suggestedShipQty: 0,
+        decision: "pending",
+        fulfillmentWarehouseNo: "",
+        status: "库存未验证",
+      }),
+      expect.objectContaining({
+        orderNoticeNo: "NOTICE-CONFLICT",
+        plannedShipQty: 3,
+        suggestedShipQty: 0,
+        decision: "pending",
+        fulfillmentWarehouseNo: "",
+        status: "库存未验证",
+      }),
+    ]));
+    const conflictRaw = JSON.parse(linesResponse.json().find((line: { orderNoticeNo: string }) => line.orderNoticeNo === "NOTICE-CONFLICT").orderRawJson);
+    expect(conflictRaw).toMatchObject({ 主仓: "1", 临期仓: "2" });
+    expect(linesResponse.json().every((line: { matchMessage: string }) => !line.matchMessage.includes("主仓和临期仓"))).toBe(true);
+    await app.close();
+  });
+
+  it("allocates confirmed-order quantities from shared snapshot stock without calling the realtime API", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await seedSuccessfulGoodsCache(database);
+    await seedSingleWarehouseSnapshot(database, "3282770392869", 4, "MAIN-A", "OLE主仓");
     await database.db.insert(storeAddresses).values({
       id: "store-address-confirmed-order-stock",
       storeNo: "S001",
@@ -940,21 +1242,7 @@ describe("api server", () => {
     });
     await database.close();
 
-    const queriedSpecNos: string[] = [];
-    const stockClient: StockLookupClient = {
-      async queryStock(specNo) {
-        queriedSpecNos.push(specNo);
-        return {
-          status: 0,
-          data: {
-            total_count: 1,
-            detail_list: [
-              { spec_no: specNo, warehouse_no: "MAIN-A", warehouse_name: "OLE主仓", available_stock: "4", stock_num: 999 },
-            ],
-          },
-        };
-      },
-    };
+    const stockClient = failingRealtimeStockClient();
     const app = buildTestServer(databaseUrl, undefined, stockClient);
     const cookie = await loginCookie(app);
     const imported = await app.inject({
@@ -967,7 +1255,6 @@ describe("api server", () => {
       headers: { cookie },
     });
     expect(imported.statusCode).toBe(201);
-    expect(queriedSpecNos).toEqual(["3282770392869"]);
 
     const linesResponse = await app.inject({
       method: "GET",
@@ -976,17 +1263,35 @@ describe("api server", () => {
     });
     expect(linesResponse.statusCode).toBe(200);
     expect(linesResponse.json()).toHaveLength(2);
-    for (const line of linesResponse.json()) {
-      expect(line).toMatchObject({
+    expect(linesResponse.json()).toEqual([
+      expect.objectContaining({
+        plannedShipQty: 2,
+        suggestedShipQty: 2,
+        approvedShipQty: 2,
+        decision: "ship",
+        status: "库存充足",
+        mainAvailableBefore: 4,
+        suggestedWarehouseName: "OLE主仓",
+      }),
+      expect.objectContaining({
+        plannedShipQty: 3,
+        suggestedShipQty: 2,
+        approvedShipQty: 2,
         decision: "ship",
         status: "部分满足",
         mainAvailableBefore: 4,
-        nearExpiryAvailableBefore: 0,
-        matchMessage: expect.stringContaining("确定单库存可能不足：本批该商品需 5，可发 4。仅提示，不调整做单数量"),
-        reason: "",
-      });
-    }
-    expect(linesResponse.json().map((line: { suggestedShipQty: number; approvedShipQty: number }) => [line.suggestedShipQty, line.approvedShipQty])).toEqual([[2, 2], [3, 3]]);
+        matchMessage: expect.stringContaining("确定单计划发货 3，系统按当前库存建议 2"),
+      }),
+    ]);
+    expect(linesResponse.json().reduce((sum: number, line: { suggestedShipQty: number }) => sum + line.suggestedShipQty, 0)).toBe(4);
+
+    const submitted = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${imported.json().batch.id}/actions/submit-review`,
+      payload: { confirmUnverifiedStock: false },
+      headers: { cookie },
+    });
+    expect(submitted.statusCode).toBe(200);
 
     const exportResponse = await app.inject({
       method: "POST",
@@ -1002,11 +1307,207 @@ describe("api server", () => {
     });
     const workbook = XLSX.read(downloadResponse.rawPayload, { type: "buffer" });
     const rows = XLSX.utils.sheet_to_json<Record<string, string | number>>(workbook.Sheets["Sheet1"], { defval: "" });
-    expect(rows.map((row) => row["货品数量"])).toEqual([2, 3]);
+    expect(rows.map((row) => row["货品数量"])).toEqual([2, 2]);
     await app.close();
   });
 
-  it("queries confirmed-order stock in batches", async () => {
+  it("keeps zero-plan confirmed-order rows in review and skips them during export", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await seedSuccessfulGoodsCache(database);
+    await seedSingleWarehouseSnapshot(database, "3282770392869");
+    await database.close();
+
+    const app = buildTestServer(databaseUrl, undefined, fixedWarehouseStockClient());
+    const cookie = await loginCookie(app);
+    const imported = await app.inject({
+      method: "POST",
+      url: "/api/v1/confirmed-orders/import",
+      payload: {
+        fileName: "确定单-零计划量.xlsx",
+        contentBase64: confirmedOrderWorkbookBase64({
+          rows: [
+            { noticeNo: "NOTICE-ZERO", goodsCode: "3282770392869", barcode: "2153722460015", goodsName: "雅漾专研保湿修护面膜", orderQty: "10", shipQty: "0" },
+            { noticeNo: "NOTICE-POSITIVE", goodsCode: "3282770392869", barcode: "2153722460015", goodsName: "雅漾专研保湿修护面膜", orderQty: "6", shipQty: "2" },
+          ],
+        }),
+      },
+      headers: { cookie },
+    });
+    expect(imported.statusCode).toBe(201);
+    expect(imported.json()).toMatchObject({ parsedRowCount: 2, skippedRowCount: 0, batch: { status: "review_generated" } });
+
+    const linesResponse = await app.inject({
+      method: "GET",
+      url: `/api/v1/batches/${imported.json().batch.id}/review-lines`,
+      headers: { cookie },
+    });
+    expect(linesResponse.statusCode).toBe(200);
+    const zeroLine = linesResponse.json().find((line: { orderNoticeNo: string }) => line.orderNoticeNo === "NOTICE-ZERO");
+    expect(zeroLine).toMatchObject({
+      orderQty: 10,
+      plannedShipQty: 0,
+      suggestedShipQty: 0,
+      approvedShipQty: 0,
+      decision: "do_not_ship",
+      fulfillmentWarehouseNo: "",
+    });
+    const positiveLine = linesResponse.json().find((line: { orderNoticeNo: string }) => line.orderNoticeNo === "NOTICE-POSITIVE");
+    expect(positiveLine).toMatchObject({ orderQty: 6, plannedShipQty: 2, suggestedShipQty: 2, approvedShipQty: 2 });
+
+    await seedStoreAddresses(app, cookie, linesResponse.json());
+    const submitted = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${imported.json().batch.id}/actions/submit-review`,
+      payload: { confirmUnverifiedStock: false },
+      headers: { cookie },
+    });
+    expect(submitted.statusCode).toBe(200);
+    const exportResponse = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${imported.json().batch.id}/exports`,
+      payload: { type: "wdt_import" },
+      headers: { cookie },
+    });
+    expect(exportResponse.statusCode).toBe(201);
+    const downloadResponse = await app.inject({ method: "GET", url: exportResponse.json().downloadUrl, headers: { cookie } });
+    const workbook = XLSX.read(downloadResponse.rawPayload, { type: "buffer" });
+    const rows = XLSX.utils.sheet_to_json<Record<string, string | number>>(workbook.Sheets["Sheet1"], { defval: "" });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ 客服备注: "NOTICE-POSITIVE", 货品数量: 2 });
+    await app.close();
+  });
+
+  it("supports preserve and replace strategies when rebuilding confirmed-order suggestions", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await seedSuccessfulGoodsCache(database);
+    await seedSingleWarehouseSnapshot(database, "3282770392869", 10);
+    await database.close();
+
+    const stockClient = failingRealtimeStockClient();
+    const app = buildTestServer(databaseUrl, undefined, stockClient);
+    const cookie = await loginCookie(app);
+    const imported = await app.inject({
+      method: "POST",
+      url: "/api/v1/confirmed-orders/import",
+      payload: { fileName: "确定单-重算策略.xlsx", contentBase64: confirmedOrderWorkbookBase64() },
+      headers: { cookie },
+    });
+    const initialLines = await app.inject({ method: "GET", url: `/api/v1/batches/${imported.json().batch.id}/review-lines`, headers: { cookie } });
+    const [firstLine] = initialLines.json();
+    const manualDecision = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/batches/${imported.json().batch.id}/review-lines/${firstLine.id}/decision`,
+      payload: {
+        decision: "ship",
+        approvedShipQty: 7,
+        fulfillmentWarehouseNo: "LINQI",
+        fulfillmentWarehouseName: "临期仓",
+        reason: "人工保留结果",
+      },
+      headers: { cookie },
+    });
+    expect(manualDecision.statusCode).toBe(200);
+    const priority = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/batches/${imported.json().batch.id}/review-lines/${firstLine.id}/priority`,
+      payload: { priority: true, reason: "VIP临时优先" },
+      headers: { cookie },
+    });
+    expect(priority.statusCode).toBe(200);
+
+    const availableSendStock = 3;
+    const preserveDatabase = createDatabaseContext(databaseUrl);
+    await preserveDatabase.ready;
+    await seedSingleWarehouseSnapshot(preserveDatabase, "3282770392869", availableSendStock, "001", "主仓", "2026-07-03T00:02:00.000Z");
+    await preserveDatabase.close();
+    const preserved = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${imported.json().batch.id}/actions/rebuild-confirmed-order`,
+      payload: { strategy: "preserve" },
+      headers: { cookie },
+    });
+    expect(preserved.statusCode).toBe(200);
+    expect(preserved.json().batch.status).toBe("review_generated");
+    const preservedLines = await app.inject({ method: "GET", url: `/api/v1/batches/${imported.json().batch.id}/review-lines`, headers: { cookie } });
+    expect(preservedLines.json().find((line: { id: string }) => line.id === firstLine.id)).toMatchObject({
+      suggestedShipQty: 2,
+      suggestedWarehouseNo: "001",
+      approvedShipQty: 7,
+      fulfillmentWarehouseNo: "LINQI",
+      reason: "人工保留结果",
+      priority: true,
+      priorityReason: "VIP临时优先",
+    });
+
+    const replacementAvailableSendStock = 1;
+    const replaceDatabase = createDatabaseContext(databaseUrl);
+    await replaceDatabase.ready;
+    await seedSingleWarehouseSnapshot(replaceDatabase, "3282770392869", replacementAvailableSendStock, "001", "主仓", "2026-07-03T00:03:00.000Z");
+    await replaceDatabase.close();
+    const replaced = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${imported.json().batch.id}/actions/rebuild-confirmed-order`,
+      payload: { strategy: "replace" },
+      headers: { cookie },
+    });
+    expect(replaced.statusCode).toBe(200);
+    expect(replaced.json().batch.status).toBe("review_generated");
+    const replacedLines = await app.inject({ method: "GET", url: `/api/v1/batches/${imported.json().batch.id}/review-lines`, headers: { cookie } });
+    expect(replacedLines.json().find((line: { id: string }) => line.id === firstLine.id)).toMatchObject({
+      suggestedShipQty: 1,
+      approvedShipQty: 1,
+      fulfillmentWarehouseNo: "001",
+      fulfillmentWarehouseName: "主仓",
+      reason: "人工保留结果",
+      priority: true,
+      priorityReason: "VIP临时优先",
+    });
+    await app.close();
+  });
+
+  it("applies VIP-first fair allocation to confirmed-order planned quantities", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await seedVipAllocationGoodsCache(database);
+    await seedVipStoreAddress(database, "VIP-1", "VIP一店");
+    await seedVipStoreAddress(database, "VIP-2", "VIP二店");
+    await seedSingleWarehouseSnapshot(database, "VIP-SPEC", 6);
+    await database.close();
+
+    const app = buildTestServer(databaseUrl, undefined, fixedWarehouseStockClient(6));
+    const cookie = await loginCookie(app);
+    const imported = await app.inject({
+      method: "POST",
+      url: "/api/v1/confirmed-orders/import",
+      payload: {
+        fileName: "确定单-VIP分货.xlsx",
+        contentBase64: confirmedOrderWorkbookBase64({
+          rows: [
+            { noticeNo: "VIP-ORDER-1", storeNo: "VIP-1", storeName: "VIP一店", goodsCode: "VIP-GOODS", barcode: "VIP-BARCODE", goodsName: "VIP分货测试商品", shipQty: "4" },
+            { noticeNo: "VIP-ORDER-2", storeNo: "VIP-2", storeName: "VIP二店", goodsCode: "VIP-GOODS", barcode: "VIP-BARCODE", goodsName: "VIP分货测试商品", shipQty: "4" },
+            { noticeNo: "REG-ORDER-1", storeNo: "REG-1", storeName: "普通一店", goodsCode: "VIP-GOODS", barcode: "VIP-BARCODE", goodsName: "VIP分货测试商品", shipQty: "4" },
+            { noticeNo: "REG-ORDER-2", storeNo: "REG-2", storeName: "普通二店", goodsCode: "VIP-GOODS", barcode: "VIP-BARCODE", goodsName: "VIP分货测试商品", shipQty: "4" },
+          ],
+        }),
+      },
+      headers: { cookie },
+    });
+    expect(imported.statusCode).toBe(201);
+    const linesResponse = await app.inject({ method: "GET", url: `/api/v1/batches/${imported.json().batch.id}/review-lines`, headers: { cookie } });
+    const byStore = reviewLinesByStore(linesResponse.json());
+    expect(byStore.get("VIP-1")).toMatchObject({ plannedShipQty: 4, suggestedShipQty: 3, approvedShipQty: 3, status: "部分满足" });
+    expect(byStore.get("VIP-2")).toMatchObject({ plannedShipQty: 4, suggestedShipQty: 3, approvedShipQty: 3, status: "部分满足" });
+    expect(byStore.get("REG-1")).toMatchObject({ plannedShipQty: 4, suggestedShipQty: 0, approvedShipQty: 0, status: "库存不足" });
+    expect(byStore.get("REG-2")).toMatchObject({ plannedShipQty: 4, suggestedShipQty: 0, approvedShipQty: 0, status: "库存不足" });
+    await app.close();
+  });
+
+  it("reads confirmed-order stock from one local snapshot without calling the realtime client", async () => {
     const databaseUrl = testDatabaseUrl();
     const database = createDatabaseContext(databaseUrl);
     await database.ready;
@@ -1025,6 +1526,13 @@ describe("api server", () => {
       modified: now,
       rawJson: "{}",
       syncedAt: now,
+    });
+    await seedSuccessfulStockSnapshot(database, {
+      verifiedSpecNos: ["3282770392869", "SPEC-2"],
+      rows: [
+        { specNo: "3282770392869", warehouseNo: "MAIN-A", warehouseName: "OLE主仓", availableSendStock: 6 },
+        { specNo: "SPEC-2", warehouseNo: "MAIN-A", warehouseName: "OLE主仓", availableSendStock: 8 },
+      ],
     });
     await database.close();
 
@@ -1066,7 +1574,7 @@ describe("api server", () => {
       headers: { cookie },
     });
     expect(imported.statusCode).toBe(201);
-    expect(stockBatches).toEqual([["3282770392869", "SPEC-2"]]);
+    expect(stockBatches).toEqual([]);
 
     const linesResponse = await app.inject({
       method: "GET",
@@ -1078,11 +1586,12 @@ describe("api server", () => {
     await app.close();
   });
 
-  it("retries confirmed-order stock batches after WDT concurrency errors", async () => {
+  it("does not call realtime stock APIs while importing confirmed orders", async () => {
     const databaseUrl = testDatabaseUrl();
     const database = createDatabaseContext(databaseUrl);
     await database.ready;
     await seedSuccessfulGoodsCache(database);
+    await seedSingleWarehouseSnapshot(database, "3282770392869", 9);
     await database.close();
 
     let callCount = 0;
@@ -1118,7 +1627,7 @@ describe("api server", () => {
       headers: { cookie },
     });
     expect(imported.statusCode).toBe(201);
-    expect(callCount).toBe(2);
+    expect(callCount).toBe(0);
 
     const linesResponse = await app.inject({
       method: "GET",
@@ -1133,11 +1642,28 @@ describe("api server", () => {
     await app.close();
   });
 
-  it("keeps confirmed-order stock error details separate from user-facing messages", async () => {
+  it("distinguishes snapshot-uncovered SKUs from verified zero stock", async () => {
     const databaseUrl = testDatabaseUrl();
     const database = createDatabaseContext(databaseUrl);
     await database.ready;
     await seedSuccessfulGoodsCache(database);
+    await seedSuccessfulStockSnapshot(database, {
+      verifiedSpecNos: ["ZERO-STOCK-SPEC"],
+    });
+    await database.db.insert(wdtGoodsSpecs).values({
+      id: "wdt-goods-spec-zero-stock",
+      goodsNo: "ZERO-STOCK-GOODS",
+      goodsName: "零库存已核验商品",
+      specNo: "ZERO-STOCK-SPEC",
+      specName: "单支",
+      specCode: "",
+      barcode: "ZERO-STOCK-BARCODE",
+      barcodesJson: JSON.stringify(["ZERO-STOCK-BARCODE"]),
+      deleted: 0,
+      modified: "2026-07-03T00:00:00.000Z",
+      rawJson: "{}",
+      syncedAt: "2026-07-03T00:00:00.000Z",
+    });
     await database.close();
 
     const stockClient: StockLookupClient = {
@@ -1156,7 +1682,12 @@ describe("api server", () => {
       url: "/api/v1/confirmed-orders/import",
       payload: {
         fileName: "确定单-库存失败.xlsx",
-        contentBase64: confirmedOrderWorkbookBase64(),
+        contentBase64: confirmedOrderWorkbookBase64({
+          rows: [
+            { noticeNo: "NOTICE-UNCOVERED", goodsCode: "3282770392869", barcode: "2153722460015", goodsName: "雅漾专研保湿修护面膜", shipQty: "2" },
+            { noticeNo: "NOTICE-ZERO", goodsCode: "ZERO-STOCK-SPEC", barcode: "ZERO-STOCK-BARCODE", goodsName: "零库存已核验商品", shipQty: "2" },
+          ],
+        }),
       },
       headers: { cookie },
     });
@@ -1169,11 +1700,45 @@ describe("api server", () => {
     });
     expect(linesResponse.statusCode).toBe(200);
     expect(linesResponse.json()).toHaveLength(2);
-    for (const line of linesResponse.json()) {
-      expect(line.matchMessage).toContain("确定单库存查询失败。仅提示，不调整做单数量");
-      expect(line.matchMessage).not.toContain("超过每分钟最大调用频率限制");
-      expect(line.stockErrorDetail).toContain("status=100 message=超过每分钟最大调用频率限制，请稍后重试");
-    }
+    const uncoveredLine = linesResponse.json().find((line: { orderNoticeNo: string }) => line.orderNoticeNo === "NOTICE-UNCOVERED");
+    expect(uncoveredLine).toMatchObject({ status: "库存未验证", decision: "pending", suggestedShipQty: 0, approvedShipQty: 0 });
+    expect(uncoveredLine.stockErrorDetail).toBe("LOCAL_STOCK_SNAPSHOT_MISSING");
+    const zeroStockLine = linesResponse.json().find((line: { orderNoticeNo: string }) => line.orderNoticeNo === "NOTICE-ZERO");
+    expect(zeroStockLine).toMatchObject({ status: "库存不足", decision: "pending", suggestedShipQty: 0, approvedShipQty: 0 });
+    expect(zeroStockLine.stockErrorDetail).toBe("");
+
+    const manualLine = uncoveredLine;
+    const manualDecision = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/batches/${imported.json().batch.id}/review-lines/${manualLine.id}/decision`,
+      payload: {
+        decision: "ship",
+        approvedShipQty: 2,
+        fulfillmentWarehouseNo: "001",
+        fulfillmentWarehouseName: "主仓",
+        reason: "人工核对库存后决定",
+      },
+      headers: { cookie },
+    });
+    expect(manualDecision.statusCode).toBe(200);
+
+    const warning = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${imported.json().batch.id}/actions/submit-review`,
+      payload: { confirmUnverifiedStock: false },
+      headers: { cookie },
+    });
+    expect(warning.statusCode).toBe(409);
+    expect(warning.json()).toMatchObject({ requiresConfirmation: true, code: "UNVERIFIED_STOCK", affectedCount: 1 });
+
+    const confirmed = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${imported.json().batch.id}/actions/submit-review`,
+      payload: { confirmUnverifiedStock: true },
+      headers: { cookie },
+    });
+    expect(confirmed.statusCode).toBe(200);
+    expect(confirmed.json()).toMatchObject({ requiresConfirmation: false, batch: { status: "reviewed" } });
     await app.close();
   });
 
@@ -1182,6 +1747,7 @@ describe("api server", () => {
     const database = createDatabaseContext(databaseUrl);
     await database.ready;
     await seedSuccessfulGoodsCache(database);
+    await seedSingleWarehouseSnapshot(database, "3282770392869");
     await database.db.insert(storeAddresses).values({
       id: "store-address-correct-store-fields",
       storeNo: "S001",
@@ -1203,7 +1769,7 @@ describe("api server", () => {
     });
     await database.close();
 
-    const app = buildTestServer(databaseUrl);
+    const app = buildTestServer(databaseUrl, undefined, fixedWarehouseStockClient());
     const cookie = await loginCookie(app);
     const imported = await app.inject({
       method: "POST",
@@ -1264,6 +1830,14 @@ describe("api server", () => {
     expect(addressRows).toHaveLength(1);
     expect(addressRows[0]).toMatchObject({ storeNo: "S001", storeName: "Ole确定单门店", receiver: "正确收件人" });
 
+    const submitted = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${imported.json().batch.id}/actions/submit-review`,
+      payload: { confirmUnverifiedStock: false },
+      headers: { cookie },
+    });
+    expect(submitted.statusCode).toBe(200);
+
     const exportResponse = await app.inject({
       method: "POST",
       url: `/api/v1/batches/${imported.json().batch.id}/exports`,
@@ -1292,9 +1866,10 @@ describe("api server", () => {
     const database = createDatabaseContext(databaseUrl);
     await database.ready;
     await seedSuccessfulGoodsCache(database);
+    await seedSingleWarehouseSnapshot(database, "3282770392869");
     await database.close();
 
-    const app = buildTestServer(databaseUrl);
+    const app = buildTestServer(databaseUrl, undefined, fixedWarehouseStockClient());
     const cookie = await loginCookie(app);
     const imported = await app.inject({
       method: "POST",
@@ -1312,7 +1887,7 @@ describe("api server", () => {
     expect(imported.statusCode).toBe(201);
     expect(imported.json()).toMatchObject({
       unmatchedRowCount: 2,
-      batch: { sourceType: "confirmed_order", status: "reviewed" },
+      batch: { sourceType: "confirmed_order", status: "review_generated" },
     });
 
     const rejectedRealReview = await app.inject({
@@ -1342,13 +1917,14 @@ describe("api server", () => {
     const rebuilt = await app.inject({
       method: "POST",
       url: `/api/v1/batches/${imported.json().batch.id}/actions/rebuild-confirmed-order`,
+      payload: { strategy: "preserve" },
       headers: { cookie },
     });
     expect(rebuilt.statusCode).toBe(200);
     expect(rebuilt.json()).toMatchObject({
       matchedRowCount: 2,
       unmatchedRowCount: 0,
-      batch: { sourceType: "confirmed_order", status: "reviewed" },
+      batch: { sourceType: "confirmed_order", status: "review_generated" },
     });
 
     const linesResponse = await app.inject({
@@ -1387,6 +1963,53 @@ describe("api server", () => {
       missingAddressCount: 0,
       missingStores: [],
     });
+    await app.close();
+  });
+
+  it("blocks review submission and make-order export when a shippable legacy row has no warehouse", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const firstApp = buildTestServer(databaseUrl);
+    const { batch, lines } = await createReviewedBatch(firstApp, "examples/mock_flow_mixed.json");
+    const shipLine = lines.find((line: { decision: string; approvedShipQty: number }) => line.decision === "ship" && line.approvedShipQty > 0);
+    expect(shipLine).toBeTruthy();
+    await firstApp.close();
+
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await database.db
+      .update(reviewDecisions)
+      .set({ fulfillmentWarehouseNo: "", fulfillmentWarehouseName: "" })
+      .where(eq(reviewDecisions.reviewLineId, shipLine.id));
+    await database.close();
+
+    const app = buildTestServer(databaseUrl);
+    const cookie = await loginCookie(app);
+    const readiness = await app.inject({
+      method: "GET",
+      url: `/api/v1/batches/${batch.id}/make-order-readiness`,
+      headers: { cookie },
+    });
+    expect(readiness.json()).toMatchObject({ canExport: false, missingWarehouseCount: 1 });
+    expect(readiness.json().missingWarehouseLines).toEqual([
+      expect.objectContaining({ reviewLineId: shipLine.id, orderNoticeNo: shipLine.orderNoticeNo }),
+    ]);
+
+    const submit = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${batch.id}/actions/submit-review`,
+      headers: { cookie },
+    });
+    expect(submit.statusCode).toBe(400);
+    expect(submit.json().message).toContain("未选择仓库");
+
+    const exportResponse = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${batch.id}/exports`,
+      payload: { type: "wdt_import" },
+      headers: { cookie },
+    });
+    expect(exportResponse.statusCode).toBe(201);
+    expect(exportResponse.json()).toMatchObject({ status: "failed", errorMessage: expect.stringContaining("未选择仓库") });
     await app.close();
   });
 
@@ -1533,7 +2156,13 @@ describe("api server", () => {
     await app.inject({
       method: "PATCH",
       url: `/api/v1/batches/${batch.id}/review-lines/${shipLine.id}/decision`,
-      payload: { decision: "ship", approvedShipQty: 3, reason: "" },
+      payload: {
+        decision: "ship",
+        approvedShipQty: 3,
+        fulfillmentWarehouseNo: shipLine.suggestedWarehouseNo,
+        fulfillmentWarehouseName: shipLine.suggestedWarehouseName,
+        reason: "",
+      },
       headers: { cookie },
     });
     const exportResponse = await app.inject({
@@ -2203,7 +2832,13 @@ describe("api server", () => {
     await app.inject({
       method: "PATCH",
       url: `/api/v1/batches/${batch.id}/review-lines/${shipLine.id}/decision`,
-      payload: { decision: "ship", approvedShipQty: 3, reason: "门店优先处理" },
+      payload: {
+        decision: "ship",
+        approvedShipQty: 3,
+        fulfillmentWarehouseNo: shipLine.suggestedWarehouseNo,
+        fulfillmentWarehouseName: shipLine.suggestedWarehouseName,
+        reason: "门店优先处理",
+      },
       headers: { cookie },
     });
     await app.inject({
@@ -2324,7 +2959,8 @@ describe("api server", () => {
   });
 
   it("runs WDT goods sync and searches cached specs", async () => {
-    const app = buildTestServer(testDatabaseUrl(), {
+    const databaseUrl = testDatabaseUrl();
+    const app = buildTestServer(databaseUrl, {
       async queryGoodsWindow({ pageSize }) {
         expect(pageSize).toBe(500);
         return {
@@ -2379,6 +3015,18 @@ describe("api server", () => {
     expect(latest.statusCode).toBe(200);
     expect(latest.json().status).toBe("success");
 
+    const snapshotDatabase = createDatabaseContext(databaseUrl);
+    await snapshotDatabase.ready;
+    await seedSuccessfulStockSnapshot(snapshotDatabase, {
+      verifiedSpecNos: ["3282770392869"],
+      rows: [
+        { specNo: "3282770392869", warehouseNo: "001", warehouseName: "主仓", availableSendStock: 8 },
+        { specNo: "3282770392869", warehouseNo: "LINQI", warehouseName: "临期仓", availableSendStock: 2 },
+        { specNo: "3282770392869", warehouseNo: "CIPIN", warehouseName: "次品仓", availableSendStock: 99 },
+      ],
+    });
+    await snapshotDatabase.close();
+
     const search = await app.inject({
       method: "GET",
       url: "/api/v1/wdt/goods-specs/search?query=雅漾",
@@ -2393,7 +3041,6 @@ describe("api server", () => {
       stockRows: expect.arrayContaining([
         expect.objectContaining({ warehouseNo: "001", warehouseName: "主仓", availableSendStock: 8, included: true }),
         expect.objectContaining({ warehouseNo: "LINQI", warehouseName: "临期仓", availableSendStock: 2, included: true }),
-        expect.objectContaining({ warehouseNo: "CIPIN", warehouseName: "次品仓", availableSendStock: 99, included: false }),
       ]),
     });
     await app.close();
@@ -2519,7 +3166,7 @@ describe("api server", () => {
     await app.close();
   });
 
-  it("lists product match candidates for mapping confirmation", async () => {
+  it("lists product match candidates with stock from the active local snapshot", async () => {
     const databaseUrl = testDatabaseUrl();
     const database = createDatabaseContext(databaseUrl);
     await database.ready;
@@ -2593,23 +3240,16 @@ describe("api server", () => {
         createdAt: "2026-07-03T00:03:00.000Z",
       },
     ]);
+    await seedSuccessfulStockSnapshot(database, {
+      verifiedSpecNos: ["3282770392869", "OTHER-SPEC", "LOW-STOCK-SPEC"],
+      rows: [
+        { specNo: "3282770392869", warehouseNo: "001", warehouseName: "主仓", availableSendStock: 12 },
+        { specNo: "3282770392869", warehouseNo: "LINQI", warehouseName: "临期仓", availableSendStock: 3 },
+        { specNo: "3282770392869", warehouseNo: "CIPIN", warehouseName: "次品仓", availableSendStock: 99 },
+      ],
+    });
     await database.close();
-    const stockClient: StockLookupClient = {
-      async queryStock(specNo) {
-        const availableStock = specNo === "LOW-STOCK-SPEC" ? 0 : 12;
-        return {
-          status: 0,
-          data: {
-            total_count: 3,
-            detail_list: [
-              { spec_no: specNo, warehouse_no: "001", warehouse_name: "主仓", available_send_stock: availableStock },
-              { spec_no: specNo, warehouse_no: "LINQI", warehouse_name: "临期仓", available_send_stock: specNo === "LOW-STOCK-SPEC" ? 0 : 3 },
-              { spec_no: specNo, warehouse_no: "CIPIN", warehouse_name: "次品仓", available_send_stock: 99 },
-            ],
-          },
-        };
-      },
-    };
+    const stockClient = failingRealtimeStockClient();
     const app = buildTestServer(databaseUrl, undefined, stockClient);
     const cookie = await loginCookie(app);
 
@@ -2634,7 +3274,6 @@ describe("api server", () => {
           stockRows: expect.arrayContaining([
             expect.objectContaining({ warehouseNo: "001", warehouseName: "主仓", availableSendStock: 12, included: true }),
             expect.objectContaining({ warehouseNo: "LINQI", warehouseName: "临期仓", availableSendStock: 3, included: true }),
-            expect.objectContaining({ warehouseNo: "CIPIN", warehouseName: "次品仓", availableSendStock: 99, included: false }),
           ]),
         }),
         expect.objectContaining({
@@ -2712,28 +3351,21 @@ describe("api server", () => {
     await app.close();
   });
 
-  it("runs real review from cached goods specs and read-only WDT stock", async () => {
+  it("runs real review from cached goods specs and a local stock snapshot", async () => {
     const databaseUrl = testDatabaseUrl();
     const database = createDatabaseContext(databaseUrl);
     await database.ready;
     await seedSuccessfulGoodsCache(database);
+    await seedSuccessfulStockSnapshot(database, {
+      verifiedSpecNos: ["3282770392869"],
+      rows: [
+        { specNo: "3282770392869", warehouseNo: "001", warehouseName: "主仓", availableSendStock: 15 },
+        { specNo: "3282770392869", warehouseNo: "LINQI", warehouseName: "临期仓", availableSendStock: 5 },
+      ],
+    });
     await database.close();
 
-    const stockClient: StockLookupClient = {
-      async queryStock(specNo) {
-        expect(specNo).toBe("3282770392869");
-        return {
-          status: 0,
-          data: {
-            total_count: 2,
-            detail_list: [
-              { spec_no: specNo, warehouse_no: "001", warehouse_name: "主仓", available_send_stock: 15 },
-              { spec_no: specNo, warehouse_no: "LINQI", warehouse_name: "临期仓", available_send_stock: 5 },
-            ],
-          },
-        };
-      },
-    };
+    const stockClient = failingRealtimeStockClient();
     const app = buildTestServer(databaseUrl, undefined, stockClient);
     const cookie = await loginCookie(app);
     const created = await app.inject({
@@ -2752,7 +3384,15 @@ describe("api server", () => {
     });
 
     expect(review.statusCode).toBe(200);
-    expect(review.json()).toMatchObject({ batch: { status: "review_generated", orderLineCount: 40 }, stockQueriedCount: 1 });
+    expect(review.json()).toMatchObject({
+      batch: {
+        status: "review_generated",
+        orderLineCount: 40,
+        stockSnapshotRunId: expect.stringMatching(/^wdt-sync-/),
+        stockSnapshotAt: "2026-07-03T00:01:00.000Z",
+      },
+      stockQueriedCount: 10,
+    });
 
     const lines = await app.inject({
       method: "GET",
@@ -2766,12 +3406,78 @@ describe("api server", () => {
     await app.close();
   });
 
+  it("suggests one warehouse per line without combining warehouse stock", async () => {
+    const scenarios = [
+      { name: "satisfying-near", main: 1, near: 3, expectedQty: 2, expectedWarehouseNo: "LINQI" },
+      { name: "tie-main", main: 1, near: 1, expectedQty: 1, expectedWarehouseNo: "001" },
+      { name: "largest-near", main: 0, near: 1, expectedQty: 1, expectedWarehouseNo: "LINQI" },
+    ];
+
+    for (const scenario of scenarios) {
+      const databaseUrl = testDatabaseUrl();
+      const database = createDatabaseContext(databaseUrl);
+      await database.ready;
+      await seedSuccessfulGoodsCache(database);
+      await seedSingleComponentSuite(database);
+      await seedSuccessfulStockSnapshot(database, {
+        verifiedSpecNos: ["021700004"],
+        rows: [
+          { specNo: "021700004", warehouseNo: "001", warehouseName: "主仓", availableSendStock: scenario.main },
+          { specNo: "021700004", warehouseNo: "LINQI", warehouseName: "临期仓", availableSendStock: scenario.near },
+        ],
+      });
+      await database.close();
+      const suiteOrderFile = createSuiteOrderFile(resolve(projectRoot, `outputs/fixtures/suite-order-${scenario.name}.xlsx`));
+      const stockClient: StockLookupClient = {
+        async queryStock(specNo) {
+          return {
+            status: 0,
+            data: {
+              total_count: 2,
+              detail_list: [
+                { spec_no: specNo, warehouse_no: "001", warehouse_name: "主仓", available_send_stock: scenario.main },
+                { spec_no: specNo, warehouse_no: "LINQI", warehouse_name: "临期仓", available_send_stock: scenario.near },
+              ],
+            },
+          };
+        },
+      };
+      const app = buildTestServer(databaseUrl, undefined, stockClient);
+      const cookie = await loginCookie(app);
+      const created = await app.inject({
+        method: "POST",
+        url: "/api/v1/batches",
+        payload: { filePath: suiteOrderFile, mode: "production_api" },
+        headers: { cookie },
+      });
+      await app.inject({
+        method: "POST",
+        url: `/api/v1/batches/${created.json().id}/actions/run-real-review`,
+        payload: {},
+        headers: { cookie },
+      });
+      const linesResponse = await app.inject({
+        method: "GET",
+        url: `/api/v1/batches/${created.json().id}/review-lines`,
+        headers: { cookie },
+      });
+      expect(linesResponse.json()[0]).toMatchObject({
+        suggestedShipQty: scenario.expectedQty,
+        approvedShipQty: scenario.expectedQty,
+        suggestedWarehouseNo: scenario.expectedWarehouseNo,
+        fulfillmentWarehouseNo: scenario.expectedWarehouseNo,
+      });
+      await app.close();
+    }
+  });
+
   it("matches single-component WDT suites and exports the suite code for make-order", async () => {
     const databaseUrl = testDatabaseUrl();
     const database = createDatabaseContext(databaseUrl);
     await database.ready;
     await seedSuccessfulGoodsCache(database);
     await seedSingleComponentSuite(database);
+    await seedSingleWarehouseSnapshot(database, "021700004", 10);
     await database.close();
 
     const suiteOrderFile = createSuiteOrderFile(resolve(projectRoot, "outputs/fixtures/suite-order.xlsx"));
@@ -2820,6 +3526,13 @@ describe("api server", () => {
       approvedShipQty: 2,
     });
     await seedStoreAddresses(app, cookie, [line]);
+    const submitted = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${batch.id}/actions/submit-review`,
+      payload: { confirmUnverifiedStock: false },
+      headers: { cookie },
+    });
+    expect(submitted.statusCode).toBe(200);
 
     const exportResponse = await app.inject({
       method: "POST",
@@ -2847,6 +3560,7 @@ describe("api server", () => {
     const database = createDatabaseContext(databaseUrl);
     await database.ready;
     await seedSingleComponentSuite(database);
+    await seedSingleWarehouseSnapshot(database, "021700004", 8);
     await database.close();
 
     const stockClient: StockLookupClient = {
@@ -2904,6 +3618,7 @@ describe("api server", () => {
     const database = createDatabaseContext(databaseUrl);
     await database.ready;
     await seedSuccessfulGoodsCache(database);
+    await seedSingleWarehouseSnapshot(database, "3282770392869", 1, "MAIN-A", "OLE主仓");
     await database.close();
 
     const stockClient: StockLookupClient = {
@@ -2960,6 +3675,7 @@ describe("api server", () => {
     await seedVipAllocationGoodsCache(database);
     await seedVipStoreAddress(database, "VIP-1", "VIP一店");
     await seedVipStoreAddress(database, "VIP-2", "VIP二店");
+    await seedSingleWarehouseSnapshot(database, "VIP-SPEC", 6);
     await database.close();
 
     const stockClient: StockLookupClient = {
@@ -3010,6 +3726,7 @@ describe("api server", () => {
     await seedVipAllocationGoodsCache(database);
     await seedVipStoreAddress(database, "VIP-1", "VIP一店");
     await seedVipStoreAddress(database, "VIP-2", "VIP二店");
+    await seedSingleWarehouseSnapshot(database, "VIP-SPEC", 10);
     await database.close();
 
     const stockClient: StockLookupClient = {
@@ -3058,6 +3775,14 @@ describe("api server", () => {
     const database = createDatabaseContext(databaseUrl);
     await database.ready;
     await seedSuccessfulGoodsCache(database);
+    await seedSuccessfulStockSnapshot(database, {
+      verifiedSpecNos: ["3282770392869"],
+      rows: [
+        { specNo: "3282770392869", warehouseNo: "001", warehouseName: "main", availableSendStock: 1 },
+        { specNo: "3282770392869", warehouseNo: "LINQI", warehouseName: "near-expiry", availableSendStock: 40 },
+        { specNo: "3282770392869", warehouseNo: "002", warehouseName: "other", availableSendStock: 40 },
+      ],
+    });
     await database.close();
 
     const stockClient: StockLookupClient = {
@@ -3173,11 +3898,214 @@ describe("api server", () => {
     expect(sync.json().message).toContain("client is not configured");
     await app.close();
   });
+
+  it("returns the latest combined sync state, history, and active snapshot metadata", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await seedSuccessfulStockSnapshot(database, {
+      runId: "wdt-sync-success-history",
+      finishedAt: "2026-07-03T00:02:00.000Z",
+      verifiedSpecNos: ["SPEC-HISTORY"],
+      rows: [{ specNo: "SPEC-HISTORY", warehouseNo: "001", warehouseName: "主仓", availableSendStock: 7 }],
+    });
+    await database.db.insert(wdtSyncRuns).values({
+      id: "wdt-sync-failed-latest",
+      trigger: "hourly",
+      status: "failed",
+      stage: "complete",
+      goodsSyncRunId: "",
+      totalSpecCount: 40,
+      processedSpecCount: 0,
+      totalBatchCount: 1,
+      completedBatchCount: 0,
+      stockRowCount: 0,
+      startedAt: "2026-07-03T01:00:00.000Z",
+      finishedAt: "2026-07-03T01:00:05.000Z",
+      lastProgressAt: "2026-07-03T01:00:05.000Z",
+      errorCode: "WDT_STOCK_ERROR",
+      errorMessage: "旺店通库存同步失败",
+      errorDetail: "status=100 raw response",
+    });
+    await database.close();
+
+    const app = buildTestServer(databaseUrl);
+    const cookie = await loginCookie(app);
+    const latest = await app.inject({ method: "GET", url: "/api/v1/wdt/sync-runs/latest", headers: { cookie } });
+    expect(latest.statusCode).toBe(200);
+    expect(latest.json()).toMatchObject({
+      id: "wdt-sync-failed-latest",
+      trigger: "hourly",
+      status: "failed",
+      errorCode: "WDT_STOCK_ERROR",
+      errorDetail: "status=100 raw response",
+      activeSnapshotRunId: "wdt-sync-success-history",
+      activeSnapshotAt: "2026-07-03T00:02:00.000Z",
+      activeSnapshotTrigger: "manual",
+    });
+
+    const history = await app.inject({ method: "GET", url: "/api/v1/wdt/sync-runs", headers: { cookie } });
+    expect(history.statusCode).toBe(200);
+    expect(history.json().map((run: { id: string }) => run.id)).toEqual(["wdt-sync-failed-latest", "wdt-sync-success-history"]);
+    expect(history.json()[0]).toMatchObject({
+      activeSnapshotRunId: "wdt-sync-success-history",
+      activeSnapshotAt: "2026-07-03T00:02:00.000Z",
+      activeSnapshotTrigger: "manual",
+    });
+    await app.close();
+  });
+
+  it("starts a combined goods and stock sync in the background and reuses its active task", async () => {
+    const databaseUrl = testDatabaseUrl();
+    let releaseGoods!: () => void;
+    const goodsGate = new Promise<void>((resolve) => { releaseGoods = resolve; });
+    let goodsCalls = 0;
+    let stockCalls = 0;
+    const app = buildTestServer(databaseUrl, {
+      async queryGoodsWindow() {
+        goodsCalls += 1;
+        await goodsGate;
+        return {
+          totalCount: 1,
+          goods: [{ goods_no: "SYNC-GOODS", goods_name: "同步商品", spec_list: [{ spec_no: "SYNC-SPEC", barcode: "SYNC-SPEC" }] }],
+        };
+      },
+    }, {
+      async queryStock(specNo) {
+        stockCalls += 1;
+        return { status: 0, data: { total_count: 1, detail_list: [{ spec_no: specNo, warehouse_no: "001", warehouse_name: "主仓", available_send_stock: 5 }] } };
+      },
+      async queryStocks(specNos) {
+        stockCalls += 1;
+        return { status: 0, data: { total_count: specNos.length, detail_list: specNos.map((specNo) => ({ spec_no: specNo, warehouse_no: "001", warehouse_name: "主仓", available_send_stock: 5 })) } };
+      },
+    });
+    const cookie = await loginCookie(app);
+    const first = await app.inject({ method: "POST", url: "/api/v1/wdt/sync-runs", headers: { cookie } });
+    expect(first.statusCode).toBe(202);
+    expect(first.json()).toMatchObject({ alreadyRunning: false, run: { trigger: "manual", status: "queued" } });
+    const second = await app.inject({ method: "POST", url: "/api/v1/wdt/sync-runs", headers: { cookie } });
+    expect(second.statusCode).toBe(202);
+    expect(second.json()).toMatchObject({ alreadyRunning: true, run: { id: first.json().run.id } });
+    await expect.poll(() => goodsCalls).toBe(1);
+
+    releaseGoods();
+    await expect.poll(async () => (await app.inject({ method: "GET", url: "/api/v1/wdt/sync-runs/latest", headers: { cookie } })).json().status).toBe("success");
+    expect(stockCalls).toBe(1);
+    const completed = await app.inject({ method: "GET", url: "/api/v1/wdt/sync-runs/latest", headers: { cookie } });
+    expect(completed.json()).toMatchObject({
+      status: "success",
+      activeSnapshotRunId: first.json().run.id,
+      activeSnapshotTrigger: "manual",
+      totalSpecCount: 1,
+      processedSpecCount: 1,
+    });
+    await app.close();
+  });
+
+  it("recovers interrupted sync runs and removes their incomplete snapshot rows on startup", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await database.db.insert(wdtSyncRuns).values({
+      id: "wdt-sync-interrupted",
+      trigger: "hourly",
+      status: "running",
+      stage: "stock",
+      goodsSyncRunId: "goods-interrupted",
+      totalSpecCount: 1,
+      processedSpecCount: 1,
+      totalBatchCount: 1,
+      completedBatchCount: 1,
+      stockRowCount: 1,
+      startedAt: "2026-07-11T00:00:00.000Z",
+      finishedAt: "",
+      lastProgressAt: "2026-07-11T00:01:00.000Z",
+      errorCode: "",
+      errorMessage: "",
+      errorDetail: "",
+    });
+    await database.db.insert(wdtStockSnapshotSpecs).values({ syncRunId: "wdt-sync-interrupted", specNo: "SPEC-PARTIAL", syncedAt: "2026-07-11T00:01:00.000Z" });
+    await database.db.insert(wdtStockSnapshotRows).values({
+      id: "stock-partial",
+      syncRunId: "wdt-sync-interrupted",
+      specNo: "SPEC-PARTIAL",
+      warehouseNo: "001",
+      warehouseName: "主仓",
+      availableSendStock: 5,
+      rawJson: "{}",
+      syncedAt: "2026-07-11T00:01:00.000Z",
+    });
+    await database.close();
+
+    const app = buildTestServer(databaseUrl);
+    const cookie = await loginCookie(app);
+    const latest = await app.inject({ method: "GET", url: "/api/v1/wdt/sync-runs/latest", headers: { cookie } });
+    expect(latest.json()).toMatchObject({ id: "wdt-sync-interrupted", status: "failed", errorCode: "INTERRUPTED" });
+    await app.close();
+
+    const checked = createDatabaseContext(databaseUrl);
+    await checked.ready;
+    expect(await checked.db.select().from(wdtStockSnapshotSpecs).where(eq(wdtStockSnapshotSpecs.syncRunId, "wdt-sync-interrupted"))).toHaveLength(0);
+    expect(await checked.db.select().from(wdtStockSnapshotRows).where(eq(wdtStockSnapshotRows.syncRunId, "wdt-sync-interrupted"))).toHaveLength(0);
+    await checked.close();
+  });
+
+  it("queues a startup compensation sync only when the active snapshot is missing or stale", async () => {
+    const missingDatabaseUrl = testDatabaseUrl();
+    let missingGoodsCalls = 0;
+    const goodsClient: WdtGoodsWindowClient = {
+      async queryGoodsWindow() {
+        missingGoodsCalls += 1;
+        return { totalCount: 0, goods: [] };
+      },
+    };
+    const missingApp = buildTestServer(missingDatabaseUrl, goodsClient, fixedWarehouseStockClient(), { autoSyncEnabled: true });
+    const missingCookie = await loginCookie(missingApp);
+    await expect.poll(async () => (await missingApp.inject({ method: "GET", url: "/api/v1/wdt/sync-runs/latest", headers: { cookie: missingCookie } })).json().status).toBe("success");
+    const startupRun = await missingApp.inject({ method: "GET", url: "/api/v1/wdt/sync-runs/latest", headers: { cookie: missingCookie } });
+    expect(startupRun.json()).toMatchObject({ trigger: "startup", status: "success" });
+    expect(missingGoodsCalls).toBeGreaterThan(0);
+    await missingApp.close();
+
+    const freshDatabaseUrl = testDatabaseUrl();
+    const freshDatabase = createDatabaseContext(freshDatabaseUrl);
+    await freshDatabase.ready;
+    await seedSuccessfulStockSnapshot(freshDatabase, {
+      finishedAt: new Date().toISOString(),
+      verifiedSpecNos: [],
+    });
+    await freshDatabase.close();
+    let freshGoodsCalls = 0;
+    const freshApp = buildTestServer(freshDatabaseUrl, {
+      async queryGoodsWindow() {
+        freshGoodsCalls += 1;
+        return { totalCount: 0, goods: [] };
+      },
+    }, fixedWarehouseStockClient(), { autoSyncEnabled: true });
+    const freshCookie = await loginCookie(freshApp);
+    const freshLatest = await freshApp.inject({ method: "GET", url: "/api/v1/wdt/sync-runs/latest", headers: { cookie: freshCookie } });
+    expect(freshLatest.json()).toMatchObject({ status: "success", trigger: "manual" });
+    expect(freshGoodsCalls).toBe(0);
+    await freshApp.close();
+  });
+
+  it("returns 404 when no combined sync run has been recorded", async () => {
+    const app = buildTestServer();
+    const cookie = await loginCookie(app);
+    const latest = await app.inject({ method: "GET", url: "/api/v1/wdt/sync-runs/latest", headers: { cookie } });
+    expect(latest.statusCode).toBe(404);
+    expect(latest.json().message).toContain("not found");
+    await app.close();
+  });
 });
 
 function clearRuntimeEnvForTests() {
+  process.env.NODE_ENV = "test";
   delete process.env.JY_TRADE_UPLOAD_DIR;
   delete process.env.JY_TRADE_EXPORTS_DIR;
+  delete process.env.JY_TRADE_BOOTSTRAP_USERNAME;
+  delete process.env.JY_TRADE_BOOTSTRAP_PASSWORD;
   delete process.env.WDT_ENV;
   for (const key of Object.keys(process.env)) {
     if (key.startsWith("WDT_PROD_") || key.startsWith("WDT_TEST_")) {
@@ -3280,7 +4208,14 @@ async function createReviewedBatch(
   if (seedAddresses) {
     await seedStoreAddresses(app, cookie, lines);
   }
-  return { batch, lines, firstLine: lines[0], cookie };
+  const submitted = await app.inject({
+    method: "POST",
+    url: `/api/v1/batches/${batch.id}/actions/submit-review`,
+    payload: { confirmUnverifiedStock: false },
+    headers: { cookie },
+  });
+  expect(submitted.statusCode).toBe(200);
+  return { batch: submitted.json().batch, lines, firstLine: lines[0], cookie };
 }
 
 async function seedStoreAddresses(app: ReturnType<typeof buildApiServer>, cookie: string, lines: Array<{ storeNo: string; storeName: string }>) {
@@ -3305,7 +4240,7 @@ async function seedStoreAddresses(app: ReturnType<typeof buildApiServer>, cookie
   }
 }
 
-async function loginCookie(app: ReturnType<typeof buildApiServer>, username = "admin", password = "jymy") {
+async function loginCookie(app: ReturnType<typeof buildApiServer>, username = "admin", password = "yjmy") {
   const login = await app.inject({
     method: "POST",
     url: "/api/v1/auth/login",
@@ -3313,6 +4248,106 @@ async function loginCookie(app: ReturnType<typeof buildApiServer>, username = "a
   });
   expect(login.statusCode).toBe(200);
   return String(login.headers["set-cookie"]);
+}
+
+function fixedWarehouseStockClient(availableSendStock = 100): StockLookupClient {
+  return {
+    async queryStock(specNo) {
+      return {
+        status: 0,
+        data: {
+          total_count: 1,
+          detail_list: [{
+            spec_no: specNo,
+            warehouse_no: "001",
+            warehouse_name: "主仓",
+            available_send_stock: availableSendStock,
+          }],
+        },
+      };
+    },
+  };
+}
+
+function failingRealtimeStockClient(): StockLookupClient {
+  return {
+    async queryStock() {
+      throw new Error("business workflows must not call the realtime WDT stock API");
+    },
+    async queryStocks() {
+      throw new Error("business workflows must not call the realtime WDT stock API");
+    },
+  };
+}
+
+type StockSnapshotRowSeed = {
+  specNo: string;
+  warehouseNo: string;
+  warehouseName: string;
+  availableSendStock: number;
+};
+
+async function seedSuccessfulStockSnapshot(
+  database: ReturnType<typeof createDatabaseContext>,
+  options: {
+    runId?: string;
+    finishedAt?: string;
+    verifiedSpecNos: string[];
+    rows?: StockSnapshotRowSeed[];
+  },
+) {
+  const runId = options.runId ?? `wdt-sync-${randomUUID()}`;
+  const finishedAt = options.finishedAt ?? "2026-07-03T00:01:00.000Z";
+  await database.db.insert(wdtSyncRuns).values({
+    id: runId,
+    trigger: "manual",
+    status: "success",
+    stage: "complete",
+    goodsSyncRunId: "wdt-goods-sync-success",
+    totalSpecCount: options.verifiedSpecNos.length,
+    processedSpecCount: options.verifiedSpecNos.length,
+    totalBatchCount: options.verifiedSpecNos.length ? 1 : 0,
+    completedBatchCount: options.verifiedSpecNos.length ? 1 : 0,
+    stockRowCount: options.rows?.length ?? 0,
+    startedAt: "2026-07-03T00:00:00.000Z",
+    finishedAt,
+    lastProgressAt: finishedAt,
+    errorCode: "",
+    errorMessage: "",
+    errorDetail: "",
+  });
+  if (options.verifiedSpecNos.length) {
+    await database.db.insert(wdtStockSnapshotSpecs).values(options.verifiedSpecNos.map((specNo) => ({
+      syncRunId: runId,
+      specNo,
+      syncedAt: finishedAt,
+    })));
+  }
+  if (options.rows?.length) {
+    await database.db.insert(wdtStockSnapshotRows).values(options.rows.map((row, index) => ({
+      id: `${runId}-row-${index + 1}`,
+      syncRunId: runId,
+      ...row,
+      rawJson: JSON.stringify(row),
+      syncedAt: finishedAt,
+    })));
+  }
+  return { runId, finishedAt };
+}
+
+async function seedSingleWarehouseSnapshot(
+  database: ReturnType<typeof createDatabaseContext>,
+  specNo: string,
+  availableSendStock = 100,
+  warehouseNo = "001",
+  warehouseName = "主仓",
+  finishedAt?: string,
+) {
+  return seedSuccessfulStockSnapshot(database, {
+    finishedAt,
+    verifiedSpecNos: [specNo],
+    rows: [{ specNo, warehouseNo, warehouseName, availableSendStock }],
+  });
 }
 
 async function seedSuccessfulGoodsCache(database: ReturnType<typeof createDatabaseContext>) {
@@ -3547,9 +4582,13 @@ function confirmedOrderWorkbookBase64(
       goodsCode: string;
       barcode: string;
       goodsName: string;
+      storeNo?: string;
+      storeName?: string;
       spec?: string;
       orderQty?: string;
       shipQty: string;
+      mainWarehouseQty?: string;
+      nearExpiryWarehouseQty?: string;
       contractPrice?: string;
     }>;
     extraFirstSheet?: boolean;
@@ -3571,12 +4610,12 @@ function confirmedOrderWorkbookBase64(
   XLSX.utils.book_append_sheet(
     workbook,
     XLSX.utils.aoa_to_sheet([
-      ["审批单号", "通知单号", "收货地编码", "收货地名称", "业务员", "截止日期", "商品编码", "商品条码", "商品名称", "规格", "订货数量", "实际发货数量", "合同进价", "主仓"],
+      ["审批单号", "通知单号", "收货地编码", "收货地名称", "业务员", "截止日期", "商品编码", "商品条码", "商品名称", "规格", "订货数量", "实际发货数量", "合同进价", "主仓", "临期仓"],
       ...rows.map((row, index) => [
         row.approvalNo ?? `APPROVAL-${index + 1}`,
         row.noticeNo,
-        storeNo,
-        storeName,
+        row.storeNo ?? storeNo,
+        row.storeName ?? storeName,
         "原业务员",
         "2026-07-12",
         row.goodsCode,
@@ -3586,7 +4625,8 @@ function confirmedOrderWorkbookBase64(
         row.orderQty ?? row.shipQty,
         row.shipQty,
         row.contractPrice ?? "12.5",
-        "",
+        row.mainWarehouseQty ?? row.shipQty,
+        row.nearExpiryWarehouseQty ?? "",
       ]),
     ]),
     "确定单",

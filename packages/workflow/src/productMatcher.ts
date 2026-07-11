@@ -71,8 +71,57 @@ export function scoreProductCandidate(input: ProductMatchInput, candidate: Produ
 }
 
 export function decideProductMatch(input: ProductMatchInput, candidates: ProductCandidate[]): ProductMatchDecision {
+  const barcode = normalizeProductText(input.barcode);
+  if (barcode) {
+    const barcodeMatches = candidates
+      .filter((candidate) => (candidate.barcodes ?? []).some((value) => normalizeProductText(value) === barcode))
+      .map((candidate): ScoredProductCandidate => ({ ...candidate, score: 100, basis: "barcode" }))
+      .sort((left, right) => candidateKey(left).localeCompare(candidateKey(right)));
+    if (barcodeMatches.length === 1) {
+      return {
+        status: "matched",
+        candidate: barcodeMatches[0],
+        candidates: barcodeMatches,
+        message: "Matched by barcode",
+      };
+    }
+    if (barcodeMatches.length > 1) {
+      return {
+        status: "ambiguous",
+        candidates: barcodeMatches.slice(0, 8),
+        message: `Multiple barcode candidates found: ${summarizeCandidates(barcodeMatches)}`,
+      };
+    }
+  }
+
+  const goodsCode = normalizeProductText(input.goodsCode);
+  if (goodsCode) {
+    const codeMatches = candidates
+      .filter((candidate) => [candidate.goodsNo, candidate.specNo, candidate.specCode]
+        .some((value) => normalizeProductText(value) === goodsCode))
+      .map((candidate): ScoredProductCandidate => ({ ...candidate, score: 95, basis: "code" }))
+      .sort((left, right) => candidateKey(left).localeCompare(candidateKey(right)));
+    if (codeMatches.length === 1) {
+      return {
+        status: "matched",
+        candidate: codeMatches[0],
+        candidates: codeMatches,
+        message: "Matched by code",
+      };
+    }
+    if (codeMatches.length > 1) {
+      return {
+        status: "ambiguous",
+        candidates: codeMatches.slice(0, 8),
+        message: `Multiple code candidates found: ${summarizeCandidates(codeMatches)}`,
+      };
+    }
+  }
+
+  const inputName = normalizeProductText([input.goodsName, input.specName].filter(Boolean).join(""));
+  const variants = inputName ? inputNameVariants(inputName) : [];
   const scored = candidates
-    .map((candidate) => scoreProductCandidate(input, candidate))
+    .map((candidate) => scoreProductNameCandidate(variants, candidate))
     .filter((candidate): candidate is ScoredProductCandidate => Boolean(candidate))
     .sort((a, b) => b.score - a.score || candidateKey(a).localeCompare(candidateKey(b)));
 
@@ -81,40 +130,6 @@ export function decideProductMatch(input: ProductMatchInput, candidates: Product
       status: "not_found",
       candidates: scored.slice(0, 5),
       message: "No reliable WDT product candidate found",
-    };
-  }
-
-  const barcodeMatches = scored.filter((candidate) => candidate.basis === "barcode");
-  if (barcodeMatches.length === 1) {
-    return {
-      status: "matched",
-      candidate: barcodeMatches[0],
-      candidates: barcodeMatches,
-      message: "Matched by barcode",
-    };
-  }
-  if (barcodeMatches.length > 1) {
-    return {
-      status: "ambiguous",
-      candidates: barcodeMatches.slice(0, 8),
-      message: `Multiple barcode candidates found: ${summarizeCandidates(barcodeMatches)}`,
-    };
-  }
-
-  const codeMatches = scored.filter((candidate) => candidate.basis === "code");
-  if (codeMatches.length === 1) {
-    return {
-      status: "matched",
-      candidate: codeMatches[0],
-      candidates: codeMatches,
-      message: "Matched by code",
-    };
-  }
-  if (codeMatches.length > 1) {
-    return {
-      status: "ambiguous",
-      candidates: codeMatches.slice(0, 8),
-      message: `Multiple code candidates found: ${summarizeCandidates(codeMatches)}`,
     };
   }
 
@@ -135,6 +150,21 @@ export function decideProductMatch(input: ProductMatchInput, candidates: Product
     candidates: scored.slice(0, 5),
     message: `Name candidate needs human confirmation: ${summarizeCandidate(best)}`,
   };
+}
+
+function scoreProductNameCandidate(
+  variants: ProductNameVariant[],
+  candidate: ProductCandidate,
+): ScoredProductCandidate | undefined {
+  const candidateName = normalizeProductText([candidate.goodsName, candidate.specName].filter(Boolean).join(""));
+  if (variants.length === 0 || !candidateName) return undefined;
+
+  const nameScores = variants
+    .map((variant) => scoreNameVariant(variant, candidateName))
+    .filter((score): score is Pick<ScoredProductCandidate, "score" | "basis"> => Boolean(score))
+    .sort((left, right) => right.score - left.score);
+  const bestNameScore = nameScores[0];
+  return bestNameScore ? { ...candidate, ...bestNameScore } : undefined;
 }
 
 function diceCoefficient(a: string, b: string): number {

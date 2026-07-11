@@ -49,7 +49,7 @@ npm ci
 ```bash
 cp .env.production.example .env
 chmod 600 .env
-mkdir -p data/uploads data/exports backups
+mkdir -p data/uploads data/exports /opt/jy-trade/backups
 ```
 
 `data/uploads`、`data/exports` 和 SQLite 数据库父目录会由应用或迁移命令自动创建；上面的 `mkdir` 只是首次部署时显式预创建，便于检查权限和目录位置。
@@ -59,14 +59,25 @@ mkdir -p data/uploads data/exports backups
 ```env
 NODE_ENV=production
 API_PORT=3001
+TZ=Asia/Shanghai
+WDT_AUTO_SYNC_ENABLED=true
+WDT_STOCK_SYNC_RETRY_DELAYS_MS=1500
 DATABASE_URL=file:data/jy-trade-prod.db
 JY_TRADE_UPLOAD_DIR=data/uploads
 JY_TRADE_EXPORTS_DIR=data/exports
 JY_TRADE_BOOTSTRAP_USERNAME=admin
-JY_TRADE_BOOTSTRAP_PASSWORD=jymy
+JY_TRADE_BOOTSTRAP_PASSWORD=replace-with-a-strong-password
 ```
 
-如果暂时只验证页面、登录、订单导入、地址维护，可以先不填旺店通配置。真实商品同步、真实初审和库存查询需要填写 WDT 配置。
+`JY_TRADE_BOOTSTRAP_PASSWORD` 必须在首次启动前替换为至少 12 位的非示例密码。生产环境缺少该变量、仍使用仓库示例值或使用旧默认密码时，API 会拒绝启动。可以用以下命令生成随机值：
+
+```bash
+openssl rand -base64 24
+```
+
+生产环境启动时会确保上面配置的管理员存在，并把该账号密码同步为当前环境变量；修改密码后重启 API 即可让旧密码失效。开发和自动测试使用的 `operator`、`reviewer` 示例账号不会在新的生产数据库中自动创建，已有数据库中的其他账号也不会被自动删除。
+
+如果暂时只验证页面、登录和地址维护，可以先不填旺店通配置。已有本地商品档案时仍可继续导入和人工审核，只是没有成功库存快照的商品会标记“库存未验证”；全新数据库若没有商品档案，则必须先配置 WDT 并完成一次“商品与库存同步”，才能进行正式新订单初审。
 
 初始化数据库并检查构建：
 
@@ -155,14 +166,15 @@ journalctl -u jy-trade-api -n 100 --no-pager
 
 - 不创建 `jytrade` 用户：可以，试运行可用 `root`。正式长期运行再考虑降权。
 - 不做软链接：可以。现在通过 `DATABASE_URL`、`JY_TRADE_UPLOAD_DIR`、`JY_TRADE_EXPORTS_DIR` 配置目录；相对路径统一按项目根目录解析，并会自动创建需要的父目录。
-- 不填 WDT 配置：可以启动系统，但不能做真实商品同步、真实初审和库存查询。
+- 不填 WDT 配置：可以启动系统、维护地址，并在已有本地商品档案时继续人工审核；不能刷新商品与库存快照。全新数据库没有商品档案时，不能进行正式新订单初审。
+- `WDT_AUTO_SYNC_ENABLED=false`：维护或临时开发时可以关闭整点和启动补偿任务，手动同步接口仍需有效 WDT 配置。
 - 不配 HTTPS：可以先用 IP + HTTP 测试。正式多人使用建议配置 HTTPS。
 - 不做自动备份：可以先手动备份。真实使用后建议每天备份 SQLite。
 
 ## 上线后的初始化
 
-1. 用 `admin / jymy` 登录。
-2. 在设置里手动同步商品档案。
+1. 使用 `JY_TRADE_BOOTSTRAP_USERNAME` 和 `JY_TRADE_BOOTSTRAP_PASSWORD` 配置的管理员账号登录。
+2. 在设置里执行一次“商品与库存同步”，确认出现成功库存快照；之后系统会按上海时区每小时整点自动更新。
 3. 在地址维护里导入地址 Excel。
 4. 导入真实订单，跑一批完整流程。
 
