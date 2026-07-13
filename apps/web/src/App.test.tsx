@@ -869,7 +869,7 @@ describe("App", () => {
         batchId: "batch-1",
         type: "wdt_import",
         status: "failed",
-        fileName: "batch-1-wdt-import.xls",
+        fileName: "batch-1-wdt-import.xlsx",
         downloadUrl: undefined,
         errorMessage: "缺少发货地址：测试门店",
         createdByUserId: "user-1",
@@ -881,7 +881,7 @@ describe("App", () => {
     await clickBatch();
     switchToExportTab();
 
-    expect(await screen.findByTestId("export-file-export-failed")).toHaveTextContent("batch-1-wdt-import.xls");
+    expect(await screen.findByTestId("export-file-export-failed")).toHaveTextContent("batch-1-wdt-import.xlsx");
     expect(screen.getByTestId("export-type-export-failed")).toHaveTextContent("做单 Excel");
     expect(screen.getByText("失败原因：缺少发货地址：测试门店")).toBeInTheDocument();
     expect(screen.getByText("失败")).toBeInTheDocument();
@@ -2194,7 +2194,7 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
       batchId: "batch-1",
       type,
       status: "ready",
-      fileName: `batch-1-${type}.${type === "wdt_import" ? "xls" : "xlsx"}`,
+      fileName: `batch-1-${type}.xlsx`,
       downloadUrl: "/api/v1/exports/export-1/download",
       errorMessage: null,
       createdByUserId: "user-1",

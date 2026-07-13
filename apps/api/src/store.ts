@@ -4488,8 +4488,7 @@ const scrypt = promisify(scryptCallback);
 function buildExportFileName(fileName: string, type: ExportDto["type"], isoTime: string) {
   const base = fileName.replace(/\.[^.]+$/, "") || fileName;
   const stamp = isoTime.replace(/[:.]/g, "-");
-  const extension = type === "wdt_import" ? "xls" : "xlsx";
-  return `${base}-${type}-${stamp}.${extension}`;
+  return `${base}-${type}-${stamp}.xlsx`;
 }
 
 const WDT_IMPORT_SHEET_NAME = "Sheet1";
@@ -4755,10 +4754,16 @@ function renderWdtImportWorkbook(batch: BatchRow, lines: ReviewLineDto[], addres
   const doNotRows = renderWdtImportRows(batch, doNotExportLines, addressIndex, actor);
   const workbook = XLSX.utils.book_new();
   const sheet = XLSX.utils.aoa_to_sheet(rows);
+  enableWorksheetAutoFilter(sheet);
   XLSX.utils.book_append_sheet(workbook, sheet, WDT_IMPORT_SHEET_NAME);
   const doNotSheet = XLSX.utils.aoa_to_sheet(doNotRows);
+  enableWorksheetAutoFilter(doNotSheet);
   XLSX.utils.book_append_sheet(workbook, doNotSheet, WDT_DO_NOT_IMPORT_SHEET_NAME);
-  return XLSX.write(workbook, { bookType: "biff8", type: "buffer" }) as Buffer;
+  return XLSX.write(workbook, { bookType: "xlsx", type: "buffer" }) as Buffer;
+}
+
+function enableWorksheetAutoFilter(sheet: XLSX.WorkSheet) {
+  sheet["!autofilter"] = { ref: sheet["!ref"] ?? `A1:${XLSX.utils.encode_col(WDT_IMPORT_HEADERS.length - 1)}1` };
 }
 
 function renderWdtImportRows(

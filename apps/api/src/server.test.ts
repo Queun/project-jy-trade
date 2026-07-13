@@ -1097,13 +1097,19 @@ describe("api server", () => {
     });
     expect(exportResponse.statusCode).toBe(201);
     expect(exportResponse.json()).toMatchObject({ type: "wdt_import", status: "ready" });
+    expect(exportResponse.json().fileName).toMatch(/\.xlsx$/);
 
     const downloadResponse = await app.inject({
       method: "GET",
       url: exportResponse.json().downloadUrl,
       headers: { cookie },
     });
+    expect(downloadResponse.headers["content-type"]).toContain("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     const workbook = XLSX.read(downloadResponse.rawPayload, { type: "buffer" });
+    expect(workbook.SheetNames).toEqual(["Sheet1", "不做单表"]);
+    expect(workbook.Sheets["Sheet1"]["!autofilter"]).toEqual({ ref: workbook.Sheets["Sheet1"]["!ref"] });
+    expect(workbook.Sheets["不做单表"]["!ref"]).toBe("A1:AW1");
+    expect(workbook.Sheets["不做单表"]["!autofilter"]).toEqual({ ref: "A1:AW1" });
     const rows = XLSX.utils.sheet_to_json<Record<string, string | number>>(workbook.Sheets["Sheet1"], { defval: "" });
     expect(rows).toHaveLength(2);
     expect(new Set(rows.map((row) => row["原始单号"]))).toHaveLength(1);
@@ -3227,7 +3233,7 @@ describe("api server", () => {
     });
     expect(exportResponse.statusCode).toBe(201);
     expect(exportResponse.json()).toMatchObject({ type: "wdt_import", status: "ready" });
-    expect(exportResponse.json().fileName).toMatch(/\.xls$/);
+    expect(exportResponse.json().fileName).toMatch(/\.xlsx$/);
 
     const downloadResponse = await app.inject({
       method: "GET",
@@ -3235,10 +3241,12 @@ describe("api server", () => {
       headers: { cookie },
     });
     expect(downloadResponse.statusCode).toBe(200);
-    expect(downloadResponse.headers["content-type"]).toContain("application/vnd.ms-excel");
+    expect(downloadResponse.headers["content-type"]).toContain("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
 
     const workbook = XLSX.read(downloadResponse.rawPayload, { type: "buffer" });
     expect(workbook.SheetNames).toEqual(["Sheet1", "不做单表"]);
+    expect(workbook.Sheets["Sheet1"]["!autofilter"]).toEqual({ ref: workbook.Sheets["Sheet1"]["!ref"] });
+    expect(workbook.Sheets["不做单表"]["!autofilter"]).toEqual({ ref: workbook.Sheets["不做单表"]["!ref"] });
     const rows = XLSX.utils.sheet_to_json<Record<string, string | number>>(workbook.Sheets["Sheet1"], { defval: "" });
     const header = XLSX.utils.sheet_to_json<string[]>(workbook.Sheets["Sheet1"], { header: 1 })[0];
     expect(header).toEqual([
