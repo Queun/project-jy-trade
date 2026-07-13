@@ -4768,9 +4768,16 @@ function renderWdtImportRows(
   actor?: AuthUserDto,
 ) {
   const context = buildWdtImportContext(batch, lines);
+  const sortedLines = lines
+    .map((line, index) => ({ line, index, originalNo: context.originalNoByLineId.get(line.id) ?? line.id }))
+    .sort((left, right) => {
+      if (left.originalNo === right.originalNo) return left.index - right.index;
+      return left.originalNo < right.originalNo ? -1 : 1;
+    })
+    .map(({ line }) => line);
   return [
     [...WDT_IMPORT_HEADERS],
-    ...lines.map((line) => renderWdtImportRow(line, addressIndex, WDT_IMPORT_HEADERS, context, actor)),
+    ...sortedLines.map((line) => renderWdtImportRow(line, addressIndex, WDT_IMPORT_HEADERS, context, actor)),
   ];
 }
 

@@ -1254,7 +1254,7 @@ describe("api server", () => {
     await app.close();
   });
 
-  it("keeps make-order groups separate when the same store uses different warehouses", async () => {
+  it("keeps make-order groups separate and places identical original numbers together", async () => {
     const databaseUrl = testDatabaseUrl();
     const database = createDatabaseContext(databaseUrl);
     await database.ready;
@@ -1273,6 +1273,7 @@ describe("api server", () => {
           rows: [
             { noticeNo: "NOTICE-MAIN", goodsCode: "3282770392869", barcode: "2153722460015", goodsName: "雅漾专研保湿修护面膜", shipQty: "2", mainWarehouseQty: "2" },
             { noticeNo: "NOTICE-NEAR", goodsCode: "3282770392869", barcode: "2153722460015", goodsName: "雅漾专研保湿修护面膜", shipQty: "3", mainWarehouseQty: "", nearExpiryWarehouseQty: "3" },
+            { noticeNo: "NOTICE-MAIN-SECOND", goodsCode: "3282770392869", barcode: "2153722460015", goodsName: "雅漾专研保湿修护面膜", shipQty: "1", mainWarehouseQty: "1" },
             { noticeNo: "NOTICE-OTHER-STORE", storeNo: "S002", storeName: "Ole确定单二店", goodsCode: "3282770392869", barcode: "2153722460015", goodsName: "雅漾专研保湿修护面膜", shipQty: "1", mainWarehouseQty: "1" },
           ],
         }),
@@ -1287,7 +1288,7 @@ describe("api server", () => {
       headers: { cookie },
     });
     const lines = linesResponse.json();
-    expect(lines.map((line: { suggestedWarehouseName: string }) => line.suggestedWarehouseName)).toEqual(["主仓", "主仓", "主仓"]);
+    expect(lines.map((line: { suggestedWarehouseName: string }) => line.suggestedWarehouseName)).toEqual(["主仓", "主仓", "主仓", "主仓"]);
     for (const line of lines) {
       const nearExpiry = line.orderNoticeNo === "NOTICE-NEAR";
       const decisionResponse = await app.inject({
@@ -1323,8 +1324,10 @@ describe("api server", () => {
     const downloadResponse = await app.inject({ method: "GET", url: exportResponse.json().downloadUrl, headers: { cookie } });
     const workbook = XLSX.read(downloadResponse.rawPayload, { type: "buffer" });
     const rows = XLSX.utils.sheet_to_json<Record<string, string | number>>(workbook.Sheets["Sheet1"], { defval: "" });
-    expect(rows.map((row) => row["仓库名称"])).toEqual(["主仓", "临期仓", "主仓"]);
+    expect(rows.map((row) => row["仓库名称"])).toEqual(["主仓", "主仓", "临期仓", "主仓"]);
     expect(new Set(rows.map((row) => row["原始单号"]))).toHaveLength(3);
+    expect(rows[0]["原始单号"]).toBe(rows[1]["原始单号"]);
+    expect(rows[1]["原始单号"]).not.toBe(rows[2]["原始单号"]);
     await app.close();
   });
 
