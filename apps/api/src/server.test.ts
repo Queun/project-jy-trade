@@ -1139,6 +1139,121 @@ describe("api server", () => {
     await app.close();
   });
 
+  it("imports 1,039 confirmed-order rows without exceeding SQLite variable limits", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await seedSuccessfulGoodsCache(database);
+    await database.db.insert(wdtGoodsSpecs).values({
+      id: "wdt-goods-spec-ambiguous-large-import",
+      goodsNo: "AMBIGUOUS-LARGE-IMPORT",
+      goodsName: "雅漾专研保湿修护面膜候选",
+      specNo: "AMBIGUOUS-LARGE-IMPORT",
+      specName: "25ml*5",
+      specCode: "",
+      barcode: "2153722460015",
+      barcodesJson: JSON.stringify(["2153722460015"]),
+      deleted: 0,
+      modified: "2026-07-13T00:00:00.000Z",
+      rawJson: "{}",
+      syncedAt: "2026-07-13T00:00:00.000Z",
+    });
+    await database.close();
+
+    const app = buildTestServer(databaseUrl);
+    const cookie = await loginCookie(app);
+    const rowCount = 1_039;
+    const imported = await app.inject({
+      method: "POST",
+      url: "/api/v1/confirmed-orders/import",
+      payload: {
+        fileName: "确定单-1039行.xlsx",
+        contentBase64: confirmedOrderWorkbookBase64({
+          rows: Array.from({ length: rowCount }, (_, index) => ({
+            noticeNo: `NOTICE-LARGE-${index + 1}`,
+            goodsCode: "",
+            barcode: "2153722460015",
+            goodsName: "雅漾专研保湿修护面膜",
+            shipQty: "1",
+          })),
+        }),
+      },
+      headers: { cookie },
+    });
+
+    expect(imported.statusCode).toBe(201);
+    expect(imported.json()).toMatchObject({
+      parsedRowCount: rowCount,
+      unmatchedRowCount: rowCount,
+      batch: { orderLineCount: rowCount, status: "review_generated" },
+    });
+    const batchId = imported.json().batch.id;
+    const linesResponse = await app.inject({ method: "GET", url: `/api/v1/batches/${batchId}/review-lines`, headers: { cookie } });
+    expect(linesResponse.statusCode).toBe(200);
+    expect(linesResponse.json()).toHaveLength(rowCount);
+    const rebuilt = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${batchId}/actions/rebuild-confirmed-order`,
+      payload: { strategy: "preserve" },
+      headers: { cookie },
+    });
+    expect(rebuilt.statusCode).toBe(200);
+    const rebuiltLines = await app.inject({ method: "GET", url: `/api/v1/batches/${batchId}/review-lines`, headers: { cookie } });
+    expect(rebuiltLines.json()).toHaveLength(rowCount);
+
+    const verification = createDatabaseContext(databaseUrl);
+    await verification.ready;
+    const persistedDecisions = await verification.db.select().from(reviewDecisions).where(eq(reviewDecisions.batchId, batchId));
+    const persistedCandidates = await verification.db.select().from(productMatchCandidates).where(eq(productMatchCandidates.batchId, batchId));
+    await verification.close();
+    expect(persistedDecisions).toHaveLength(rowCount);
+    expect(persistedCandidates).toHaveLength(2);
+    await app.close();
+  });
+
+  it("rolls back the batch when confirmed-order review persistence fails", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await seedSuccessfulGoodsCache(database);
+    await database.client.execute(`
+      CREATE TRIGGER fail_confirmed_review_insert
+      BEFORE INSERT ON review_lines
+      WHEN NEW.sort_order > 1
+      BEGIN
+        SELECT RAISE(ABORT, 'forced confirmed-order persistence failure');
+      END
+    `);
+    await database.close();
+
+    const app = buildTestServer(databaseUrl);
+    const cookie = await loginCookie(app);
+    const imported = await app.inject({
+      method: "POST",
+      url: "/api/v1/confirmed-orders/import",
+      payload: { fileName: "确定单-事务失败.xlsx", contentBase64: confirmedOrderWorkbookBase64() },
+      headers: { cookie },
+    });
+    expect(imported.statusCode).toBe(500);
+
+    const verification = createDatabaseContext(databaseUrl);
+    await verification.ready;
+    const [batchRows, lineRows, decisionRows, candidateRows, auditRows] = await Promise.all([
+      verification.db.select().from(batches),
+      verification.db.select().from(reviewLines),
+      verification.db.select().from(reviewDecisions),
+      verification.db.select().from(productMatchCandidates),
+      verification.db.select().from(auditLogs),
+    ]);
+    await verification.close();
+    expect(batchRows).toHaveLength(0);
+    expect(lineRows).toHaveLength(0);
+    expect(decisionRows).toHaveLength(0);
+    expect(candidateRows).toHaveLength(0);
+    expect(auditRows.filter((row) => row.action === "confirmed_order.import")).toHaveLength(0);
+    await app.close();
+  });
+
   it("keeps make-order groups separate when the same store uses different warehouses", async () => {
     const databaseUrl = testDatabaseUrl();
     const database = createDatabaseContext(databaseUrl);

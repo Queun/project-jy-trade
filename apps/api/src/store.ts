@@ -127,6 +127,7 @@ type ProductMappingRow = typeof productMappings.$inferSelect;
 type ProductMatchCandidateRow = typeof productMatchCandidates.$inferSelect;
 type ExternalProductRow = typeof externalProducts.$inferSelect;
 type ExternalProductComponentRow = typeof externalProductComponents.$inferSelect;
+type ReviewPersistenceExecutor = Pick<DatabaseContext["db"], "delete" | "insert">;
 
 export interface StockLookupClient {
   queryStock(specNo: string, warehouseNo?: string): Promise<WdtStockResponse>;
@@ -176,6 +177,9 @@ interface ReviewAllocationInput {
 
 const HOUR_MS = 60 * 60 * 1_000;
 const SHANGHAI_UTC_OFFSET_MS = 8 * 60 * 60 * 1_000;
+const REVIEW_LINE_INSERT_CHUNK_SIZE = 200;
+const REVIEW_DECISION_INSERT_CHUNK_SIZE = 500;
+const PRODUCT_MATCH_CANDIDATE_INSERT_CHUNK_SIZE = 500;
 
 export interface StoreOptions {
   databaseUrl?: string;
@@ -422,7 +426,7 @@ export function createSqliteStore(options: StoreOptions = {}) {
       const result = buildMockReview(batch.filePath, resolveProjectPath(mockDataFile, projectRoot), batchId);
       const now = new Date().toISOString();
 
-      await replaceBatchReviewLines(database, batchId, result.reviewLines, now);
+      await replaceBatchReviewLines(database.db, batchId, result.reviewLines, now);
       await database.db.delete(productMatchCandidates).where(eq(productMatchCandidates.batchId, batchId));
 
       const updatedBatch: BatchRow = {
@@ -485,8 +489,8 @@ export function createSqliteStore(options: StoreOptions = {}) {
       });
       const now = new Date().toISOString();
 
-      await replaceBatchReviewLines(database, batchId, result.reviewLines, now);
-      await replaceProductMatchCandidates(database, batchId, result.candidateRows, now);
+      await replaceBatchReviewLines(database.db, batchId, result.reviewLines, now);
+      await replaceProductMatchCandidates(database.db, batchId, result.candidateRows, now);
 
       const updatedBatch: BatchRow = {
         ...batch,
@@ -545,63 +549,97 @@ export function createSqliteStore(options: StoreOptions = {}) {
       const filePath = resolve(configuredUploadDir, storedName);
       await writeFile(filePath, fileBuffer);
 
-      const now = new Date().toISOString();
-      const goodsSpecs = (await database.db.select().from(wdtGoodsSpecs)).map(toLocalGoodsSpecCandidate);
-      const suites = await loadLocalSuiteCandidates(database);
-      const mappings = (await database.db.select().from(productMappings).where(eq(productMappings.status, "confirmed"))).map(toProductMappingCandidate);
-      const externalProductMatches = await loadExternalProductMatchIndex(database);
-      const warehouseSettings = toWarehouseUsageSettingsDto(await getWarehouseUsageSettingsRow(database));
-      const vipStoreIndex = await loadVipStoreIndex(database);
-      const stockSnapshot = await loadActiveStockSnapshot(database, warehouseSettings);
-      const buildResult = await buildConfirmedOrderReview({
-        batchId: `batch-${randomUUID()}`,
-        lines: parsed.lines,
-        goodsSpecs,
-        suites,
-        mappings,
-        externalProductMatches,
-        stockSnapshot,
-        warehouseSettings,
-        vipStoreIndex,
-      });
-      const batch: BatchRow = {
-        id: buildResult.batchId,
-        filePath,
-        fileName: input.fileName.split(/[\\/]/).at(-1) ?? input.fileName,
-        mode: "production_api",
-        sourceType: "confirmed_order",
-        status: "review_generated",
-        orderLineCount: parsed.lines.length,
-        uniqueBarcodeCount: new Set(parsed.lines.map((line) => line.externalBarcode).filter(Boolean)).size,
-        matchedBarcodeCount: new Set(buildResult.reviewLines.filter((line) => line.matchStatus === "matched").map((line) => line.externalBarcode).filter(Boolean)).size,
-        stockSnapshotRunId: stockSnapshot?.runId ?? "",
-        stockSnapshotAt: stockSnapshot?.syncedAt ?? "",
-        createdAt: now,
-        updatedAt: now,
-      };
+      try {
+        const now = new Date().toISOString();
+        const [goodsRows, suites, mappingRows, externalProductMatches, warehouseSettingsRow, vipStoreIndex] = await Promise.all([
+          database.db.select().from(wdtGoodsSpecs),
+          loadLocalSuiteCandidates(database),
+          database.db.select().from(productMappings).where(eq(productMappings.status, "confirmed")),
+          loadExternalProductMatchIndex(database),
+          getWarehouseUsageSettingsRow(database),
+          loadVipStoreIndex(database),
+        ]);
+        const goodsSpecs = goodsRows.map(toLocalGoodsSpecCandidate);
+        const mappings = mappingRows.map(toProductMappingCandidate);
+        const warehouseSettings = toWarehouseUsageSettingsDto(warehouseSettingsRow);
+        const batchId = `batch-${randomUUID()}`;
+        const matchedInputs = prepareConfirmedOrderMatches({
+          batchId,
+          lines: parsed.lines,
+          goodsSpecs,
+          suites,
+          mappings,
+          externalProductMatches,
+        });
+        const matchedSpecNos = matchedInputs.map((item) => item.decision.candidate?.specNo ?? "").filter(Boolean);
+        const stockSnapshot = await loadActiveStockSnapshot(database, warehouseSettings, { specNos: matchedSpecNos });
+        const buildResult = await buildConfirmedOrderReview({
+          batchId,
+          lines: parsed.lines,
+          goodsSpecs,
+          suites,
+          mappings,
+          externalProductMatches,
+          stockSnapshot,
+          warehouseSettings,
+          vipStoreIndex,
+          matchedInputs,
+        });
+        const matchedRowCount = buildResult.reviewLines.filter((line) => line.matchStatus === "matched").length;
+        const unmatchedRowCount = buildResult.reviewLines.length - matchedRowCount;
+        const batch: BatchRow = {
+          id: buildResult.batchId,
+          filePath,
+          fileName: input.fileName.split(/[\\/]/).at(-1) ?? input.fileName,
+          mode: "production_api",
+          sourceType: "confirmed_order",
+          status: "review_generated",
+          orderLineCount: parsed.lines.length,
+          uniqueBarcodeCount: new Set(parsed.lines.map((line) => line.externalBarcode).filter(Boolean)).size,
+          matchedBarcodeCount: new Set(buildResult.reviewLines.filter((line) => line.matchStatus === "matched").map((line) => line.externalBarcode).filter(Boolean)).size,
+          stockSnapshotRunId: stockSnapshot?.runId ?? "",
+          stockSnapshotAt: stockSnapshot?.syncedAt ?? "",
+          createdAt: now,
+          updatedAt: now,
+        };
+        const auditPayload = {
+          fileName: batch.fileName,
+          sheetName: parsed.sheetName,
+          parsedRowCount: parsed.lines.length,
+          matchedRowCount,
+          unmatchedRowCount,
+          skippedRowCount: parsed.skippedRowCount,
+          stockQueriedCount: buildResult.stockQueriedCount,
+        };
 
-      await database.db.insert(batches).values(batch);
-      await replaceBatchReviewLines(database, batch.id, buildResult.reviewLines, now);
-      await replaceProductMatchCandidates(database, batch.id, buildResult.candidateRows, now);
-      await insertAuditLog(database, actor?.id ?? null, "confirmed_order.import", "batch", batch.id, {
-        fileName: batch.fileName,
-        sheetName: parsed.sheetName,
-        parsedRowCount: parsed.lines.length,
-        matchedRowCount: buildResult.reviewLines.filter((line) => line.matchStatus === "matched").length,
-        unmatchedRowCount: buildResult.reviewLines.filter((line) => line.matchStatus !== "matched").length,
-        skippedRowCount: parsed.skippedRowCount,
-        stockQueriedCount: buildResult.stockQueriedCount,
-      });
+        await database.db.transaction(async (tx) => {
+          await tx.insert(batches).values(batch);
+          await replaceBatchReviewLines(tx, batch.id, buildResult.reviewLines, now);
+          await replaceProductMatchCandidates(tx, batch.id, buildResult.candidateRows, now);
+          await tx.insert(auditLogs).values({
+            id: `audit-${randomUUID()}`,
+            actorId: actor?.id ?? null,
+            action: "confirmed_order.import",
+            entityType: "batch",
+            entityId: batch.id,
+            payloadJson: JSON.stringify(auditPayload),
+            createdAt: now,
+          });
+        });
 
-      return {
-        batch: toBatchSummary(batch),
-        fileName: batch.fileName,
-        sheetName: parsed.sheetName,
-        parsedRowCount: parsed.lines.length,
-        matchedRowCount: buildResult.reviewLines.filter((line) => line.matchStatus === "matched").length,
-        unmatchedRowCount: buildResult.reviewLines.filter((line) => line.matchStatus !== "matched").length,
-        skippedRowCount: parsed.skippedRowCount,
-      };
+        return {
+          batch: toBatchSummary(batch),
+          fileName: batch.fileName,
+          sheetName: parsed.sheetName,
+          parsedRowCount: parsed.lines.length,
+          matchedRowCount,
+          unmatchedRowCount,
+          skippedRowCount: parsed.skippedRowCount,
+        };
+      } catch (error) {
+        await rm(filePath, { force: true }).catch(() => undefined);
+        throw error;
+      }
     },
 
     async rebuildConfirmedOrder(
@@ -2325,18 +2363,7 @@ async function rebuildConfirmedOrderBatch(
     updatedAt: now,
   };
 
-  await database.db.update(batches).set({
-    status: updatedBatch.status,
-    orderLineCount: updatedBatch.orderLineCount,
-    uniqueBarcodeCount: updatedBatch.uniqueBarcodeCount,
-    matchedBarcodeCount: updatedBatch.matchedBarcodeCount,
-    stockSnapshotRunId: updatedBatch.stockSnapshotRunId,
-    stockSnapshotAt: updatedBatch.stockSnapshotAt,
-    updatedAt: updatedBatch.updatedAt,
-  }).where(eq(batches.id, batch.id));
-  await replaceBatchReviewLines(database, batch.id, rebuiltLines, now, previousDecisions);
-  await replaceProductMatchCandidates(database, batch.id, buildResult.candidateRows, now);
-  await insertAuditLog(database, actor?.id ?? null, "confirmed_order.rebuild", "batch", batch.id, {
+  const auditPayload = {
     fileName: batch.fileName,
     sheetName: parsed.sheetName,
     parsedRowCount: parsed.lines.length,
@@ -2345,6 +2372,28 @@ async function rebuildConfirmedOrderBatch(
     skippedRowCount: parsed.skippedRowCount,
     stockQueriedCount: buildResult.stockQueriedCount,
     strategy: input.strategy,
+  };
+  await database.db.transaction(async (tx) => {
+    await tx.update(batches).set({
+      status: updatedBatch.status,
+      orderLineCount: updatedBatch.orderLineCount,
+      uniqueBarcodeCount: updatedBatch.uniqueBarcodeCount,
+      matchedBarcodeCount: updatedBatch.matchedBarcodeCount,
+      stockSnapshotRunId: updatedBatch.stockSnapshotRunId,
+      stockSnapshotAt: updatedBatch.stockSnapshotAt,
+      updatedAt: updatedBatch.updatedAt,
+    }).where(eq(batches.id, batch.id));
+    await replaceBatchReviewLines(tx, batch.id, rebuiltLines, now, previousDecisions);
+    await replaceProductMatchCandidates(tx, batch.id, buildResult.candidateRows, now);
+    await tx.insert(auditLogs).values({
+      id: `audit-${randomUUID()}`,
+      actorId: actor?.id ?? null,
+      action: "confirmed_order.rebuild",
+      entityType: "batch",
+      entityId: batch.id,
+      payloadJson: JSON.stringify(auditPayload),
+      createdAt: now,
+    });
   });
 
   return {
@@ -2616,20 +2665,19 @@ function mergeRebuiltConfirmedOrderLines(
 }
 
 async function replaceBatchReviewLines(
-  database: DatabaseContext,
+  executor: ReviewPersistenceExecutor,
   batchId: string,
   lines: ReviewLineDto[],
   now: string,
   previousDecisions: ReviewDecisionRow[] = [],
 ): Promise<void> {
   const previousDecisionByLineId = new Map(previousDecisions.map((decision) => [decision.reviewLineId, decision]));
-  await database.db.delete(reviewDecisions).where(eq(reviewDecisions.batchId, batchId));
-  await database.db.delete(reviewLines).where(eq(reviewLines.batchId, batchId));
+  await executor.delete(reviewDecisions).where(eq(reviewDecisions.batchId, batchId));
+  await executor.delete(reviewLines).where(eq(reviewLines.batchId, batchId));
 
   if (lines.length === 0) return;
 
-  await database.db.insert(reviewLines).values(
-    lines.map((line, index) => ({
+  const reviewLineValues = lines.map((line, index) => ({
       id: line.id,
       batchId,
       sortOrder: index + 1,
@@ -2686,11 +2734,12 @@ async function replaceBatchReviewLines(
       priority: line.priority ? 1 : 0,
       priorityReason: line.priorityReason ?? "",
       status: line.status,
-    })),
-  );
+    }));
+  for (const values of chunkValues(reviewLineValues, REVIEW_LINE_INSERT_CHUNK_SIZE)) {
+    await executor.insert(reviewLines).values(values);
+  }
 
-  await database.db.insert(reviewDecisions).values(
-    lines.map((line) => {
+  const reviewDecisionValues = lines.map((line) => {
       const previous = previousDecisionByLineId.get(line.id);
       return {
         id: previous?.id ?? `decision-${randomUUID()}`,
@@ -2705,21 +2754,22 @@ async function replaceBatchReviewLines(
         createdAt: previous?.createdAt ?? now,
         updatedAt: now,
       };
-    }),
-  );
+    });
+  for (const values of chunkValues(reviewDecisionValues, REVIEW_DECISION_INSERT_CHUNK_SIZE)) {
+    await executor.insert(reviewDecisions).values(values);
+  }
 }
 
 async function replaceProductMatchCandidates(
-  database: DatabaseContext,
+  executor: ReviewPersistenceExecutor,
   batchId: string,
   candidates: RealReviewCandidateRow[],
   now: string,
 ): Promise<void> {
-  await database.db.delete(productMatchCandidates).where(eq(productMatchCandidates.batchId, batchId));
+  await executor.delete(productMatchCandidates).where(eq(productMatchCandidates.batchId, batchId));
   const uniqueCandidates = dedupeRealReviewCandidateRows(candidates);
   if (uniqueCandidates.length === 0) return;
-  await database.db.insert(productMatchCandidates).values(
-    uniqueCandidates.map((candidate) => ({
+  const candidateValues = uniqueCandidates.map((candidate) => ({
       id: `candidate-${randomUUID()}`,
       batchId,
       reviewLineId: candidate.reviewLineId,
@@ -2735,8 +2785,18 @@ async function replaceProductMatchCandidates(
       basis: candidate.basis,
       source: candidate.source,
       createdAt: now,
-    })),
-  );
+    }));
+  for (const values of chunkValues(candidateValues, PRODUCT_MATCH_CANDIDATE_INSERT_CHUNK_SIZE)) {
+    await executor.insert(productMatchCandidates).values(values);
+  }
+}
+
+function chunkValues<T>(values: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < values.length; index += size) {
+    chunks.push(values.slice(index, index + size));
+  }
+  return chunks;
 }
 
 function dedupeRealReviewCandidateRows(candidates: RealReviewCandidateRow[]): RealReviewCandidateRow[] {

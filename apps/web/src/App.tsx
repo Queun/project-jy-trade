@@ -126,6 +126,7 @@ export function App() {
   const [wdtSyncSettingsMessage, setWdtSyncSettingsMessage] = useState("");
   const [selectedOrderFileName, setSelectedOrderFileName] = useState("");
   const [pendingOrderUpload, setPendingOrderUpload] = useState<File | null>(null);
+  const [isImportingConfirmedOrder, setIsImportingConfirmedOrder] = useState(false);
   const [developerMode, setDeveloperMode] = useState(false);
   const [mappingFocusQuery, setMappingFocusQuery] = useState("");
   const [mappingFocusProduct, setMappingFocusProduct] = useState<ProductMappingFocusProduct | null>(null);
@@ -358,16 +359,24 @@ export function App() {
   }
 
   async function fetchReviewLines(batchId: string) {
-    const response = await fetch(`/api/v1/batches/${batchId}/review-lines`);
-    const body = await response.json();
-    if (!response.ok || !Array.isArray(body)) {
+    try {
+      const response = await fetch(`/api/v1/batches/${batchId}/review-lines`);
+      const body = await safeResponseJson(response);
+      if (!response.ok || !Array.isArray(body)) {
+        setReviewLines([]);
+        setDraftById({});
+        setErrorsById({});
+        setMessage(apiErrorMessage(body, "审核明细读取失败，请刷新批次后重试"));
+        return null;
+      }
+      return body as ReviewLineDto[];
+    } catch {
       setReviewLines([]);
       setDraftById({});
       setErrorsById({});
-      setMessage(body?.message ?? "审核明细读取失败");
+      setMessage("审核明细读取失败，请检查网络后重试");
       return null;
     }
-    return body as ReviewLineDto[];
   }
 
   async function runMockBatch() {
@@ -455,39 +464,53 @@ export function App() {
   }
 
   async function importConfirmedOrder() {
-    if (!pendingOrderUpload) {
+    if (!pendingOrderUpload || isImportingConfirmedOrder) {
+      if (isImportingConfirmedOrder) return;
       setMessage("请先选择确定单文件");
       return;
     }
+    setIsImportingConfirmedOrder(true);
     setMessage("正在导入确定单...");
-    const response = await fetch("/api/v1/confirmed-orders/import", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        fileName: pendingOrderUpload.name,
-        contentBase64: await fileToBase64(pendingOrderUpload),
-      }),
-    });
-    if (!response.ok) {
-      const error = await response.json();
-      setMessage(error.message ?? "确定单导入失败");
-      return;
+    try {
+      const response = await fetch("/api/v1/confirmed-orders/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fileName: pendingOrderUpload.name,
+          contentBase64: await fileToBase64(pendingOrderUpload),
+        }),
+      });
+      const body = await safeResponseJson(response);
+      if (!response.ok) {
+        setMessage(apiErrorMessage(body, "确定单导入失败，请稍后重试或联系管理员"));
+        return;
+      }
+      if (!body || typeof body !== "object" || !("batch" in body)) {
+        setMessage("确定单导入失败：服务器返回内容不完整，请稍后重试");
+        return;
+      }
+      const result = body as ImportConfirmedOrderResponse;
+      setPendingOrderUpload(null);
+      setSelectedOrderFileName("");
+      setActiveBatch(result.batch);
+      setActiveTab("review");
+      const lines = await fetchReviewLines(result.batch.id);
+      if (!lines) return;
+      setReviewLines(sortReviewLines(lines));
+      setDraftById(buildDrafts(lines));
+      setErrorsById({});
+      await Promise.all([
+        refreshExports(result.batch.id),
+        refreshMakeOrderReadiness(result.batch.id),
+        refreshBatches(),
+      ]);
+      setMessage(`确定单已导入：${result.parsedRowCount} 行，已匹配 ${result.matchedRowCount} 行，待补字段 ${result.unmatchedRowCount} 行`);
+      setSuccessNotice("确定单导入成功，请确认系统建议并提交审核");
+    } catch {
+      setMessage("确定单导入失败，请检查网络后重试");
+    } finally {
+      setIsImportingConfirmedOrder(false);
     }
-    const result = (await response.json()) as ImportConfirmedOrderResponse;
-    setPendingOrderUpload(null);
-    setSelectedOrderFileName("");
-    setActiveBatch(result.batch);
-    setActiveTab("review");
-    const lines = await fetchReviewLines(result.batch.id);
-    if (!lines) return;
-    setReviewLines(sortReviewLines(lines));
-    setDraftById(buildDrafts(lines));
-    setErrorsById({});
-    await refreshExports(result.batch.id);
-    await refreshMakeOrderReadiness(result.batch.id);
-    await refreshBatches();
-    setMessage(`确定单已导入：${result.parsedRowCount} 行，已匹配 ${result.matchedRowCount} 行，待补字段 ${result.unmatchedRowCount} 行`);
-    setSuccessNotice("确定单导入成功，请确认系统建议并提交审核");
   }
 
   async function recheckConfirmedOrderBatch(
@@ -1104,6 +1127,7 @@ export function App() {
                 goodsSyncError={goodsSyncError}
                 goodsSyncRun={goodsSyncRun}
                 isDeveloperMode={developerMode}
+                isImportingConfirmedOrder={isImportingConfirmedOrder}
                 mockFile={mockFile}
                 orderFile={orderFile}
                 selectedOrderFileName={selectedOrderFileName}
@@ -1581,6 +1605,7 @@ function ImportTab({
   goodsSyncError,
   goodsSyncRun,
   isDeveloperMode,
+  isImportingConfirmedOrder,
   mockFile,
   orderFile,
   selectedOrderFileName,
@@ -1595,6 +1620,7 @@ function ImportTab({
   goodsSyncError: string;
   goodsSyncRun: WdtGoodsSyncRunDto | null;
   isDeveloperMode: boolean;
+  isImportingConfirmedOrder: boolean;
   mockFile: string;
   orderFile: string;
   selectedOrderFileName: string;
@@ -1607,7 +1633,7 @@ function ImportTab({
   onRunReal: () => void;
 }) {
   const canRunReal = canImport && goodsSyncRun?.status === "success" && (isDeveloperMode || Boolean(selectedOrderFileName));
-  const canRunConfirmed = canImport && Boolean(selectedOrderFileName);
+  const canRunConfirmed = canImport && Boolean(selectedOrderFileName) && !isImportingConfirmedOrder;
   const realImportHint = !canImport
     ? "当前账号不能导入订单"
     : goodsSyncRun?.status !== "success"
@@ -1681,7 +1707,7 @@ function ImportTab({
             >
               <PackageCheck className="h-4 w-4 shrink-0" />
               <span className="grid gap-0.5">
-                <span>导入确定单</span>
+                <span>{isImportingConfirmedOrder ? "正在导入确定单" : "导入确定单"}</span>
                 <span className="text-xs font-normal text-current opacity-75">按库存快照生成建议，确认后再做单</span>
               </span>
             </Button>
@@ -2550,6 +2576,21 @@ function fileToBase64(file: File) {
     reader.onerror = () => reject(reader.error ?? new Error("文件读取失败"));
     reader.readAsDataURL(file);
   });
+}
+
+async function safeResponseJson(response: Response): Promise<unknown> {
+  try {
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
+function apiErrorMessage(body: unknown, fallback: string): string {
+  if (body && typeof body === "object" && "message" in body && typeof body.message === "string" && body.message.trim()) {
+    return body.message;
+  }
+  return fallback;
 }
 
 function matchesFilter(line: ReviewLineDto, filter: FilterKey, confirmedOrderMode = false) {

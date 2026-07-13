@@ -628,6 +628,70 @@ describe("App", () => {
     expect(currentBatch.fileName).toBe("确定单.xlsx");
   });
 
+  it("recovers from a confirmed-order import network failure and keeps the selected file", async () => {
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/v1/confirmed-orders/import") return Promise.reject(new Error("network disconnected"));
+      return handleFetch(input, init);
+    }));
+    render(<App />);
+
+    const file = new File(["confirmed"], "网络失败确定单.xlsx", { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    fireEvent.change(await screen.findByLabelText("选择文件"), { target: { files: [file] } });
+    fireEvent.click(await screen.findByRole("button", { name: "导入确定单" }));
+
+    expect(await screen.findByText("确定单导入失败，请检查网络后重试")).toBeInTheDocument();
+    expect(screen.getByText("网络失败确定单.xlsx")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "导入确定单" })).toBeEnabled();
+  });
+
+  it("recovers from a non-JSON confirmed-order import error response", async () => {
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/v1/confirmed-orders/import") {
+        return Promise.resolve(new Response("upstream proxy error", { status: 500, headers: { "Content-Type": "text/plain" } }));
+      }
+      return handleFetch(input, init);
+    }));
+    render(<App />);
+
+    const file = new File(["confirmed"], "服务异常确定单.xlsx", { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    fireEvent.change(await screen.findByLabelText("选择文件"), { target: { files: [file] } });
+    fireEvent.click(await screen.findByRole("button", { name: "导入确定单" }));
+
+    expect(await screen.findByText("确定单导入失败，请稍后重试或联系管理员")).toBeInTheDocument();
+    expect(screen.getByText("服务异常确定单.xlsx")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "导入确定单" })).toBeEnabled();
+  });
+
+  it("disables duplicate confirmed-order imports while the request is running", async () => {
+    let resolveImport!: (response: Response) => void;
+    const pendingImport = new Promise<Response>((resolve) => {
+      resolveImport = resolve;
+    });
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/v1/confirmed-orders/import") return pendingImport;
+      return handleFetch(input, init);
+    }));
+    render(<App />);
+
+    const file = new File(["confirmed"], "大批确定单.xlsx", { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    fireEvent.change(await screen.findByLabelText("选择文件"), { target: { files: [file] } });
+    fireEvent.click(await screen.findByRole("button", { name: "导入确定单" }));
+
+    expect(await screen.findByRole("button", { name: "导入确定单" })).toBeDisabled();
+    expect(screen.getByText("正在导入确定单")).toBeInTheDocument();
+    resolveImport(await json({
+      batch: { ...currentBatch, fileName: file.name, mode: "production_api", sourceType: "confirmed_order", status: "review_generated" },
+      fileName: file.name,
+      sheetName: "确定单",
+      parsedRowCount: lines.length,
+      matchedRowCount: lines.length,
+      unmatchedRowCount: 0,
+      skippedRowCount: 0,
+    }, 201));
+
+    expect(await screen.findByText("确定单导入成功，请确认系统建议并提交审核")).toBeInTheDocument();
+  });
+
   it("blocks real review when latest goods sync failed", async () => {
     latestGoodsSyncRun = goodsSyncRun({ status: "failed", errorMessage: "fetch failed" });
     latestCombinedSyncRun = combinedSyncRun({
