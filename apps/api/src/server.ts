@@ -321,6 +321,12 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     return reply.code(202).send(result);
   });
 
+  app.post("/api/v1/wdt/quick-sync-runs", async (request, reply): Promise<StartWdtSyncResponseDto | unknown> => {
+    requireRole(request, ["admin", "operator"]);
+    const result = await store.startQuickWdtSync(getCurrentUser(request));
+    return reply.code(202).send(result);
+  });
+
   app.get("/api/v1/wdt/sync-runs", async (): Promise<WdtSyncRunDto[]> => store.listWdtSyncRuns());
 
   app.get("/api/v1/wdt/sync-runs/latest", async (request, reply): Promise<WdtSyncRunDto | unknown> => {

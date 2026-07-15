@@ -13,6 +13,12 @@ export type BatchStatus = z.infer<typeof BatchStatusSchema>;
 export const BatchSourceTypeSchema = z.enum(["order", "confirmed_order"]);
 export type BatchSourceType = z.infer<typeof BatchSourceTypeSchema>;
 
+export const SharedComponentPrioritySchema = z.enum(["suite_first", "goods_first"]);
+export type SharedComponentPriority = z.infer<typeof SharedComponentPrioritySchema>;
+
+export const ReviewProductTypeSchema = z.enum(["goods", "suite"]);
+export type ReviewProductType = z.infer<typeof ReviewProductTypeSchema>;
+
 export const MatchStatusSchema = z.enum(["matched", "not_found", "ambiguous", "api_error"]);
 export type MatchStatus = z.infer<typeof MatchStatusSchema>;
 
@@ -66,10 +72,34 @@ export const BatchSummarySchema = z.object({
   matchedBarcodeCount: z.number(),
   stockSnapshotRunId: z.string().default(""),
   stockSnapshotAt: z.string().default(""),
+  allocationPriority: SharedComponentPrioritySchema.optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
 export type BatchSummary = z.infer<typeof BatchSummarySchema>;
+
+export const ReviewComponentWarehouseStockDtoSchema = z.object({
+  warehouseNo: z.string(),
+  warehouseName: z.string(),
+  availableStock: z.number(),
+});
+export type ReviewComponentWarehouseStockDto = z.infer<typeof ReviewComponentWarehouseStockDtoSchema>;
+
+export const ReviewComponentStockDtoSchema = z.object({
+  specNo: z.string(),
+  goodsNo: z.string(),
+  goodsName: z.string(),
+  specName: z.string(),
+  barcode: z.string(),
+  quantityPerItem: z.number().positive(),
+  stockVerified: z.boolean(),
+  mainAvailableStock: z.number(),
+  nearExpiryAvailableStock: z.number(),
+  defectAvailableStock: z.number(),
+  otherAvailableStock: z.number(),
+  warehouses: z.array(ReviewComponentWarehouseStockDtoSchema),
+});
+export type ReviewComponentStockDto = z.infer<typeof ReviewComponentStockDtoSchema>;
 
 export const ReviewLineDtoSchema = z.object({
   id: z.string(),
@@ -114,6 +144,8 @@ export const ReviewLineDtoSchema = z.object({
   specName: z.string(),
   wdtSpecNo: z.string(),
   wdtMakeOrderCode: z.string(),
+  productType: ReviewProductTypeSchema.optional(),
+  componentStocks: z.array(ReviewComponentStockDtoSchema).optional(),
   matchStatus: MatchStatusSchema,
   matchMessage: z.string(),
   stockErrorDetail: z.string().optional(),
@@ -367,6 +399,7 @@ export const WarehouseUsageSettingsDtoSchema = z.object({
   includeNearExpiryWarehouse: z.boolean(),
   includeDefectWarehouse: z.boolean(),
   includeOtherWarehouses: z.boolean(),
+  sharedComponentPriority: SharedComponentPrioritySchema.optional(),
   updatedAt: z.string(),
   updatedByUserId: z.string().nullable().optional(),
   updatedByUsername: z.string().nullable().optional(),
@@ -378,6 +411,7 @@ export const UpdateWarehouseUsageSettingsRequestSchema = z.object({
   includeNearExpiryWarehouse: z.boolean(),
   includeDefectWarehouse: z.boolean(),
   includeOtherWarehouses: z.boolean(),
+  sharedComponentPriority: SharedComponentPrioritySchema.optional().default("suite_first"),
 });
 export type UpdateWarehouseUsageSettingsRequest = z.infer<typeof UpdateWarehouseUsageSettingsRequestSchema>;
 
@@ -459,7 +493,7 @@ export const WdtGoodsSyncRunDtoSchema = z.object({
 });
 export type WdtGoodsSyncRunDto = z.infer<typeof WdtGoodsSyncRunDtoSchema>;
 
-export const WdtSyncTriggerSchema = z.enum(["manual", "hourly", "startup"]);
+export const WdtSyncTriggerSchema = z.enum(["manual", "quick_manual", "hourly", "startup"]);
 export const WarehouseSnapshotTypeSchema = z.enum(["main", "near_expiry", "defect", "other"]);
 export type WarehouseSnapshotType = z.infer<typeof WarehouseSnapshotTypeSchema>;
 export const WdtSyncStatusSchema = z.enum(["queued", "running", "success", "failed"]);

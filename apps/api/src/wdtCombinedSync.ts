@@ -115,7 +115,7 @@ class SyncRunError extends Error {
   }
 }
 
-async function queryStockWithRetry(stockClient: StockLookupClient, specNos: string[], warehouseNo: string) {
+export async function queryStockWithRetry(stockClient: StockLookupClient, specNos: string[], warehouseNo: string) {
   let lastError: unknown;
   const retryDelays = isTestRuntime() ? [0] : parseRetryDelays(process.env.WDT_STOCK_SYNC_RETRY_DELAYS_MS);
   for (const delayMs of [0, ...retryDelays]) {
@@ -143,7 +143,7 @@ function parseRetryDelays(value: string | undefined) {
   return delays.length > 0 ? delays : DEFAULT_RETRY_DELAYS_MS;
 }
 
-function validateStockBatchResponse(specNos: string[], response: Awaited<ReturnType<StockLookupClient["queryStock"]>>) {
+export function validateStockBatchResponse(specNos: string[], response: Awaited<ReturnType<StockLookupClient["queryStock"]>>) {
   const rows = response.data?.detail_list ?? [];
   const totalCount = response.data?.total_count;
   if (totalCount !== undefined && (!Number.isInteger(totalCount) || totalCount !== rows.length)) {
@@ -170,7 +170,7 @@ function isRetryable(detail: string) {
   return detail.includes("并发") || detail.includes("频率") || detail.includes("100");
 }
 
-function chunk<T>(values: T[], size: number): T[][] {
+export function chunk<T>(values: T[], size: number): T[][] {
   const result: T[][] = [];
   for (let index = 0; index < values.length; index += size) result.push(values.slice(index, index + size));
   return result;

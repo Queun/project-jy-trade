@@ -141,6 +141,13 @@
       "when": 1784188800000,
       "tag": "0019_stock_snapshot_warehouse_coverage",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1784275200000,
+      "tag": "0020_multi_component_suite_allocation",
+      "breakpoints": true
     }
   ]
 }

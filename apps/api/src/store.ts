@@ -30,7 +30,10 @@
   RebuildConfirmedOrderRequest,
   RunRealReviewRequest,
   ReviewDecisionDto,
+  ReviewComponentStockDto,
   ReviewLineDto,
+  ReviewProductType,
+  SharedComponentPriority,
   SubmitReviewRequest,
   SubmitReviewResultDto,
   SubmitReviewResponseDto,
@@ -54,7 +57,7 @@
   StartWdtSyncResponseDto,
 } from "@jy-trade/shared";
 import { buildMockReview } from "@jy-trade/workflow";
-import { and, desc, eq, inArray, like, or } from "drizzle-orm";
+import { and, desc, eq, inArray, like, ne, or } from "drizzle-orm";
 import * as XLSX from "xlsx";
 import { randomBytes, randomUUID, scrypt as scryptCallback } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -93,10 +96,11 @@ import {
   type WdtGoodsSpecPayload,
   type WdtGoodsWindowClient,
 } from "./wdtGoodsSync.js";
-import { createSuiteSyncRepository, runWdtSuiteSync, type WdtSuiteWindowClient } from "./wdtSuiteSync.js";
+import { createSuiteSyncRepository, runWdtSuiteSync, type WdtSuitePayload, type WdtSuiteWindowClient } from "./wdtSuiteSync.js";
 import { createWdtReadClientsFromEnv } from "./wdtClientAdapter.js";
 import { ensureRuntimeDir, resolveProjectRoot, resolveRuntimeDir } from "./runtimePaths.js";
 import { startCombinedSync, type CombinedSyncRepository, type StockSyncScope } from "./wdtCombinedSync.js";
+import { startQuickSync, type QuickGoodsChanges, type QuickSuiteChanges, type QuickSyncPlan, type QuickSyncRepository } from "./wdtQuickSync.js";
 import {
   createLocalProductMatcher,
   decideLocalProductMatch,
@@ -104,10 +108,12 @@ import {
   type LocalGoodsSpecCandidate,
   type LocalSuiteCandidate,
   type ProductMappingCandidate,
+  type ProductComponentCandidate,
   type ProductMatchInput,
   type ProductMatchDecision,
 } from "@jy-trade/workflow";
 import { effectiveWdtAvailableSendStock, getWdtAvailableSendStock, type WdtStockResponse, type WdtStockRow } from "../../../backend/src/integrations/wdtClient.js";
+import { allocateSharedInventory, type AllocationComponent } from "./reviewAllocator.js";
 
 type BatchRow = typeof batches.$inferSelect;
 type ReviewLineRow = typeof reviewLines.$inferSelect;
@@ -142,6 +148,7 @@ interface WarehouseStockSummary {
   usableAvailableStock: number;
   warehouseBreakdown: string;
   warehouses: WarehouseStockCandidate[];
+  displayWarehouses: WarehouseStockCandidate[];
 }
 
 interface WarehouseStockCandidate {
@@ -168,11 +175,21 @@ interface ReviewAllocation {
 
 interface ReviewAllocationInput {
   id: string;
-  specNo: string;
+  productType: ReviewProductType;
   demandQty: number;
   storeNo: string;
   storeName: string;
-  stock: WarehouseStockSummary | undefined;
+  components: AllocationComponent[];
+}
+
+interface PreparedReviewInventory {
+  productType: ReviewProductType;
+  componentStocks: ReviewComponentStockDto[];
+  allocationComponents: AllocationComponent[];
+  stockVerified: boolean;
+  stockError?: StockLookupError;
+  mainAvailableBefore: number;
+  nearExpiryAvailableBefore: number;
 }
 
 const HOUR_MS = 60 * 60 * 1_000;
@@ -218,6 +235,7 @@ export function createSqliteStore(options: StoreOptions = {}) {
   const goodsSyncRepository = createGoodsSyncRepository(database);
   const suiteSyncRepository = createSuiteSyncRepository(database);
   const combinedSyncRepository = createCombinedSyncRepository(database, goodsSyncRepository, suiteSyncRepository, wdtGoodsClient, wdtSuiteClient);
+  const quickSyncRepository = createQuickSyncRepository(database, combinedSyncRepository);
   let activeSyncTask: Promise<void> | undefined;
   let autoSyncTimer: ReturnType<typeof setTimeout> | undefined;
   let schedulerVersion = 0;
@@ -250,6 +268,39 @@ export function createSqliteStore(options: StoreOptions = {}) {
     }
   };
 
+  const enqueueQuickSync = async (actor?: AuthUserDto): Promise<StartWdtSyncResponseDto> => {
+    await ready;
+    let releaseStart!: () => void;
+    const previousStart = syncStartQueue;
+    syncStartQueue = new Promise<void>((resolve) => { releaseStart = resolve; });
+    await previousStart;
+    try {
+      if (closed) throw new StoreValidationError("服务正在关闭，不能启动新的同步任务");
+      if (!wdtGoodsClient || !wdtSuiteClient || !stockClient) {
+        throw new StoreValidationError("WDT商品、组合装或库存同步客户端未配置");
+      }
+      const started = await startQuickSync(quickSyncRepository, wdtGoodsClient, wdtSuiteClient, stockClient);
+      if (started.task) {
+        const trackedTask = started.task.catch(() => undefined).finally(() => {
+          if (activeSyncTask === trackedTask) activeSyncTask = undefined;
+        });
+        activeSyncTask = trackedTask;
+        void trackedTask;
+      }
+      await insertAuditLog(
+        database,
+        actor?.id ?? null,
+        started.alreadyRunning ? "wdt.quick_sync.reused" : "wdt.quick_sync.started",
+        "wdt_sync_run",
+        started.run.id,
+        { trigger: "quick_manual" },
+      );
+      return { run: started.run, alreadyRunning: started.alreadyRunning };
+    } finally {
+      releaseStart();
+    }
+  };
+
   const scheduleNextAutoSync = async () => {
     const version = ++schedulerVersion;
     if (autoSyncTimer) clearTimeout(autoSyncTimer);
@@ -273,6 +324,10 @@ export function createSqliteStore(options: StoreOptions = {}) {
       return enqueueSync(trigger, actor);
     },
 
+    async startQuickWdtSync(actor?: AuthUserDto) {
+      return enqueueQuickSync(actor);
+    },
+
     async listWdtSyncRuns(): Promise<WdtSyncRunDto[]> {
       await ready;
       const rows = await database.db.select().from(wdtSyncRuns).orderBy(desc(wdtSyncRuns.startedAt)).limit(30);
@@ -293,7 +348,7 @@ export function createSqliteStore(options: StoreOptions = {}) {
       if (!autoSyncEnabled || !wdtGoodsClient || !stockClient) return;
       const settings = await getWdtSyncSettingsRow(database);
       const maximumAgeMs = normalizeSyncIntervalHours(settings.intervalHours) * HOUR_MS;
-      const latest = await getLatestSuccessfulWdtSyncRun(database);
+      const latest = await getLatestSuccessfulFullWdtSyncRun(database);
       if (!latest || snapshotIsOlderThan(latest.finishedAt, Date.now(), maximumAgeMs)) {
         void enqueueSync("startup").catch(() => undefined);
       }
@@ -368,6 +423,7 @@ export function createSqliteStore(options: StoreOptions = {}) {
         matchedBarcodeCount: 0,
         stockSnapshotRunId: "",
         stockSnapshotAt: "",
+        allocationPriority: "suite_first",
         createdAt: now,
         updatedAt: now,
       };
@@ -500,6 +556,7 @@ export function createSqliteStore(options: StoreOptions = {}) {
         matchedBarcodeCount: result.matchedBarcodeCount,
         stockSnapshotRunId: stockSnapshot?.runId ?? "",
         stockSnapshotAt: stockSnapshot?.syncedAt ?? "",
+        allocationPriority: warehouseSettings.sharedComponentPriority ?? "suite_first",
         updatedAt: now,
       };
       await database.db
@@ -511,6 +568,7 @@ export function createSqliteStore(options: StoreOptions = {}) {
           matchedBarcodeCount: updatedBatch.matchedBarcodeCount,
           stockSnapshotRunId: updatedBatch.stockSnapshotRunId,
           stockSnapshotAt: updatedBatch.stockSnapshotAt,
+          allocationPriority: updatedBatch.allocationPriority,
           updatedAt: updatedBatch.updatedAt,
         })
         .where(eq(batches.id, batchId));
@@ -521,6 +579,7 @@ export function createSqliteStore(options: StoreOptions = {}) {
         matchCounts: result.matchCounts,
         stockQueriedCount: result.stockQueriedCount,
         allowStaleCache: input.allowStaleCache,
+        allocationPriority: updatedBatch.allocationPriority,
       });
 
       return {
@@ -571,7 +630,7 @@ export function createSqliteStore(options: StoreOptions = {}) {
           mappings,
           externalProductMatches,
         });
-        const matchedSpecNos = matchedInputs.map((item) => item.decision.candidate?.specNo ?? "").filter(Boolean);
+        const matchedSpecNos = matchedInputs.flatMap((item) => normalizedCandidateComponents(item.decision.candidate).map((component) => component.specNo));
         const stockSnapshot = await loadActiveStockSnapshot(database, warehouseSettings, { specNos: matchedSpecNos });
         const buildResult = await buildConfirmedOrderReview({
           batchId,
@@ -599,6 +658,7 @@ export function createSqliteStore(options: StoreOptions = {}) {
           matchedBarcodeCount: new Set(buildResult.reviewLines.filter((line) => line.matchStatus === "matched").map((line) => line.externalBarcode).filter(Boolean)).size,
           stockSnapshotRunId: stockSnapshot?.runId ?? "",
           stockSnapshotAt: stockSnapshot?.syncedAt ?? "",
+          allocationPriority: warehouseSettings.sharedComponentPriority ?? "suite_first",
           createdAt: now,
           updatedAt: now,
         };
@@ -610,6 +670,7 @@ export function createSqliteStore(options: StoreOptions = {}) {
           unmatchedRowCount,
           skippedRowCount: parsed.skippedRowCount,
           stockQueriedCount: buildResult.stockQueriedCount,
+          allocationPriority: batch.allocationPriority,
         };
 
         await database.db.transaction(async (tx) => {
@@ -1013,6 +1074,7 @@ export function createSqliteStore(options: StoreOptions = {}) {
         includeNearExpiryWarehouse: input.includeNearExpiryWarehouse ? 1 : 0,
         includeDefectWarehouse: input.includeDefectWarehouse ? 1 : 0,
         includeOtherWarehouses: input.includeOtherWarehouses ? 1 : 0,
+        sharedComponentPriority: input.sharedComponentPriority,
         updatedByUserId: actor?.id ?? null,
         updatedByUsername: actor?.username ?? null,
         updatedAt: now,
@@ -1028,6 +1090,7 @@ export function createSqliteStore(options: StoreOptions = {}) {
             includeNearExpiryWarehouse: row.includeNearExpiryWarehouse,
             includeDefectWarehouse: row.includeDefectWarehouse,
             includeOtherWarehouses: row.includeOtherWarehouses,
+            sharedComponentPriority: row.sharedComponentPriority,
             updatedByUserId: row.updatedByUserId,
             updatedByUsername: row.updatedByUsername,
             updatedAt: row.updatedAt,
@@ -1586,6 +1649,7 @@ async function getWarehouseUsageSettingsRow(database: DatabaseContext): Promise<
     includeNearExpiryWarehouse: 1,
     includeDefectWarehouse: 0,
     includeOtherWarehouses: 0,
+    sharedComponentPriority: "suite_first",
     updatedByUserId: null,
     updatedByUsername: null,
     updatedAt: now,
@@ -1818,17 +1882,16 @@ async function buildConfirmedOrderReview(options: {
   const reviewLines: ReviewLineDto[] = [];
   const candidateRows: RealReviewCandidateRow[] = [];
   const matchedInputs = options.matchedInputs ?? prepareConfirmedOrderMatches(options);
-  const specNos = matchedInputs.map((input) => input.decision.candidate?.specNo ?? "").filter(Boolean);
-  const stockLookup = stockLookupFromSnapshot(specNos, options.stockSnapshot);
+  const inventoryById = new Map(matchedInputs.map((input) => [input.id, prepareReviewInventory(input.decision, options.stockSnapshot)]));
   const allocationInputs: ReviewAllocationInput[] = matchedInputs.map((input) => {
-    const specNo = input.decision.status === "matched" ? input.decision.candidate?.specNo ?? "" : "";
+    const inventory = inventoryById.get(input.id)!;
     return {
       id: input.id,
-      specNo,
+      productType: inventory.productType,
       demandQty: input.line.shipQty,
       storeNo: input.line.storeNo,
       storeName: input.line.storeName,
-      stock: specNo ? stockLookup.stockBySpecNo.get(specNo) : undefined,
+      components: inventory.allocationComponents,
     };
   });
   const allocations = allocateReviewShipQuantities(allocationInputs, options.warehouseSettings, options.vipStoreIndex);
@@ -1839,8 +1902,8 @@ async function buildConfirmedOrderReview(options: {
     }
     const matched = decision.status === "matched";
     const specNo = matched ? decision.candidate?.specNo ?? "" : "";
-    const stock = specNo ? stockLookup.stockBySpecNo.get(specNo) : undefined;
-    const stockError = specNo ? stockLookup.stockErrorsBySpecNo.get(specNo) : undefined;
+    const inventory = inventoryById.get(id)!;
+    const stockError = matched ? inventory.stockError : undefined;
     const allocation = allocations.get(id);
     const suggestedShipQty = allocation?.quantity ?? 0;
     const status = confirmedOrderStatusFor(decision.status, line.shipQty, suggestedShipQty, stockError);
@@ -1889,13 +1952,15 @@ async function buildConfirmedOrderReview(options: {
       specName: decision.candidate?.specName ?? "",
       wdtSpecNo: specNo,
       wdtMakeOrderCode: decision.candidate?.makeOrderCode ?? specNo,
+      productType: inventory.productType,
+      componentStocks: inventory.componentStocks,
       matchStatus: decision.status,
       matchMessage: [decision.message, systemMessage].filter(Boolean).join("；"),
       stockErrorDetail: stockError?.developerDetail ?? "",
       orderQty: line.orderQty,
       plannedShipQty: line.shipQty,
-      mainAvailableBefore: stock?.mainAvailableStock ?? 0,
-      nearExpiryAvailableBefore: stock?.nearExpiryAvailableStock ?? 0,
+      mainAvailableBefore: inventory.mainAvailableBefore,
+      nearExpiryAvailableBefore: inventory.nearExpiryAvailableBefore,
       suggestedShipQty,
       suggestedWarehouseNo: allocation?.warehouseNo ?? "",
       suggestedWarehouseName: allocation?.warehouseName ?? "",
@@ -1910,7 +1975,8 @@ async function buildConfirmedOrderReview(options: {
     });
   }
 
-  return { batchId: options.batchId, reviewLines, candidateRows, stockQueriedCount: stockLookup.stockQueriedCount };
+  const stockQueriedCount = new Set([...inventoryById.values()].flatMap((inventory) => inventory.componentStocks.filter((component) => component.stockVerified).map((component) => component.specNo))).size;
+  return { batchId: options.batchId, reviewLines, candidateRows, stockQueriedCount };
 }
 
 function prepareConfirmedOrderMatches(options: {
@@ -2028,15 +2094,14 @@ async function buildRealReview(options: RealReviewBuildOptions): Promise<RealRev
     });
 
     const id = `${options.batchId}-line-${index + 1}`;
-    let stock: WarehouseStockSummary | undefined;
     let matchStatus: ReviewLineDto["matchStatus"] = decision.status;
     let matchMessage = decision.message;
     const specNo = decision.candidate?.specNo ?? "";
+    const inventory = prepareReviewInventory(decision, options.stockSnapshot);
 
     if (decision.status === "matched" && specNo) {
-      stock = options.stockSnapshot?.stockBySpecNo.get(specNo);
-      if (!options.stockSnapshot?.verifiedSpecNos.has(specNo)) {
-        matchMessage = [matchMessage, "本地库存快照未覆盖该商品，请人工确认"].filter(Boolean).join("；");
+      if (!inventory.stockVerified) {
+        matchMessage = [matchMessage, inventory.stockError?.userMessage].filter(Boolean).join("；");
       } else stockQueriedCount += 1;
     }
 
@@ -2052,25 +2117,23 @@ async function buildRealReview(options: RealReviewBuildOptions): Promise<RealRev
       decision,
       matchStatus,
       matchMessage,
-      stock,
+      inventory,
     });
   }
 
   const allocations = allocateReviewShipQuantities(
     lineInputs.map((input) => ({
       id: input.id,
-      specNo: input.matchStatus === "matched" ? input.decision.candidate?.specNo ?? "" : "",
+      productType: input.inventory.productType,
       demandQty: input.orderLine.orderQty,
       storeNo: input.orderLine.storeNo,
       storeName: input.orderLine.storeName,
-      stock: input.stock,
+      components: input.inventory.allocationComponents,
     })),
     options.warehouseSettings,
     options.vipStoreIndex,
   );
-  const reviewLines = lineInputs.map((input) => buildRealReviewLine(input, allocations.get(input.id), Boolean(
-    input.decision.candidate?.specNo && options.stockSnapshot?.verifiedSpecNos.has(input.decision.candidate.specNo),
-  )));
+  const reviewLines = lineInputs.map((input) => buildRealReviewLine(input, allocations.get(input.id), input.inventory.stockVerified));
 
   return {
     orderLineCount: orderLines.length,
@@ -2092,15 +2155,15 @@ interface RealReviewLineInput {
   decision: ProductMatchDecision;
   matchStatus: ReviewLineDto["matchStatus"];
   matchMessage: string;
-  stock: WarehouseStockSummary | undefined;
+  inventory: PreparedReviewInventory;
 }
 
 function buildRealReviewLine(input: RealReviewLineInput, allocation?: ReviewAllocation, stockVerified = true): ReviewLineDto {
   const suggestedShipQty = allocation?.quantity ?? 0;
   const specNo = input.matchStatus === "matched" ? input.decision.candidate?.specNo ?? "" : "";
   const makeOrderCode = input.matchStatus === "matched" ? input.decision.candidate?.makeOrderCode ?? specNo : "";
-  const mainBefore = input.stock?.mainAvailableStock ?? 0;
-  const nearExpiryBefore = input.stock?.nearExpiryAvailableStock ?? 0;
+  const mainBefore = input.inventory.mainAvailableBefore;
+  const nearExpiryBefore = input.inventory.nearExpiryAvailableBefore;
 
   const status = input.matchStatus === "matched" && !stockVerified
     ? "库存未验证"
@@ -2150,6 +2213,8 @@ function buildRealReviewLine(input: RealReviewLineInput, allocation?: ReviewAllo
     specName: input.decision.candidate?.specName ?? "",
     wdtSpecNo: specNo,
     wdtMakeOrderCode: makeOrderCode,
+    productType: input.inventory.productType,
+    componentStocks: input.inventory.componentStocks,
     matchStatus: input.matchStatus,
     matchMessage: input.matchMessage,
     stockErrorDetail: stockVerified ? "" : "LOCAL_STOCK_SNAPSHOT_MISSING",
@@ -2176,98 +2241,15 @@ function allocateReviewShipQuantities(
   warehouseSettings: WarehouseUsageSettingsDto,
   vipStoreIndex: VipStoreIndex,
 ): Map<string, ReviewAllocation> {
-  const allocations = new Map<string, ReviewAllocation>();
-  const matchedBySpecNo = new Map<string, ReviewAllocationInput[]>();
-  for (const input of inputs) {
-    if (!input.specNo || !input.stock || input.demandQty <= 0) continue;
-    const rows = matchedBySpecNo.get(input.specNo) ?? [];
-    rows.push(input);
-    matchedBySpecNo.set(input.specNo, rows);
-  }
-
-  for (const rows of matchedBySpecNo.values()) {
-    const stock = rows[0]?.stock;
-    if (!stock) continue;
-    let remainingAvailable = usableStockForSettings(stock, warehouseSettings);
-    const vipRows = rows.filter((row) => isVipReviewLine(row, vipStoreIndex));
-    const regularRows = rows.filter((row) => !isVipReviewLine(row, vipStoreIndex));
-
-    const desiredAllocations = new Map<string, number>();
-    const vipAllocations = allocateFairlyByDemand(vipRows, remainingAvailable);
-    for (const [id, quantity] of vipAllocations) {
-      desiredAllocations.set(id, quantity);
-      remainingAvailable -= quantity;
-    }
-
-    const regularAllocations = allocateFairlyByDemand(regularRows, remainingAvailable);
-    for (const [id, quantity] of regularAllocations) {
-      desiredAllocations.set(id, quantity);
-    }
-
-    const remainingByWarehouse = stock.warehouses.map((warehouse) => ({ ...warehouse }));
-    const allocationOrder = [...vipRows, ...regularRows];
-    for (const row of allocationOrder) {
-      const desiredQuantity = desiredAllocations.get(row.id) ?? 0;
-      if (desiredQuantity <= 0) continue;
-      const warehouse = selectFulfillmentWarehouse(remainingByWarehouse, row.demandQty);
-      if (!warehouse) continue;
-      const quantity = Math.min(desiredQuantity, warehouse.availableStock);
-      if (quantity <= 0) continue;
-      warehouse.availableStock -= quantity;
-      allocations.set(row.id, {
-        quantity,
-        warehouseNo: warehouse.warehouseNo,
-        warehouseName: warehouse.warehouseName,
-      });
-    }
-  }
-
-  return allocations;
-}
-
-function selectFulfillmentWarehouse(warehouses: WarehouseStockCandidate[], orderQty: number) {
-  const available = warehouses.filter((warehouse) => warehouse.availableStock > 0);
-  const satisfying = available.filter((warehouse) => warehouse.availableStock >= orderQty).sort(compareWarehouseCandidates);
-  if (satisfying.length > 0) return satisfying[0];
-  return [...available].sort((left, right) => right.availableStock - left.availableStock || compareWarehouseCandidates(left, right))[0];
-}
-
-function allocateFairlyByDemand(rows: ReviewAllocationInput[], available: number): Map<string, number> {
-  const allocations = new Map(rows.map((row) => [row.id, 0]));
-  let remainingAvailable = Math.max(0, Math.floor(available));
-  let activeRows = rows.filter((row) => row.demandQty > 0);
-
-  while (remainingAvailable > 0 && activeRows.length > 0) {
-    const share = Math.floor(remainingAvailable / activeRows.length);
-    const extraCount = remainingAvailable % activeRows.length;
-    let consumed = 0;
-    const nextRows: ReviewAllocationInput[] = [];
-
-    for (const [index, row] of activeRows.entries()) {
-      const current = allocations.get(row.id) ?? 0;
-      const remainingDemand = Math.max(0, row.demandQty - current);
-      const fairShare = share + (index < extraCount ? 1 : 0);
-      const quantity = Math.min(remainingDemand, fairShare);
-      allocations.set(row.id, current + quantity);
-      consumed += quantity;
-      if (remainingDemand - quantity > 0) {
-        nextRows.push(row);
-      }
-    }
-
-    remainingAvailable = Math.max(0, remainingAvailable - consumed);
-    activeRows = nextRows;
-  }
-
-  return allocations;
-}
-
-function usableStockForSettings(stock: WarehouseStockSummary, settings: WarehouseUsageSettingsDto): number {
-  return (
-    (settings.includeMainWarehouse ? stock.mainAvailableStock : 0)
-    + (settings.includeNearExpiryWarehouse ? stock.nearExpiryAvailableStock : 0)
-    + (settings.includeDefectWarehouse ? stock.defectAvailableStock : 0)
-    + (settings.includeOtherWarehouses ? stock.otherAvailableStock : 0)
+  return allocateSharedInventory(
+    inputs.map((input) => ({
+      id: input.id,
+      productType: input.productType,
+      demandQty: input.demandQty,
+      vip: isVipReviewLine(input, vipStoreIndex),
+      components: input.components,
+    })),
+    warehouseSettings.sharedComponentPriority ?? "suite_first",
   );
 }
 
@@ -2336,7 +2318,7 @@ async function rebuildConfirmedOrderBatch(
     mappings,
     externalProductMatches,
   });
-  const matchedSpecNos = matchedInputs.map((item) => item.decision.candidate?.specNo ?? "").filter(Boolean);
+  const matchedSpecNos = matchedInputs.flatMap((item) => normalizedCandidateComponents(item.decision.candidate).map((component) => component.specNo));
   const stockSnapshot = await loadActiveStockSnapshot(database, warehouseSettings, { specNos: matchedSpecNos });
   const buildResult = await buildConfirmedOrderReview({
     batchId: batch.id,
@@ -2360,6 +2342,7 @@ async function rebuildConfirmedOrderBatch(
     matchedBarcodeCount: new Set(rebuiltLines.filter((line) => line.matchStatus === "matched").map((line) => line.externalBarcode).filter(Boolean)).size,
     stockSnapshotRunId: stockSnapshot?.runId ?? "",
     stockSnapshotAt: stockSnapshot?.syncedAt ?? "",
+    allocationPriority: warehouseSettings.sharedComponentPriority ?? "suite_first",
     updatedAt: now,
   };
 
@@ -2372,6 +2355,7 @@ async function rebuildConfirmedOrderBatch(
     skippedRowCount: parsed.skippedRowCount,
     stockQueriedCount: buildResult.stockQueriedCount,
     strategy: input.strategy,
+    allocationPriority: updatedBatch.allocationPriority,
   };
   await database.db.transaction(async (tx) => {
     await tx.update(batches).set({
@@ -2381,6 +2365,7 @@ async function rebuildConfirmedOrderBatch(
       matchedBarcodeCount: updatedBatch.matchedBarcodeCount,
       stockSnapshotRunId: updatedBatch.stockSnapshotRunId,
       stockSnapshotAt: updatedBatch.stockSnapshotAt,
+      allocationPriority: updatedBatch.allocationPriority,
       updatedAt: updatedBatch.updatedAt,
     }).where(eq(batches.id, batch.id));
     await replaceBatchReviewLines(tx, batch.id, rebuiltLines, now, previousDecisions);
@@ -2622,6 +2607,8 @@ function calculatedReviewLineValues(line: ReviewLineDto): Partial<ReviewLineRow>
     specName: line.specName,
     wdtSpecNo: line.wdtSpecNo,
     wdtMakeOrderCode: line.wdtMakeOrderCode || line.wdtSpecNo,
+    productType: line.productType ?? "goods",
+    componentStockJson: JSON.stringify(line.componentStocks ?? []),
     matchStatus: line.matchStatus,
     matchMessage: line.matchMessage,
     stockErrorDetail: line.stockErrorDetail ?? "",
@@ -2721,6 +2708,8 @@ async function replaceBatchReviewLines(
       specName: line.specName,
       wdtSpecNo: line.wdtSpecNo,
       wdtMakeOrderCode: line.wdtMakeOrderCode || line.wdtSpecNo,
+      productType: line.productType ?? "goods",
+      componentStockJson: JSON.stringify(line.componentStocks ?? []),
       matchStatus: line.matchStatus,
       matchMessage: line.matchMessage,
       stockErrorDetail: line.stockErrorDetail ?? "",
@@ -3022,24 +3011,33 @@ async function loadLocalSuiteCandidates(database: DatabaseContext): Promise<Loca
   const candidates: LocalSuiteCandidate[] = [];
   for (const suite of suites) {
     const activeComponents = (componentsBySuiteNo.get(suite.suiteNo) ?? [])
-      .filter((component) => component.deleted !== 1 && component.specNo)
+      .filter((component) => component.deleted !== 1 && component.specNo && component.quantity > 0)
       .sort((a, b) => a.sortOrder - b.sortOrder);
-    if (activeComponents.length !== 1) continue;
-    candidates.push(toLocalSuiteCandidate(suite, activeComponents[0]));
+    if (activeComponents.length === 0) continue;
+    candidates.push(toLocalSuiteCandidate(suite, activeComponents));
   }
   return candidates;
 }
 
-function toLocalSuiteCandidate(suite: WdtSuiteRow, component: WdtSuiteComponentRow): LocalSuiteCandidate {
+function toLocalSuiteCandidate(suite: WdtSuiteRow, components: WdtSuiteComponentRow[]): LocalSuiteCandidate {
+  const primary = components[0];
   return {
     suiteNo: suite.suiteNo,
     suiteName: suite.suiteName,
     barcode: suite.barcode,
-    componentSpecNo: component.specNo,
-    componentGoodsNo: component.goodsNo,
-    componentGoodsName: component.goodsName,
-    componentSpecName: component.specName,
-    componentBarcode: component.barcode,
+    components: components.map((component) => ({
+      specNo: component.specNo,
+      goodsNo: component.goodsNo,
+      goodsName: component.goodsName,
+      specName: component.specName,
+      barcode: component.barcode,
+      quantityPerItem: component.quantity,
+    })),
+    componentSpecNo: primary?.specNo ?? "",
+    componentGoodsNo: primary?.goodsNo ?? "",
+    componentGoodsName: primary?.goodsName ?? "",
+    componentSpecName: primary?.specName ?? "",
+    componentBarcode: primary?.barcode ?? "",
     deleted: suite.deleted,
     modified: suite.modified,
     syncedAt: suite.syncedAt,
@@ -3164,6 +3162,9 @@ function summarizeWarehouseStock(rows: WdtStockRow[], settings: WarehouseUsageSe
       .filter((warehouse) => warehouseIncluded(warehouse.type, settings) && warehouse.availableStock > 0)
       .map(({ rawAvailableStock: _rawAvailableStock, ...warehouse }) => warehouse)
       .sort(compareWarehouseCandidates),
+    displayWarehouses: [...warehouseByKey.values()]
+      .map(({ rawAvailableStock: _rawAvailableStock, ...warehouse }) => warehouse)
+      .sort(compareWarehouseCandidates),
   };
 }
 
@@ -3211,6 +3212,126 @@ function compareWarehouseCandidates(left: WarehouseStockCandidate, right: Wareho
     || left.warehouseName.localeCompare(right.warehouseName);
 }
 
+function prepareReviewInventory(
+  decision: ProductMatchDecision,
+  snapshot: LocalStockSnapshot | undefined,
+): PreparedReviewInventory {
+  const candidate = decision.status === "matched" ? decision.candidate : undefined;
+  const productType: ReviewProductType = candidate?.source === "suite" ? "suite" : "goods";
+  const components = normalizedCandidateComponents(candidate);
+  const scopeError = snapshot?.missingWarehouseTypes.length
+    ? {
+        userMessage: `当前库存快照未覆盖已启用仓库：${snapshot.missingWarehouseTypes.map(warehouseTypeText).join("、")}，请同步后再使用系统建议`,
+        developerDetail: `LOCAL_STOCK_SNAPSHOT_WAREHOUSE_SCOPE_MISMATCH missing=${snapshot.missingWarehouseTypes.join(",")}`,
+      }
+    : undefined;
+  let stockError = scopeError;
+  const componentStocks: ReviewComponentStockDto[] = components.map((component) => {
+    const stockVerified = Boolean(snapshot && !scopeError && snapshot.verifiedSpecNos.has(component.specNo));
+    const stock = stockVerified ? snapshot?.stockBySpecNo.get(component.specNo) ?? emptyWarehouseStockSummary() : emptyWarehouseStockSummary();
+    if (!stockVerified && !stockError) {
+      stockError = {
+        userMessage: productType === "suite" ? `组合装组件 ${component.goodsName || component.specNo} 库存未验证` : "本地库存快照未覆盖该商品，请人工确认",
+        developerDetail: productType === "suite" ? `LOCAL_STOCK_SNAPSHOT_MISSING spec_no=${component.specNo}` : "LOCAL_STOCK_SNAPSHOT_MISSING",
+      };
+    }
+    return {
+      specNo: component.specNo,
+      goodsNo: component.goodsNo ?? "",
+      goodsName: component.goodsName ?? "",
+      specName: component.specName ?? "",
+      barcode: component.barcode ?? "",
+      quantityPerItem: component.quantityPerItem,
+      stockVerified,
+      mainAvailableStock: stock.mainAvailableStock,
+      nearExpiryAvailableStock: stock.nearExpiryAvailableStock,
+      defectAvailableStock: stock.defectAvailableStock,
+      otherAvailableStock: stock.otherAvailableStock,
+      warehouses: stock.displayWarehouses.map((warehouse) => ({
+        warehouseNo: warehouse.warehouseNo,
+        warehouseName: warehouse.warehouseName,
+        availableStock: warehouse.availableStock,
+      })),
+    };
+  });
+  const stockVerified = components.length > 0 && componentStocks.every((component) => component.stockVerified);
+  const allocationComponents: AllocationComponent[] = stockVerified
+    ? components.map((component, index) => ({
+        specNo: component.specNo,
+        quantityPerItem: component.quantityPerItem,
+        warehouses: (snapshot?.stockBySpecNo.get(component.specNo) ?? emptyWarehouseStockSummary()).warehouses,
+      }))
+    : [];
+  return {
+    productType,
+    componentStocks,
+    allocationComponents,
+    stockVerified,
+    stockError,
+    mainAvailableBefore: buildableQuantityFromComponentStocks(componentStocks, "main"),
+    nearExpiryAvailableBefore: buildableQuantityFromComponentStocks(componentStocks, "near_expiry"),
+  };
+}
+
+function normalizedCandidateComponents(candidate: ProductMatchDecision["candidate"]): ProductComponentCandidate[] {
+  const raw = candidate?.components?.length
+    ? candidate.components
+    : candidate?.specNo
+      ? [{
+          specNo: candidate.specNo,
+          goodsNo: candidate.goodsNo,
+          goodsName: candidate.goodsName,
+          specName: candidate.specName,
+          barcode: candidate.barcodes?.[0],
+          quantityPerItem: 1,
+        }]
+      : [];
+  const bySpecNo = new Map<string, ProductComponentCandidate>();
+  for (const component of raw) {
+    const specNo = component.specNo.trim();
+    if (!specNo || !Number.isFinite(component.quantityPerItem) || component.quantityPerItem <= 0) continue;
+    const current = bySpecNo.get(specNo);
+    bySpecNo.set(specNo, current
+      ? { ...current, quantityPerItem: current.quantityPerItem + component.quantityPerItem }
+      : { ...component, specNo });
+  }
+  return [...bySpecNo.values()];
+}
+
+function buildableQuantityForType(components: AllocationComponent[], type: WarehouseStockType) {
+  if (components.length === 0) return 0;
+  const warehouseKeys = new Map<string, WarehouseStockCandidate>();
+  for (const component of components) {
+    for (const warehouse of component.warehouses) {
+      if (warehouse.type === type) warehouseKeys.set(`${warehouse.warehouseNo}\u0000${warehouse.warehouseName}`, warehouse);
+    }
+  }
+  let total = 0;
+  for (const [key] of warehouseKeys) {
+    const capacity = components.reduce((current, component) => {
+      const warehouse = component.warehouses.find((item) => `${item.warehouseNo}\u0000${item.warehouseName}` === key);
+      return Math.min(current, Math.floor(((warehouse?.availableStock ?? 0) + 1e-9) / component.quantityPerItem));
+    }, Number.POSITIVE_INFINITY);
+    if (Number.isFinite(capacity)) total += capacity;
+  }
+  return total;
+}
+
+function buildableQuantityFromComponentStocks(components: ReviewComponentStockDto[], type: WarehouseStockType) {
+  if (components.length === 0 || components.some((component) => !component.stockVerified)) return 0;
+  const field = type === "main"
+    ? "mainAvailableStock"
+    : type === "near_expiry"
+      ? "nearExpiryAvailableStock"
+      : type === "defect"
+        ? "defectAvailableStock"
+        : "otherAvailableStock";
+  return components.reduce((capacity, component) => Math.min(
+    capacity,
+    Math.floor((component[field] + 1e-9) / component.quantityPerItem),
+  ), Number.POSITIVE_INFINITY);
+}
+
 function stockLookupFromSnapshot(specNos: string[], snapshot: LocalStockSnapshot | undefined) {
   const error = snapshot?.missingWarehouseTypes.length
     ? {
@@ -3237,6 +3358,7 @@ function emptyWarehouseStockSummary(): WarehouseStockSummary {
     usableAvailableStock: 0,
     warehouseBreakdown: "",
     warehouses: [],
+    displayWarehouses: [],
   };
 }
 
@@ -3398,6 +3520,7 @@ function toBatchSummary(batch: BatchRow): BatchSummary {
     matchedBarcodeCount: batch.matchedBarcodeCount,
     stockSnapshotRunId: batch.stockSnapshotRunId,
     stockSnapshotAt: batch.stockSnapshotAt,
+    allocationPriority: batch.allocationPriority,
     createdAt: batch.createdAt,
     updatedAt: batch.updatedAt,
   };
@@ -3409,6 +3532,7 @@ function toWarehouseUsageSettingsDto(row: WarehouseUsageSettingsRow): WarehouseU
     includeNearExpiryWarehouse: Boolean(row.includeNearExpiryWarehouse),
     includeDefectWarehouse: Boolean(row.includeDefectWarehouse),
     includeOtherWarehouses: Boolean(row.includeOtherWarehouses),
+    sharedComponentPriority: row.sharedComponentPriority,
     updatedAt: row.updatedAt,
     updatedByUserId: row.updatedByUserId ?? null,
     updatedByUsername: row.updatedByUsername ?? null,
@@ -3490,6 +3614,8 @@ function toReviewLineDto(line: ReviewLineRow, decision?: ReviewDecisionRow): Rev
     specName: line.specName,
     wdtSpecNo: line.wdtSpecNo,
     wdtMakeOrderCode: line.wdtMakeOrderCode || line.wdtSpecNo,
+    productType: line.productType,
+    componentStocks: parseReviewComponentStocks(line.componentStockJson),
     matchStatus: line.matchStatus,
     matchMessage: line.matchMessage,
     stockErrorDetail: line.stockErrorDetail,
@@ -3509,6 +3635,15 @@ function toReviewLineDto(line: ReviewLineRow, decision?: ReviewDecisionRow): Rev
     priority: Boolean(line.priority),
     priorityReason: line.priorityReason ?? "",
   };
+}
+
+function parseReviewComponentStocks(value: string): ReviewComponentStockDto[] {
+  try {
+    const parsed = JSON.parse(value) as ReviewComponentStockDto[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
 function toExportDto(exportRow: ExportRow): ExportDto {
@@ -3700,7 +3835,7 @@ function createCombinedSyncRepository(
           args: [finishedAt, finishedAt, runId],
         },
       ], "write");
-      await pruneOldStockSnapshots(database);
+      await pruneOldStockSnapshots(database).catch(() => undefined);
     },
     async failRun(runId, errorCode, errorMessage, errorDetail, finishedAt) {
       await database.client.batch([
@@ -3719,6 +3854,237 @@ function createCombinedSyncRepository(
   };
 }
 
+function createQuickSyncRepository(
+  database: DatabaseContext,
+  combined: CombinedSyncRepository,
+): QuickSyncRepository {
+  return {
+    findActiveRun: combined.findActiveRun,
+    createRun: combined.createRun,
+    updateRun: combined.updateRun,
+    writeStockBatch: combined.writeStockBatch,
+    failRun: combined.failRun,
+
+    async buildPlan(goods, suites) {
+      const base = await getLatestSuccessfulWdtSyncRun(database);
+      if (!base) throw new Error("没有可继承的成功库存快照");
+
+      const scope = await combined.loadStockScope();
+      const coverage = await database.db
+        .select()
+        .from(wdtStockSnapshotWarehouseCoverage)
+        .where(eq(wdtStockSnapshotWarehouseCoverage.syncRunId, base.id));
+      const coverageTypes = coverage.map((row) => row.warehouseType).sort();
+      const currentTypes = [...scope.warehouseTypes].sort();
+      const coverageApiWarehouseNos = [...new Set(coverage.map((row) => row.apiWarehouseNo))];
+      if (
+        coverageTypes.join("|") !== currentTypes.join("|")
+        || coverageApiWarehouseNos.some((warehouseNo) => warehouseNo !== scope.apiWarehouseNo)
+      ) {
+        throw new Error("当前仓库范围与成功快照不一致");
+      }
+
+      const [baselineSpecRows, currentGoods, currentSuites, currentComponents] = await Promise.all([
+        database.db.select({ specNo: wdtStockSnapshotSpecs.specNo })
+          .from(wdtStockSnapshotSpecs)
+          .where(eq(wdtStockSnapshotSpecs.syncRunId, base.id)),
+        database.db.select().from(wdtGoodsSpecs),
+        database.db.select().from(wdtSuites),
+        database.db.select().from(wdtSuiteComponents),
+      ]);
+      const baselineSpecNos = new Set(baselineSpecRows.map((row) => row.specNo));
+      const currentActiveSpecNos = new Set((await combined.loadStockSpecNos()).map((value) => value.trim()).filter(Boolean));
+      const uncoveredCurrentSpecs = [...currentActiveSpecNos].filter((specNo) => !baselineSpecNos.has(specNo));
+      if (uncoveredCurrentSpecs.length > 0) {
+        throw new Error(`当前商品档案包含基准快照未覆盖的SKU: ${uncoveredCurrentSpecs.slice(0, 10).join(",")}`);
+      }
+
+      const changedGoodsNos = new Set(goods.goodsNos);
+      const deletedGoodsNos = new Set(goods.deletedGoodsNos);
+      const changedSuiteNos = new Set(suites.suites.map((suite) => suite.suiteNo));
+      const affectedSpecNos = new Set<string>();
+
+      const futureGoods = new Map(currentGoods.map((row) => [row.specNo, { goodsNo: row.goodsNo, deleted: row.deleted }]));
+      const changedSpecsByGoodsNo = new Map<string, Set<string>>();
+      for (const spec of goods.specs) {
+        const specs = changedSpecsByGoodsNo.get(spec.goodsNo) ?? new Set<string>();
+        specs.add(spec.specNo);
+        changedSpecsByGoodsNo.set(spec.goodsNo, specs);
+        affectedSpecNos.add(spec.specNo);
+        futureGoods.set(spec.specNo, { goodsNo: spec.goodsNo, deleted: spec.deleted });
+      }
+      for (const row of currentGoods) {
+        if (!changedGoodsNos.has(row.goodsNo)) continue;
+        affectedSpecNos.add(row.specNo);
+        if (deletedGoodsNos.has(row.goodsNo)) {
+          futureGoods.set(row.specNo, { goodsNo: row.goodsNo, deleted: 1 });
+          continue;
+        }
+        if (!(changedSpecsByGoodsNo.get(row.goodsNo)?.has(row.specNo))) {
+          throw new Error(`商品 ${row.goodsNo} 的增量响应未包含已有SKU ${row.specNo}`);
+        }
+      }
+
+      const futureSuites = new Map(currentSuites.map((row) => [row.suiteNo, { deleted: row.deleted }]));
+      const futureComponents = new Map<string, Array<{ specNo: string; deleted: number }>>();
+      for (const component of currentComponents) {
+        const rows = futureComponents.get(component.suiteNo) ?? [];
+        rows.push({ specNo: component.specNo, deleted: component.deleted });
+        futureComponents.set(component.suiteNo, rows);
+        if (changedSuiteNos.has(component.suiteNo) && component.specNo) affectedSpecNos.add(component.specNo);
+      }
+      for (const suite of suites.suites) {
+        futureSuites.set(suite.suiteNo, { deleted: suite.deleted });
+        futureComponents.set(
+          suite.suiteNo,
+          suite.components.map((component) => ({ specNo: component.specNo, deleted: component.deleted })),
+        );
+        for (const component of suite.components) {
+          if (component.specNo) affectedSpecNos.add(component.specNo);
+        }
+      }
+
+      const futureActiveSpecNos = new Set<string>();
+      for (const [specNo, row] of futureGoods) {
+        if (row.deleted !== 1 && specNo) futureActiveSpecNos.add(specNo);
+      }
+      for (const [suiteNo, suite] of futureSuites) {
+        if (suite.deleted === 1) continue;
+        for (const component of futureComponents.get(suiteNo) ?? []) {
+          if (component.deleted !== 1 && component.specNo) futureActiveSpecNos.add(component.specNo);
+        }
+      }
+
+      return {
+        baseRunId: base.id,
+        scope,
+        affectedSpecNos: [...affectedSpecNos].sort(),
+        refreshSpecNos: [...affectedSpecNos].filter((specNo) => futureActiveSpecNos.has(specNo)).sort(),
+        goods,
+        suites,
+      };
+    },
+
+    async prepareSnapshot(runId, plan, syncedAt) {
+      await database.client.batch([
+        {
+          sql: `insert into wdt_stock_snapshot_specs (sync_run_id, spec_no, synced_at)
+                select ?, spec_no, ? from wdt_stock_snapshot_specs where sync_run_id = ?`,
+          args: [runId, syncedAt, plan.baseRunId],
+        },
+        {
+          sql: `insert into wdt_stock_snapshot_rows
+                (id, sync_run_id, spec_no, warehouse_no, warehouse_name, available_send_stock, raw_json, synced_at)
+                select ? || ':' || id, ?, spec_no, warehouse_no, warehouse_name, available_send_stock, raw_json, synced_at
+                from wdt_stock_snapshot_rows where sync_run_id = ?`,
+          args: [runId, runId, plan.baseRunId],
+        },
+      ], "write");
+      for (const specNos of chunkValues(plan.affectedSpecNos, 200)) {
+        await database.db.delete(wdtStockSnapshotRows).where(and(
+          eq(wdtStockSnapshotRows.syncRunId, runId),
+          inArray(wdtStockSnapshotRows.specNo, specNos),
+        ));
+        await database.db.delete(wdtStockSnapshotSpecs).where(and(
+          eq(wdtStockSnapshotSpecs.syncRunId, runId),
+          inArray(wdtStockSnapshotSpecs.specNo, specNos),
+        ));
+      }
+    },
+
+    async activateRun(runId, plan, finishedAt) {
+      await database.db.transaction(async (tx) => {
+        for (const goodsNo of plan.goods.deletedGoodsNos) {
+          await tx.update(wdtGoodsSpecs).set({ deleted: 1, syncedAt: finishedAt }).where(eq(wdtGoodsSpecs.goodsNo, goodsNo));
+        }
+        for (const spec of plan.goods.specs) {
+          const row = toWdtGoodsSpecInsert(spec, finishedAt);
+          await tx.insert(wdtGoodsSpecs).values(row).onConflictDoUpdate({
+            target: wdtGoodsSpecs.specNo,
+            set: {
+              goodsNo: row.goodsNo,
+              goodsName: row.goodsName,
+              specName: row.specName,
+              specCode: row.specCode,
+              barcode: row.barcode,
+              barcodesJson: row.barcodesJson,
+              deleted: row.deleted,
+              modified: row.modified,
+              rawJson: row.rawJson,
+              syncedAt: row.syncedAt,
+            },
+          });
+        }
+        for (const suite of plan.suites.suites) {
+          await upsertQuickSuite(tx, suite, finishedAt);
+        }
+        if (plan.scope.warehouseTypes.length > 0) {
+          await tx.insert(wdtStockSnapshotWarehouseCoverage).values(plan.scope.warehouseTypes.map((warehouseType) => ({
+            syncRunId: runId,
+            warehouseType,
+            apiWarehouseNo: plan.scope.apiWarehouseNo,
+            syncedAt: finishedAt,
+          })));
+        }
+        await tx.update(wdtSyncRuns).set({
+          status: "success",
+          stage: "complete",
+          finishedAt,
+          lastProgressAt: finishedAt,
+        }).where(and(eq(wdtSyncRuns.id, runId), inArray(wdtSyncRuns.status, ["queued", "running"])));
+      });
+      await pruneOldStockSnapshots(database);
+    },
+  };
+}
+
+async function upsertQuickSuite(
+  tx: Parameters<Parameters<DatabaseContext["db"]["transaction"]>[0]>[0],
+  suite: WdtSuitePayload,
+  syncedAt: string,
+) {
+  const suiteRow: typeof wdtSuites.$inferInsert = {
+    id: `wdt-suite-${suite.suiteNo}`,
+    suiteNo: suite.suiteNo,
+    suiteName: suite.suiteName,
+    barcode: suite.barcode,
+    deleted: suite.deleted,
+    modified: suite.modified,
+    rawJson: JSON.stringify(suite.raw),
+    syncedAt,
+  };
+  await tx.insert(wdtSuites).values(suiteRow).onConflictDoUpdate({
+    target: wdtSuites.suiteNo,
+    set: {
+      suiteName: suiteRow.suiteName,
+      barcode: suiteRow.barcode,
+      deleted: suiteRow.deleted,
+      modified: suiteRow.modified,
+      rawJson: suiteRow.rawJson,
+      syncedAt,
+    },
+  });
+  await tx.delete(wdtSuiteComponents).where(eq(wdtSuiteComponents.suiteNo, suite.suiteNo));
+  if (suite.components.length > 0) {
+    await tx.insert(wdtSuiteComponents).values(suite.components.map((component, index) => ({
+      id: `wdt-suite-component-${suite.suiteNo}-${component.recId}`,
+      suiteNo: suite.suiteNo,
+      sortOrder: index + 1,
+      specNo: component.specNo,
+      goodsNo: component.goodsNo,
+      goodsName: component.goodsName,
+      specName: component.specName,
+      specCode: component.specCode,
+      barcode: component.barcode,
+      quantity: component.quantity,
+      ratio: component.ratio,
+      deleted: component.deleted,
+      rawJson: JSON.stringify(component.raw),
+      syncedAt,
+    })));
+  }
+}
+
 function syncRunPatchToDb(patch: Partial<WdtSyncRunDto>): Partial<WdtSyncRunRow> {
   const allowed = ["status", "stage", "goodsSyncRunId", "totalSpecCount", "processedSpecCount", "totalBatchCount", "completedBatchCount", "stockRowCount", "finishedAt", "lastProgressAt", "errorCode", "errorMessage", "errorDetail"] as const;
   return Object.fromEntries(allowed.flatMap((key) => patch[key] === undefined ? [] : [[key, patch[key]]])) as Partial<WdtSyncRunRow>;
@@ -3726,6 +4092,16 @@ function syncRunPatchToDb(patch: Partial<WdtSyncRunDto>): Partial<WdtSyncRunRow>
 
 async function getLatestSuccessfulWdtSyncRun(database: DatabaseContext) {
   const [row] = await database.db.select().from(wdtSyncRuns).where(eq(wdtSyncRuns.status, "success")).orderBy(desc(wdtSyncRuns.finishedAt)).limit(1);
+  return row;
+}
+
+async function getLatestSuccessfulFullWdtSyncRun(database: DatabaseContext) {
+  const [row] = await database.db
+    .select()
+    .from(wdtSyncRuns)
+    .where(and(eq(wdtSyncRuns.status, "success"), ne(wdtSyncRuns.trigger, "quick_manual")))
+    .orderBy(desc(wdtSyncRuns.finishedAt))
+    .limit(1);
   return row;
 }
 
@@ -3871,7 +4247,7 @@ function toSuiteSearchResultDto(suite: LocalSuiteCandidate): WdtGoodsSpecSearchR
     source: "suite",
     goodsNo: suite.suiteNo,
     goodsName: suite.suiteName || suite.componentGoodsName || suite.suiteNo,
-    specNo: suite.componentSpecNo,
+    specNo: suite.componentSpecNo ?? suite.components?.[0]?.specNo ?? "",
     specName: suite.componentSpecName || "",
     specCode: suite.suiteNo,
     makeOrderCode: suite.suiteNo,
@@ -4112,6 +4488,9 @@ async function ensureBatchColumns(database: DatabaseContext) {
   if (!columns.includes("stock_snapshot_at")) {
     await database.client.execute("alter table batches add column stock_snapshot_at text not null default ''");
   }
+  if (!columns.includes("allocation_priority")) {
+    await database.client.execute("alter table batches add column allocation_priority text not null default 'suite_first'");
+  }
 }
 
 async function ensureReviewLineColumns(database: DatabaseContext) {
@@ -4149,6 +4528,8 @@ async function ensureReviewLineColumns(database: DatabaseContext) {
     ["order_raw_json", "'{}'"],
     ["suggested_warehouse_no", "''"],
     ["suggested_warehouse_name", "''"],
+    ["product_type", "'goods'"],
+    ["component_stock_json", "'[]'"],
   ];
   for (const [column, defaultValue] of textColumns) {
     if (!columns.includes(column)) {
@@ -4207,11 +4588,16 @@ async function ensureWarehouseUsageSettings(database: DatabaseContext) {
       include_near_expiry_warehouse integer not null default 1,
       include_defect_warehouse integer not null default 0,
       include_other_warehouses integer not null default 0,
+      shared_component_priority text not null default 'suite_first',
       updated_by_user_id text,
       updated_by_username text,
       updated_at text not null
     )
   `);
+  const columns = await getTableColumns(database, "warehouse_usage_settings");
+  if (!columns.includes("shared_component_priority")) {
+    await database.client.execute("alter table warehouse_usage_settings add column shared_component_priority text not null default 'suite_first'");
+  }
   await migrateLegacyWarehouseUsageSettings(database);
   await getWarehouseUsageSettingsRow(database);
 }
@@ -4377,6 +4763,7 @@ async function migrateLegacyWarehouseUsageSettings(database: DatabaseContext) {
     includeNearExpiryWarehouse: parsed.includeNearExpiryWarehouse ? 1 : 0,
     includeDefectWarehouse: parsed.includeDefectWarehouse ? 1 : 0,
     includeOtherWarehouses: parsed.includeOtherWarehouses ? 1 : 0,
+    sharedComponentPriority: "suite_first",
     updatedByUserId: legacy.updated_by_user_id ? String(legacy.updated_by_user_id) : null,
     updatedByUsername: null,
     updatedAt: legacy.updated_at ? String(legacy.updated_at) : new Date().toISOString(),

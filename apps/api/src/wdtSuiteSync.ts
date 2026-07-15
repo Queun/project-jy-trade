@@ -30,7 +30,7 @@ export interface WdtSuiteComponentPayload {
 }
 
 export interface WdtSuiteWindowClient {
-  querySuitesWindow(input: { startTime: string; endTime: string; pageNo: number; pageSize: number }): Promise<{
+  querySuitesWindow(input: { startTime: string; endTime: string; pageNo: number; pageSize: number; hideDeleted?: boolean }): Promise<{
     totalCount: number;
     suites: Array<{
       suite_no?: string;

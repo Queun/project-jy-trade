@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CheckCheck, ChevronDown, ChevronUp, ClipboardList, Download, FileSpreadsheet, HelpCircle, LogOut, MapPin, PackageCheck, PackageSearch, RefreshCcw, Save, Send, Settings, Trash2, Upload, Warehouse, X } from "lucide-react";
+import { CheckCheck, ChevronDown, ChevronUp, ClipboardList, Download, FileSpreadsheet, HelpCircle, LogOut, MapPin, PackageCheck, PackageSearch, RefreshCcw, Save, Send, Settings, Trash2, Upload, Warehouse, X, Zap } from "lucide-react";
 import type {
   AuthUserDto,
   ApplyProductMappingResponse,
@@ -237,6 +237,23 @@ export function App() {
     setCombinedSyncRun(result.run);
     setGoodsSyncError("");
     setGoodsSyncMessage(result.alreadyRunning ? "已有同步任务正在运行" : "同步任务已进入后台队列");
+    setGoodsSyncing(result.run.status === "queued" || result.run.status === "running");
+  }
+
+  async function runQuickGoodsSync() {
+    setGoodsSyncing(true);
+    setGoodsSyncMessage("正在启动快速同步...");
+    const response = await fetch("/api/v1/wdt/quick-sync-runs", { method: "POST" });
+    if (!response.ok) {
+      const error = await response.json();
+      setGoodsSyncMessage(error.message ?? "快速同步启动失败，请使用完整同步");
+      setGoodsSyncing(false);
+      return;
+    }
+    const result = (await response.json()) as StartWdtSyncResponseDto;
+    setCombinedSyncRun(result.run);
+    setGoodsSyncError("");
+    setGoodsSyncMessage(result.alreadyRunning ? "已有同步任务正在运行" : "快速同步任务已进入后台队列");
     setGoodsSyncing(result.run.status === "queued" || result.run.status === "running");
   }
 
@@ -565,6 +582,36 @@ export function App() {
     }
   }
 
+  async function recalculateOrderBatch() {
+    if (!activeBatch || activeBatch.sourceType !== "order" || activeBatch.mode !== "production_api") return;
+    setRecheckingConfirmedOrder(true);
+    setMessage("正在按最新库存分配设置重新计算初审...");
+    try {
+      const response = await fetch(`/api/v1/batches/${activeBatch.id}/actions/run-real-review`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ allowStaleCache: false }),
+      });
+      if (!response.ok) {
+        const error = await response.json();
+        setMessage(error.message ?? "重新计算初审失败");
+        return;
+      }
+      const result = await response.json();
+      setActiveBatch(result.batch);
+      const lines = await fetchReviewLines(activeBatch.id);
+      if (!lines) return;
+      setReviewLines(sortReviewLines(lines));
+      setDraftById(buildDrafts(lines));
+      setErrorsById({});
+      await Promise.all([refreshExports(activeBatch.id), refreshMakeOrderReadiness(activeBatch.id), refreshBatches()]);
+      setMessage("已按最新库存分配设置重新计算初审");
+      setSuccessNotice("初审建议已更新，请重新审核");
+    } finally {
+      setRecheckingConfirmedOrder(false);
+    }
+  }
+
   async function rerunActiveBatchAfterMapping(mapping: ProductMappingDto) {
     if (!activeBatch) {
       setMessage("长期商品映射已保存，正式订单重新初审后生效");
@@ -781,6 +828,7 @@ export function App() {
         includeNearExpiryWarehouse: warehouseSettingsDraft.includeNearExpiryWarehouse,
         includeDefectWarehouse: warehouseSettingsDraft.includeDefectWarehouse,
         includeOtherWarehouses: warehouseSettingsDraft.includeOtherWarehouses,
+        sharedComponentPriority: warehouseSettingsDraft.sharedComponentPriority ?? "suite_first",
       }),
     });
     if (!response.ok) {
@@ -1064,6 +1112,7 @@ export function App() {
             wdtSyncSettingsMessage={wdtSyncSettingsMessage}
             onClose={() => setShowSettings(false)}
             onRunGoodsSync={() => void runGoodsSync()}
+            onRunQuickGoodsSync={() => void runQuickGoodsSync()}
             onSaveWarehouseSettings={() => void saveWarehouseSettings()}
             onWdtSyncIntervalChange={(intervalHours) => void saveWdtSyncInterval(intervalHours)}
             onWarehouseSettingsDraftChange={setWarehouseSettingsDraft}
@@ -1169,6 +1218,7 @@ export function App() {
                 onRecheckConfirmedOrder={() => {
                   if (activeBatch) setConfirmedOrderRebuildPrompt({ batch: activeBatch });
                 }}
+                onRecalculateOrder={() => void recalculateOrderBatch()}
                 onSave={saveDecision}
                 onSubmitReview={() => void submitReview()}
                 canRecheckConfirmedOrder={permissions.canImport}
@@ -1490,6 +1540,7 @@ function SettingsPanel({
   wdtSyncSettingsMessage,
   onClose,
   onRunGoodsSync,
+  onRunQuickGoodsSync,
   onSaveWarehouseSettings,
   onWdtSyncIntervalChange,
   onWarehouseSettingsDraftChange,
@@ -1509,6 +1560,7 @@ function SettingsPanel({
   wdtSyncSettingsMessage: string;
   onClose: () => void;
   onRunGoodsSync: () => void;
+  onRunQuickGoodsSync: () => void;
   onSaveWarehouseSettings: () => void;
   onWdtSyncIntervalChange: (intervalHours: WdtAutoSyncIntervalHours) => void;
   onWarehouseSettingsDraftChange: (settings: WarehouseUsageSettingsDto) => void;
@@ -1550,6 +1602,7 @@ function SettingsPanel({
             syncSettings={wdtSyncSettings}
             syncSettingsMessage={wdtSyncSettingsMessage}
             onRunSync={onRunGoodsSync}
+            onRunQuickSync={onRunQuickGoodsSync}
             onSyncIntervalChange={onWdtSyncIntervalChange}
           />
         </div>
@@ -1758,6 +1811,7 @@ function ReviewTab({
   onPriorityChange,
   onQuickDecision,
   onRecheckConfirmedOrder,
+  onRecalculateOrder,
   onSave,
   onSubmitReview,
 }: {
@@ -1783,6 +1837,7 @@ function ReviewTab({
   onPriorityChange: (line: ReviewLineDto, priority: boolean) => void;
   onQuickDecision: (line: ReviewLineDto, decision: ReviewDecision) => void;
   onRecheckConfirmedOrder: () => void;
+  onRecalculateOrder: () => void;
   onSave: (line: ReviewLineDto) => void;
   onSubmitReview: () => void;
 }) {
@@ -1832,6 +1887,10 @@ function ReviewTab({
               <Button className="bg-muted text-muted-foreground hover:bg-muted/80" disabled={!activeBatch} onClick={onOpenMappingLibrary}>
                 <PackageSearch className="h-4 w-4" />
                 长期映射库
+              </Button>
+              <Button disabled={!activeBatch || !canRecheckConfirmedOrder || recheckingConfirmedOrder} onClick={onRecalculateOrder}>
+                <RefreshCcw className={recheckingConfirmedOrder ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+                {recheckingConfirmedOrder ? "计算中..." : "重新计算初审"}
               </Button>
               <Button disabled={!activeBatch || !canReview} onClick={onBulkApprove}>
                 <CheckCheck className="h-4 w-4" />
@@ -2200,6 +2259,7 @@ function GoodsSyncStatusPanel({
   syncSettings,
   syncSettingsMessage,
   onRunSync,
+  onRunQuickSync,
   onSyncIntervalChange,
 }: {
   canSyncGoods: boolean;
@@ -2213,6 +2273,7 @@ function GoodsSyncStatusPanel({
   syncSettings: WdtSyncSettingsDto | null;
   syncSettingsMessage: string;
   onRunSync: () => void;
+  onRunQuickSync: () => void;
   onSyncIntervalChange: (intervalHours: WdtAutoSyncIntervalHours) => void;
 }) {
   const status = combinedRun?.status ?? "none";
@@ -2278,10 +2339,16 @@ function GoodsSyncStatusPanel({
           {message ? <p className="mt-1 text-sm text-muted-foreground">{message}</p> : null}
           {!canSyncGoods ? <p className="mt-1 text-xs text-amber-700">当前账号只能查看同步状态，请联系管理员或运营账号处理。</p> : null}
         </div>
-        <Button className="h-8 px-2" disabled={!canSyncGoods || syncing} onClick={onRunSync}>
-          <RefreshCcw className="h-4 w-4" />
-          {syncing ? "同步中" : "立即同步"}
-        </Button>
+        <div className="flex shrink-0 flex-wrap gap-2">
+          <Button aria-label={syncing ? "快速同步中" : "快速同步"} className="h-8 bg-muted px-2 text-foreground hover:bg-muted/80" disabled={!canSyncGoods || syncing} onClick={onRunQuickSync}>
+            <Zap className="h-4 w-4" />
+            {syncing ? "同步中" : "快速同步"}
+          </Button>
+          <Button className="h-8 px-2" disabled={!canSyncGoods || syncing} onClick={onRunSync}>
+            <RefreshCcw className="h-4 w-4" />
+            {syncing ? "同步中" : "立即同步"}
+          </Button>
+        </div>
       </div>
     </section>
   );
@@ -2309,7 +2376,8 @@ function WarehouseUsageSettingsPanel({
       && (current.includeMainWarehouse !== settings.includeMainWarehouse
         || current.includeNearExpiryWarehouse !== settings.includeNearExpiryWarehouse
         || current.includeDefectWarehouse !== settings.includeDefectWarehouse
-        || current.includeOtherWarehouses !== settings.includeOtherWarehouses),
+        || current.includeOtherWarehouses !== settings.includeOtherWarehouses
+        || (current.sharedComponentPriority ?? "suite_first") !== (settings.sharedComponentPriority ?? "suite_first")),
   );
 
   function update(patch: Partial<WarehouseUsageSettingsDto>) {
@@ -2335,6 +2403,20 @@ function WarehouseUsageSettingsPanel({
         </Button>
       </div>
       <div className="mt-4 grid gap-2">
+        <label className="grid gap-1 text-sm">
+          <span className="font-medium">共享组件优先分配</span>
+          <select
+            aria-label="共享组件优先分配"
+            className="h-9 rounded-md border border-border bg-background px-2"
+            disabled={!canManageSettings || !current}
+            value={current?.sharedComponentPriority ?? "suite_first"}
+            onChange={(event) => update({ sharedComponentPriority: event.target.value as "suite_first" | "goods_first" })}
+          >
+            <option value="suite_first">组合装优先</option>
+            <option value="goods_first">普通商品优先</option>
+          </select>
+        </label>
+        <div className="mt-2 text-xs font-medium text-muted-foreground">参与建议的仓库</div>
         <WarehouseToggle
           checked={Boolean(current?.includeMainWarehouse)}
           disabled={!canManageSettings || !current}
@@ -2494,6 +2576,7 @@ function syncStageText(stage: WdtSyncRunDto["stage"] | undefined) {
 
 function syncTriggerText(trigger: WdtSyncRunDto["activeSnapshotTrigger"] | undefined) {
   if (trigger === "manual") return "手动同步";
+  if (trigger === "quick_manual") return "快速同步";
   if (trigger === "hourly") return "整点自动";
   if (trigger === "startup") return "启动补偿";
   return "-";

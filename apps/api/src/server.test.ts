@@ -5,6 +5,7 @@ import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as XLSX from "xlsx";
 import { createSampleOrderFile } from "@jy-trade/workflow";
+import type { ReviewLineDto } from "@jy-trade/shared";
 
 import { createDatabaseContext } from "./db/client.js";
 import {
@@ -3954,6 +3955,123 @@ describe("api server", () => {
     await app.close();
   });
 
+  it("matches multi-component suites and reapplies the saved product priority only after explicit recalculation", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await seedSuccessfulGoodsCache(database);
+    await seedMultiComponentSuiteAndSharedGoods(database);
+    await seedVipStoreAddress(database, "VIP-SUITE", "VIP组合装门店");
+    await seedVipStoreAddress(database, "VIP-GOODS", "VIP普通商品门店");
+    await seedSuccessfulStockSnapshot(database, {
+      runId: "wdt-sync-shared-components",
+      verifiedSpecNos: ["SHARED-A", "SUITE-B"],
+      rows: [
+        { specNo: "SHARED-A", warehouseNo: "001", warehouseName: "主仓", availableSendStock: 5 },
+        { specNo: "SHARED-A", warehouseNo: "CIPIN", warehouseName: "次品仓", availableSendStock: 7 },
+        { specNo: "SUITE-B", warehouseNo: "001", warehouseName: "主仓", availableSendStock: 10 },
+        { specNo: "SUITE-B", warehouseNo: "CIPIN", warehouseName: "次品仓", availableSendStock: 8 },
+      ],
+    });
+    await database.close();
+
+    const app = buildTestServer(databaseUrl, undefined, failingRealtimeStockClient());
+    const cookie = await loginCookie(app);
+    const orderFilePath = createSharedComponentPriorityOrderFile();
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/v1/batches",
+      payload: { filePath: orderFilePath, mode: "production_api" },
+      headers: { cookie },
+    });
+    const batchId = created.json().id;
+    const firstReview = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${batchId}/actions/run-real-review`,
+      payload: {},
+      headers: { cookie },
+    });
+    expect(firstReview.statusCode).toBe(200);
+    expect(firstReview.json().batch).toMatchObject({
+      allocationPriority: "suite_first",
+      stockSnapshotRunId: "wdt-sync-shared-components",
+    });
+
+    const firstLinesResponse = await app.inject({ method: "GET", url: `/api/v1/batches/${batchId}/review-lines`, headers: { cookie } });
+    const firstLines = firstLinesResponse.json() as ReviewLineDto[];
+    const suiteFirst = reviewLinesByStore(firstLines);
+    expect(suiteFirst.get("VIP-SUITE")).toMatchObject({ productType: "suite", suggestedShipQty: 2, suggestedWarehouseNo: "001" });
+    expect(suiteFirst.get("VIP-GOODS")).toMatchObject({ productType: "goods", suggestedShipQty: 2, suggestedWarehouseNo: "001" });
+    expect(suiteFirst.get("REG-SUITE")).toMatchObject({ productType: "suite", suggestedShipQty: 1, suggestedWarehouseNo: "001" });
+    expect(suiteFirst.get("REG-GOODS")).toMatchObject({ productType: "goods", suggestedShipQty: 0, suggestedWarehouseNo: "" });
+    expect(suiteFirst.get("VIP-SUITE")?.componentStocks).toEqual([
+      expect.objectContaining({
+        specNo: "SHARED-A",
+        quantityPerItem: 1,
+        mainAvailableStock: 5,
+        defectAvailableStock: 7,
+        warehouses: expect.arrayContaining([
+          expect.objectContaining({ warehouseNo: "001", availableStock: 5 }),
+          expect.objectContaining({ warehouseNo: "CIPIN", availableStock: 7 }),
+        ]),
+      }),
+      expect.objectContaining({
+        specNo: "SUITE-B",
+        quantityPerItem: 1,
+        mainAvailableStock: 10,
+        defectAvailableStock: 8,
+      }),
+    ]);
+
+    const changedSettings = await app.inject({
+      method: "PATCH",
+      url: "/api/v1/settings/warehouse-usage",
+      payload: {
+        includeMainWarehouse: true,
+        includeNearExpiryWarehouse: true,
+        includeDefectWarehouse: false,
+        includeOtherWarehouses: false,
+        sharedComponentPriority: "goods_first",
+      },
+      headers: { cookie },
+    });
+    expect(changedSettings.statusCode).toBe(200);
+    expect(changedSettings.json()).toMatchObject({ sharedComponentPriority: "goods_first" });
+
+    const unchangedLines = await app.inject({ method: "GET", url: `/api/v1/batches/${batchId}/review-lines`, headers: { cookie } });
+    expect(unchangedLines.json().map((line: { suggestedShipQty: number }) => line.suggestedShipQty))
+      .toEqual(firstLines.map((line: { suggestedShipQty: number }) => line.suggestedShipQty));
+
+    const recalculated = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${batchId}/actions/run-real-review`,
+      payload: {},
+      headers: { cookie },
+    });
+    expect(recalculated.statusCode).toBe(200);
+    expect(recalculated.json().batch).toMatchObject({ allocationPriority: "goods_first" });
+    const recalculatedLines = await app.inject({ method: "GET", url: `/api/v1/batches/${batchId}/review-lines`, headers: { cookie } });
+    const goodsFirst = reviewLinesByStore(recalculatedLines.json() as ReviewLineDto[]);
+    expect(goodsFirst.get("VIP-GOODS")).toMatchObject({ suggestedShipQty: 2 });
+    expect(goodsFirst.get("VIP-SUITE")).toMatchObject({ suggestedShipQty: 2 });
+    expect(goodsFirst.get("REG-GOODS")).toMatchObject({ suggestedShipQty: 1 });
+    expect(goodsFirst.get("REG-SUITE")).toMatchObject({ suggestedShipQty: 0 });
+
+    const changedSource = createDatabaseContext(databaseUrl);
+    await changedSource.ready;
+    await changedSource.db.update(wdtSuiteComponents).set({ quantity: 9 }).where(eq(wdtSuiteComponents.id, "wdt-suite-component-multi-b"));
+    await changedSource.db.update(wdtStockSnapshotRows).set({ availableSendStock: 99 }).where(eq(wdtStockSnapshotRows.id, "wdt-sync-shared-components-row-0"));
+    await changedSource.close();
+
+    const persistedLines = await app.inject({ method: "GET", url: `/api/v1/batches/${batchId}/review-lines`, headers: { cookie } });
+    const persistedSuite = reviewLinesByStore(persistedLines.json() as ReviewLineDto[]).get("VIP-SUITE");
+    expect(persistedSuite?.componentStocks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ specNo: "SHARED-A", quantityPerItem: 1, mainAvailableStock: 5 }),
+      expect.objectContaining({ specNo: "SUITE-B", quantityPerItem: 1, mainAvailableStock: 10 }),
+    ]));
+    await app.close();
+  });
+
   it("returns WDT suites from manual goods search and stores suite make-order codes in mappings", async () => {
     const databaseUrl = testDatabaseUrl();
     const database = createDatabaseContext(databaseUrl);
@@ -4550,6 +4668,181 @@ describe("api server", () => {
     expect(latest.json().message).toContain("not found");
     await app.close();
   });
+
+  it("quick sync refreshes only changed specs and copies untouched stock from the active snapshot", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await database.db.insert(wdtGoodsSpecs).values([
+      {
+        id: "wdt-goods-spec-QUICK-A",
+        goodsNo: "GOODS-A",
+        goodsName: "旧商品A",
+        specNo: "QUICK-A",
+        specName: "规格A",
+        specCode: "",
+        barcode: "BAR-A",
+        barcodesJson: "[]",
+        deleted: 0,
+        modified: "2026-07-15 09:00:00",
+        rawJson: "{}",
+        syncedAt: "2026-07-15T01:00:00.000Z",
+      },
+      {
+        id: "wdt-goods-spec-UNCHANGED-B",
+        goodsNo: "GOODS-B",
+        goodsName: "未变化商品B",
+        specNo: "UNCHANGED-B",
+        specName: "规格B",
+        specCode: "",
+        barcode: "BAR-B",
+        barcodesJson: "[]",
+        deleted: 0,
+        modified: "2026-07-14 09:00:00",
+        rawJson: "{}",
+        syncedAt: "2026-07-15T01:00:00.000Z",
+      },
+    ]);
+    const baseline = await seedSuccessfulStockSnapshot(database, {
+      runId: "wdt-sync-quick-baseline",
+      finishedAt: "2026-07-15T01:00:00.000Z",
+      verifiedSpecNos: ["QUICK-A", "UNCHANGED-B"],
+      rows: [
+        { specNo: "QUICK-A", warehouseNo: "001", warehouseName: "主仓", availableSendStock: 2 },
+        { specNo: "UNCHANGED-B", warehouseNo: "001", warehouseName: "主仓", availableSendStock: 7 },
+      ],
+      warehouseTypes: ["main", "near_expiry"],
+    });
+    await database.close();
+
+    const requestedStockSpecs: string[][] = [];
+    const app = buildTestServer(databaseUrl, {
+      async queryGoodsWindow(input) {
+        expect(input.hideDeleted).toBe(false);
+        return {
+          totalCount: 1,
+          goods: [{
+            goods_no: "GOODS-A",
+            goods_name: "新商品A",
+            modified: "2026-07-16 08:00:00",
+            spec_list: [{ spec_no: "QUICK-A", barcode: "BAR-A", spec_name: "规格A" }],
+          }],
+        };
+      },
+    }, {
+      async queryStock(specNo) {
+        return { status: 0, data: { total_count: 1, detail_list: [{ spec_no: specNo, warehouse_no: "001", warehouse_name: "主仓", available_send_stock: 9 }] } };
+      },
+      async queryStocks(specNos) {
+        requestedStockSpecs.push([...specNos]);
+        return { status: 0, data: { total_count: specNos.length, detail_list: specNos.map((specNo) => ({ spec_no: specNo, warehouse_no: "001", warehouse_name: "主仓", available_send_stock: 9 })) } };
+      },
+    });
+    const cookie = await loginCookie(app);
+    const started = await app.inject({ method: "POST", url: "/api/v1/wdt/quick-sync-runs", headers: { cookie } });
+    expect(started.statusCode).toBe(202);
+    expect(started.json()).toMatchObject({ alreadyRunning: false, run: { trigger: "quick_manual", status: "queued" } });
+    await expect.poll(async () => (await app.inject({ method: "GET", url: "/api/v1/wdt/sync-runs/latest", headers: { cookie } })).json().status).toBe("success");
+    const completed = await app.inject({ method: "GET", url: "/api/v1/wdt/sync-runs/latest", headers: { cookie } });
+    expect(completed.json()).toMatchObject({
+      trigger: "quick_manual",
+      status: "success",
+      totalSpecCount: 1,
+      processedSpecCount: 1,
+      activeSnapshotTrigger: "quick_manual",
+    });
+    expect(requestedStockSpecs).toEqual([["QUICK-A"]]);
+
+    const checked = createDatabaseContext(databaseUrl);
+    await checked.ready;
+    const quickRunId = completed.json().id;
+    const rows = await checked.db.select().from(wdtStockSnapshotRows).where(eq(wdtStockSnapshotRows.syncRunId, quickRunId));
+    expect(rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ specNo: "QUICK-A", availableSendStock: 9 }),
+      expect.objectContaining({ specNo: "UNCHANGED-B", availableSendStock: 7 }),
+    ]));
+    expect(rows).toHaveLength(2);
+    expect(await checked.db.select().from(wdtStockSnapshotRows).where(eq(wdtStockSnapshotRows.syncRunId, baseline.runId))).toHaveLength(2);
+    expect(await checked.db.select().from(wdtGoodsSpecs).where(eq(wdtGoodsSpecs.specNo, "QUICK-A"))).toEqual([
+      expect.objectContaining({ goodsName: "新商品A" }),
+    ]);
+    await checked.close();
+    await app.close();
+  });
+
+  it("quick sync refuses a warehouse coverage mismatch and keeps the old snapshot active", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await seedSuccessfulStockSnapshot(database, {
+      runId: "wdt-sync-coverage-baseline",
+      verifiedSpecNos: [],
+      warehouseTypes: ["main"],
+    });
+    await database.close();
+    let stockCalls = 0;
+    const app = buildTestServer(databaseUrl, {
+      async queryGoodsWindow() {
+        return { totalCount: 0, goods: [] };
+      },
+    }, {
+      async queryStock() {
+        stockCalls += 1;
+        return { status: 0, data: { total_count: 0, detail_list: [] } };
+      },
+    });
+    const cookie = await loginCookie(app);
+    await app.inject({ method: "POST", url: "/api/v1/wdt/quick-sync-runs", headers: { cookie } });
+    await expect.poll(async () => (await app.inject({ method: "GET", url: "/api/v1/wdt/sync-runs/latest", headers: { cookie } })).json().status).toBe("failed");
+    const latest = await app.inject({ method: "GET", url: "/api/v1/wdt/sync-runs/latest", headers: { cookie } });
+    expect(latest.json()).toMatchObject({
+      trigger: "quick_manual",
+      status: "failed",
+      activeSnapshotRunId: "wdt-sync-coverage-baseline",
+      errorMessage: "快速同步未生效，请使用完整同步",
+    });
+    expect(stockCalls).toBe(0);
+    await app.close();
+  });
+
+  it("quick sync rejects an incomplete changed-goods response before querying stock", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await database.db.insert(wdtGoodsSpecs).values([
+      { id: "wdt-goods-spec-A", goodsNo: "GOODS-PAIR", goodsName: "组合货品", specNo: "PAIR-A", specName: "A", specCode: "", barcode: "A", barcodesJson: "[]", deleted: 0, modified: "", rawJson: "{}", syncedAt: "2026-07-15T01:00:00.000Z" },
+      { id: "wdt-goods-spec-B", goodsNo: "GOODS-PAIR", goodsName: "组合货品", specNo: "PAIR-B", specName: "B", specCode: "", barcode: "B", barcodesJson: "[]", deleted: 0, modified: "", rawJson: "{}", syncedAt: "2026-07-15T01:00:00.000Z" },
+    ]);
+    await seedSuccessfulStockSnapshot(database, {
+      runId: "wdt-sync-pair-baseline",
+      verifiedSpecNos: ["PAIR-A", "PAIR-B"],
+      rows: [
+        { specNo: "PAIR-A", warehouseNo: "001", warehouseName: "主仓", availableSendStock: 1 },
+        { specNo: "PAIR-B", warehouseNo: "001", warehouseName: "主仓", availableSendStock: 2 },
+      ],
+      warehouseTypes: ["main", "near_expiry"],
+    });
+    await database.close();
+    let stockCalls = 0;
+    const app = buildTestServer(databaseUrl, {
+      async queryGoodsWindow() {
+        return { totalCount: 1, goods: [{ goods_no: "GOODS-PAIR", spec_list: [{ spec_no: "PAIR-A" }] }] };
+      },
+    }, {
+      async queryStock() {
+        stockCalls += 1;
+        return { status: 0, data: { total_count: 0, detail_list: [] } };
+      },
+    });
+    const cookie = await loginCookie(app);
+    await app.inject({ method: "POST", url: "/api/v1/wdt/quick-sync-runs", headers: { cookie } });
+    await expect.poll(async () => (await app.inject({ method: "GET", url: "/api/v1/wdt/sync-runs/latest", headers: { cookie } })).json().status).toBe("failed");
+    const latest = await app.inject({ method: "GET", url: "/api/v1/wdt/sync-runs/latest", headers: { cookie } });
+    expect(latest.json()).toMatchObject({ activeSnapshotRunId: "wdt-sync-pair-baseline", status: "failed" });
+    expect(latest.json().errorDetail).toContain("PAIR-B");
+    expect(stockCalls).toBe(0);
+    await app.close();
+  });
 });
 
 function clearRuntimeEnvForTests() {
@@ -4886,6 +5179,68 @@ async function seedSingleComponentSuite(database: ReturnType<typeof createDataba
   });
 }
 
+async function seedMultiComponentSuiteAndSharedGoods(database: ReturnType<typeof createDatabaseContext>) {
+  const now = "2026-07-16T00:00:00.000Z";
+  await database.db.insert(wdtGoodsSpecs).values({
+    id: "wdt-goods-spec-shared-a",
+    goodsNo: "GOODS-SHARED-A",
+    goodsName: "共享组件普通商品",
+    specNo: "SHARED-A",
+    specName: "单件",
+    specCode: "",
+    barcode: "GOODS-SHARED-A-BARCODE",
+    barcodesJson: JSON.stringify(["GOODS-SHARED-A-BARCODE"]),
+    deleted: 0,
+    modified: now,
+    rawJson: "{}",
+    syncedAt: now,
+  });
+  await database.db.insert(wdtSuites).values({
+    id: "wdt-suite-multi",
+    suiteNo: "SUITE-MULTI",
+    suiteName: "多组件组合装",
+    barcode: "SUITE-MULTI-BARCODE",
+    deleted: 0,
+    modified: now,
+    rawJson: "{}",
+    syncedAt: now,
+  });
+  await database.db.insert(wdtSuiteComponents).values([
+    {
+      id: "wdt-suite-component-multi-a",
+      suiteNo: "SUITE-MULTI",
+      sortOrder: 1,
+      specNo: "SHARED-A",
+      goodsNo: "GOODS-SHARED-A",
+      goodsName: "共享组件普通商品",
+      specName: "单件",
+      specCode: "",
+      barcode: "GOODS-SHARED-A-BARCODE",
+      quantity: 1,
+      ratio: 1,
+      deleted: 0,
+      rawJson: "{}",
+      syncedAt: now,
+    },
+    {
+      id: "wdt-suite-component-multi-b",
+      suiteNo: "SUITE-MULTI",
+      sortOrder: 2,
+      specNo: "SUITE-B",
+      goodsNo: "GOODS-SUITE-B",
+      goodsName: "组合装独占组件",
+      specName: "单件",
+      specCode: "",
+      barcode: "SUITE-B-BARCODE",
+      quantity: 1,
+      ratio: 1,
+      deleted: 0,
+      rawJson: "{}",
+      syncedAt: now,
+    },
+  ]);
+}
+
 async function seedVipAllocationGoodsCache(database: ReturnType<typeof createDatabaseContext>) {
   const now = "2026-07-03T00:00:00.000Z";
   await database.db.insert(wdtGoodsSyncRuns).values({
@@ -4969,7 +5324,38 @@ function createVipAllocationOrderFile(name: string) {
   return outputPath;
 }
 
-function reviewLinesByStore(lines: Array<{ storeNo: string }>) {
+function createSharedComponentPriorityOrderFile() {
+  const outputPath = resolve(projectRoot, "outputs/fixtures/shared-component-priority.xlsx");
+  mkdirSync(resolve(projectRoot, "outputs/fixtures"), { recursive: true });
+  const header = [
+    "订货通知单号",
+    "订货审批单号",
+    "门店",
+    "门店名称",
+    "订货日期",
+    "截止日期",
+    "商品编码",
+    "商品名称",
+    "商品条码",
+    "规格",
+    "运输规格",
+    "订货箱数",
+    "订货数",
+  ];
+  const rows = [
+    header,
+    ["ORDER-VIP-SUITE", "APPROVAL-1", "VIP-SUITE", "VIP组合装门店", "2026-07-16", "2026-07-20", "SUITE-MULTI", "多组件组合装", "SUITE-MULTI-BARCODE", "套", "1", "2", "2"],
+    ["ORDER-VIP-GOODS", "APPROVAL-2", "VIP-GOODS", "VIP普通商品门店", "2026-07-16", "2026-07-20", "GOODS-SHARED-A", "共享组件普通商品", "GOODS-SHARED-A-BARCODE", "件", "1", "2", "2"],
+    ["ORDER-REG-SUITE", "APPROVAL-3", "REG-SUITE", "普通组合装门店", "2026-07-16", "2026-07-20", "SUITE-MULTI", "多组件组合装", "SUITE-MULTI-BARCODE", "套", "1", "2", "2"],
+    ["ORDER-REG-GOODS", "APPROVAL-4", "REG-GOODS", "普通商品门店", "2026-07-16", "2026-07-20", "GOODS-SHARED-A", "共享组件普通商品", "GOODS-SHARED-A-BARCODE", "件", "1", "2", "2"],
+  ];
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(rows), "订货单");
+  XLSX.writeFile(workbook, outputPath);
+  return outputPath;
+}
+
+function reviewLinesByStore(lines: ReviewLineDto[]) {
   return new Map(lines.map((line) => [line.storeNo, line]));
 }
 

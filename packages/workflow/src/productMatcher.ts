@@ -16,6 +16,16 @@ export interface ProductCandidate {
   specCode?: string;
   makeOrderCode?: string;
   barcodes?: string[];
+  components?: ProductComponentCandidate[];
+}
+
+export interface ProductComponentCandidate {
+  specNo: string;
+  goodsNo?: string;
+  goodsName?: string;
+  specName?: string;
+  barcode?: string;
+  quantityPerItem: number;
 }
 
 export interface ScoredProductCandidate extends ProductCandidate {

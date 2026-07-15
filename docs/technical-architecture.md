@@ -58,7 +58,7 @@ src/jy_trade
 1. `operator` 上传订货单并创建批次。
 2. API 从本地 WDT 商品、组合装和长期映射缓存完成商品匹配。
 3. 对已确认的库存组件读取最新成功的本地库存快照；业务操作不调用旺店通库存接口。
-4. workflow 按仓库配置、VIP 优先级和同规格库存生成建议发货数量，并为每条明细只建议一个仓库。
+4. API 分配器按仓库配置、VIP 层级、商品类型优先级和共享组件库存生成建议发货数量，并为每条明细只建议一个仓库。
 5. `reviewer` 调整数量和最终仓库后提交审核；系统建议不覆盖人工决定。
 6. `operator` 检查最终仓库、地址和做单字段后生成 Excel。
 
@@ -79,7 +79,7 @@ src/jy_trade
 - `goods.Goods.queryWithSpec` 同步普通商品规格到 `wdt_goods_specs`。
 - `goods.Suite.search` 同步组合装和明细到 `wdt_suites`、`wdt_suite_components`。
 - 精确条码/编码和已确认长期映射可以自动命中；名称相似只写入候选快照，不能自动确认。
-- 单组件组合装的库存目标是组件 `spec_no`，做单目标是组合装 `suite_no`。
+- 组合装按 `suite_no` / 条码匹配，库存目标是全部有效组件的 `spec_no`，做单目标仍是组合装 `suite_no`。
 - `wms.StockSpec.search2` 返回的 `available_send_stock` 是库存初审主字段。
 - 每次组合同步在库存阶段开始前固定当前仓库启用范围；商品档案仍全局增量同步，库存行只保留启用仓库。多仓范围使用一次批量查询后本地过滤，单个已知仓库可传 `warehouse_no`。
 - `wdt_stock_snapshot_warehouse_coverage` 明确记录成功快照覆盖的仓库类别。读取快照时把它和当前仓库设置比较；缺少任何已启用类别时，不把缺失范围当作零库存，而是将本次建议降级为库存未验证。
@@ -87,8 +87,13 @@ src/jy_trade
 - 业务查询始终选择最新成功任务。库存同步失败会删除本次临时库存快照并保留旧库存快照；已经成功写入的商品档案增量不回滚，新商品在旧库存快照未覆盖时标记“库存未验证”。最近两份成功库存快照明细用于回退。
 - `wdt_stock_snapshot_specs` 区分“本次已核验为 0”和“快照未覆盖”，`wdt_stock_snapshot_rows` 保存分仓可发库存和原始响应。
 - 自动调度固定使用 `Asia/Shanghai`，按管理员选择的 1、2、6 或 24 小时自然时间边界执行；无快照或启动时快照超过所选周期会排队补跑，同一时间只允许一个组合任务，修改周期后无需重启。
+- 自动调度和“立即同步”始终执行完整快照流程。独立“快速同步”使用上海时间回看最近 24 小时，包含已删除记录，收集变化普通 SKU、组合装旧组件和新组件；它复制最近成功快照到未激活运行，只替换受影响且仍有效的 SKU。商品档案、组合装组件、仓库覆盖和运行成功状态在同一事务中提交，失败时删除未激活副本。
+- 快速同步不会刷新完整同步的调度基准；启动补偿和定时过期判断只参考最近一次非快速成功任务。无基准快照、仓库覆盖变化、当前有效 SKU 未被基准验证、商品增量缺少已有规格、最近商品或组合装超过 500 条、受影响有效 SKU 超过 400 个时拒绝快速同步。
 - 库存行先按仓库用途分类，只有启用的仓库参与建议发货。
 - 自动建议遵守单行单仓：有仓库可完整满足时选择满足仓，否则选择可发库存更多的仓，并列优先主仓。一条订单明细不会拆成多个仓库行。
+- 多组件组合装必须在同一仓库满足全部组件，每分配一套按 `quantityPerItem` 同时扣减所有组件；普通商品和不同组合装共用同一组件库存池。
+- 分配器先处理 VIP，再处理普通门店；每个 VIP 层级内按 `warehouse_usage_settings.shared_component_priority` 选择组合装优先或普通商品优先，同层按原始行顺序逐件轮转以保证公平和稳定余数。
+- 设置变更本身不重算批次。普通订单重新执行正式初审、确定单显式重新校验时才读取最新策略；人工最终数量和仓库仍可超过系统建议，但由 UI 显示风险。
 
 ### Excel 导出
 
@@ -107,15 +112,17 @@ src/jy_trade
 当前 SQLite 持久化模型分为：
 
 - 账号与审计：`users`、`sessions`、`audit_logs`。
-- 批次与审核：`batches`、`review_lines`、`review_decisions`。`batches` 保存本次建议所用的 `stockSnapshotRunId` / `stockSnapshotAt`；`review_lines` 保存 `orderQty`、`plannedShipQty`、系统建议数量、建议仓库和库存诊断；`review_decisions` 保存 `approvedShipQty`、最终发货仓库、用户备注和审核元数据。
+- 批次与审核：`batches`、`review_lines`、`review_decisions`。`batches` 保存本次建议所用的 `stockSnapshotRunId` / `stockSnapshotAt` 和 `allocationPriority`；`review_lines` 保存 `orderQty`、`plannedShipQty`、商品类型、组合装配方与组件库存 JSON、系统建议数量、建议仓库和库存诊断；`review_decisions` 保存 `approvedShipQty`、最终发货仓库、用户备注和审核元数据。
 - 导出与地址：`exports`、`store_addresses`。
-- 仓库策略：`warehouse_usage_settings`。
+- 仓库策略：`warehouse_usage_settings`，包含参与建议的仓库范围和共享组件商品类型优先级。
 - WDT 缓存：`wdt_goods_specs`、`wdt_goods_sync_runs`、`wdt_suites`、`wdt_suite_components`、`wdt_suite_sync_runs`、`wdt_sync_runs`、`wdt_stock_snapshot_specs`、`wdt_stock_snapshot_rows`。
 - 商品维护：`product_mappings`、`product_match_candidates`、`external_products`、`external_product_components`。
 
 Drizzle schema、migration、DTO、API 测试和相关文档必须在同一功能变更中保持一致。
 
 `0016_confirmed_order_planned_ship_qty.sql` 为历史数据增加 `planned_ship_qty`：旧确定单从原 `suggested_ship_qty` 回填，旧普通订单从 `order_qty` 回填。兼容性启动检查也会补列并回填，迁移不会删除批次、审核决定或测试数据。兼容检查只覆盖 `0016`，不替代部署和升级时执行 `npm run db:migrate`。
+
+`0020_multi_component_suite_allocation.sql` 增加批次分配策略、审核行商品类型与组件库存快照，以及仓库设置中的共享组件优先级。升级环境必须执行数据库迁移后再启动新版本。
 
 ## 运行数据边界
 

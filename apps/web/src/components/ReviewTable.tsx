@@ -157,6 +157,7 @@ export function ReviewTable({
   onSave,
   onQuickDecision,
 }: ReviewTableProps) {
+  const [expandedComponentLineIds, setExpandedComponentLineIds] = useState<Set<string>>(() => new Set());
   const columns: Array<ColumnDef<ReviewLineDto>> = [
     {
       header: "门店 / 订单",
@@ -182,6 +183,16 @@ export function ReviewTable({
             <div className="font-medium">{line.externalGoodsName}</div>
             <div className="mt-1 text-xs text-muted-foreground">{line.externalBarcode}</div>
             {line.wdtSpecNo ? <div className="mt-1 text-xs text-muted-foreground">{line.wdtSpecNo}</div> : null}
+            {line.productType === "suite" && (line.componentStocks?.length ?? 0) > 0 ? (
+              <button
+                aria-expanded={expandedComponentLineIds.has(line.id)}
+                className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-primary"
+                onClick={() => toggleComponentLine(line.id)}
+              >
+                {expandedComponentLineIds.has(line.id) ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                {line.componentStocks?.length} 个组合装组件
+              </button>
+            ) : null}
             {manualMapping ? <Badge className="mt-2" tone="info">长期映射</Badge> : null}
             {showMappingAction ? (
               <Button className="mt-2 h-7 bg-muted px-2 text-xs text-muted-foreground hover:bg-muted/80" onClick={() => onLocateMapping(line)}>
@@ -383,18 +394,36 @@ export function ReviewTable({
     });
   }
 
+  function toggleComponentLine(lineId: string) {
+    setExpandedComponentLineIds((current) => {
+      const next = new Set(current);
+      if (next.has(lineId)) next.delete(lineId);
+      else next.add(lineId);
+      return next;
+    });
+  }
+
   function renderReviewRow(row: ReturnType<typeof table.getRowModel>["rows"][number], grouped = false) {
     const line = row.original;
     const decision = draftById[line.id]?.decision ?? line.decision;
     const tone = reviewRowTone(line, decision);
     return (
-      <tr key={line.id} className={cn("border-t border-border transition-colors", tone.rowClass)} data-review-state={tone.key}>
-        {row.getVisibleCells().map((cell, index) => (
-          <td key={cell.id} className={cn("px-3 py-3 align-top", grouped && index === 0 && "pl-9")}>
-            {flexRender(cell.column.columnDef.cell, cell.getContext())}
-          </td>
-        ))}
-      </tr>
+      <Fragment key={line.id}>
+        <tr className={cn("border-t border-border transition-colors", tone.rowClass)} data-review-state={tone.key}>
+          {row.getVisibleCells().map((cell, index) => (
+            <td key={cell.id} className={cn("px-3 py-3 align-top", grouped && index === 0 && "pl-9")}>
+              {flexRender(cell.column.columnDef.cell, cell.getContext())}
+            </td>
+          ))}
+        </tr>
+        {expandedComponentLineIds.has(line.id) ? (
+          <tr className="border-t border-border bg-muted/20">
+            <td className="px-4 py-3" colSpan={columns.length}>
+              <ComponentStockDetails line={line} />
+            </td>
+          </tr>
+        ) : null}
+      </Fragment>
     );
   }
 
@@ -462,6 +491,46 @@ export function ReviewTable({
           ) : null}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function ComponentStockDetails({ line }: { line: ReviewLineDto }) {
+  const components = line.componentStocks ?? [];
+  const selectedWarehouseNo = line.suggestedWarehouseNo || line.fulfillmentWarehouseNo;
+  const capacities = components.map((component) => {
+    const warehouseStock = selectedWarehouseNo
+      ? component.warehouses.find((warehouse) => warehouse.warehouseNo === selectedWarehouseNo)?.availableStock ?? 0
+      : component.mainAvailableStock;
+    return Math.floor((warehouseStock + 1e-9) / component.quantityPerItem);
+  });
+  const bottleneck = capacities.length > 0 ? Math.min(...capacities) : 0;
+  return (
+    <div className="min-w-[760px]">
+      <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        <span className="font-medium text-foreground">组合装组件库存</span>
+        <span>{selectedWarehouseNo ? `按建议仓 ${line.suggestedWarehouseName || selectedWarehouseNo} 计算` : "当前无建议仓，按主仓查看"}</span>
+      </div>
+      <div className="grid grid-cols-[minmax(220px,1fr)_90px_100px_100px_minmax(240px,1.2fr)] gap-x-3 border-b border-border pb-1 text-xs font-medium text-muted-foreground">
+        <span>组件</span><span>每套用量</span><span>主仓</span><span>临期仓</span><span>分仓库存</span>
+      </div>
+      {components.map((component, index) => (
+        <div key={`${component.specNo}-${index}`} className="grid grid-cols-[minmax(220px,1fr)_90px_100px_100px_minmax(240px,1.2fr)] gap-x-3 border-b border-border/60 py-2 text-xs last:border-0">
+          <span>
+            <span className="block font-medium">{component.goodsName || component.specNo}</span>
+            <span className="mt-0.5 block text-muted-foreground">{component.specNo}{component.specName ? ` · ${component.specName}` : ""}</span>
+            {!component.stockVerified ? <Badge className="mt-1" tone="warn">库存未验证</Badge> : capacities[index] === bottleneck ? <Badge className="mt-1" tone="warn">瓶颈组件</Badge> : null}
+          </span>
+          <span>{component.quantityPerItem}</span>
+          <span>{component.mainAvailableStock}</span>
+          <span>{component.nearExpiryAvailableStock}</span>
+          <span className="text-muted-foreground">
+            {component.warehouses.length > 0
+              ? component.warehouses.map((warehouse) => `${warehouse.warehouseName || warehouse.warehouseNo} ${warehouse.availableStock}`).join(" / ")
+              : "无可发库存"}
+          </span>
+        </div>
+      ))}
     </div>
   );
 }

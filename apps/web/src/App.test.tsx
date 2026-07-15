@@ -280,20 +280,38 @@ describe("App", () => {
     expect(await screen.findByText("同步任务已进入后台队列")).toBeInTheDocument();
     const nearExpiry = screen.getByRole("checkbox", { name: "临期仓" });
     const other = screen.getByRole("checkbox", { name: "其他仓" });
+    const sharedComponentPriority = screen.getByRole("combobox", { name: "共享组件优先分配" });
 
     expect(nearExpiry).toBeChecked();
+    expect(sharedComponentPriority).toHaveValue("suite_first");
     fireEvent.click(nearExpiry);
     fireEvent.click(other);
+    fireEvent.change(sharedComponentPriority, { target: { value: "goods_first" } });
     fireEvent.click(screen.getByRole("button", { name: "保存" }));
 
     await waitFor(() => expect(warehouseSettings.includeNearExpiryWarehouse).toBe(false));
     expect(warehouseSettings.includeOtherWarehouses).toBe(true);
+    expect(warehouseSettings.sharedComponentPriority).toBe("goods_first");
     expect(await screen.findByText("已保存，重新运行初审后生效")).toBeInTheDocument();
     expect(await screen.findByText(/当前快照未覆盖已启用的其他仓/)).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("自动同步"), { target: { value: "6" } });
     await waitFor(() => expect(wdtSyncSettings.intervalHours).toBe(6));
     expect(await screen.findByText("已改为每 6 小时自动同步")).toBeInTheDocument();
+  });
+
+  it("offers quick sync without replacing the existing full sync action", async () => {
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "设置" }));
+    expect(screen.getByRole("button", { name: "立即同步" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "快速同步" }));
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+      "/api/v1/wdt/quick-sync-runs",
+      expect.objectContaining({ method: "POST" }),
+    ));
+    expect(await screen.findByText("快速同步任务已进入后台队列")).toBeInTheDocument();
   });
 
   it("restores a running combined sync after refresh and polls its progress", async () => {
@@ -579,6 +597,79 @@ describe("App", () => {
     expect(await screen.findByText(/审核已提交/)).toBeInTheDocument();
     expect(screen.getByText("审核完成，当前批次可以进入做单")).toBeInTheDocument();
     expect(currentBatch.status).toBe("reviewed");
+  });
+
+  it("expands every component stock row for a matched suite", async () => {
+    lines = [reviewLine({
+      id: "line-suite-components",
+      externalGoodsName: "海蓝之谜经典套盒2",
+      productType: "suite",
+      componentStocks: [
+        {
+          specNo: "747930121688",
+          goodsNo: "GOODS-A",
+          goodsName: "精华面霜",
+          specName: "规格A",
+          barcode: "747930121688",
+          quantityPerItem: 1,
+          stockVerified: true,
+          mainAvailableStock: 5,
+          nearExpiryAvailableStock: 1,
+          defectAvailableStock: 7,
+          otherAvailableStock: 0,
+          warehouses: [
+            { warehouseNo: "001", warehouseName: "主仓", availableStock: 5 },
+            { warehouseNo: "CIPIN", warehouseName: "次品仓", availableStock: 7 },
+          ],
+        },
+        {
+          specNo: "747930096054",
+          goodsNo: "GOODS-B",
+          goodsName: "修护精萃水",
+          specName: "规格B",
+          barcode: "747930096054",
+          quantityPerItem: 2,
+          stockVerified: true,
+          mainAvailableStock: 2,
+          nearExpiryAvailableStock: 0,
+          defectAvailableStock: 0,
+          otherAvailableStock: 0,
+          warehouses: [{ warehouseNo: "001", warehouseName: "主仓", availableStock: 2 }],
+        },
+      ],
+    })];
+    render(<App />);
+    await clickBatch();
+    switchToReviewTab();
+
+    fireEvent.click(await screen.findByRole("button", { name: "2 个组合装组件" }));
+
+    expect(screen.getByText("组合装组件库存")).toBeInTheDocument();
+    expect(screen.getByText("精华面霜")).toBeInTheDocument();
+    expect(screen.getByText("修护精萃水")).toBeInTheDocument();
+    expect(screen.getByText("747930096054 · 规格B")).toBeInTheDocument();
+    expect(screen.getByText(/次品仓 7/)).toBeInTheDocument();
+    expect(screen.getAllByText("瓶颈组件")).toHaveLength(1);
+  });
+
+  it("explicitly recalculates a production order batch", async () => {
+    currentBatch = { ...currentBatch, mode: "production_api", sourceType: "order", allocationPriority: "suite_first" };
+    render(<App />);
+    await clickBatch();
+    switchToReviewTab();
+
+    fireEvent.click(await screen.findByRole("button", { name: "重新计算初审" }));
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+      "/api/v1/batches/batch-1/actions/run-real-review",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ allowStaleCache: false }),
+      },
+    ));
+    expect(await screen.findByText("已按最新库存分配设置重新计算初审")).toBeInTheDocument();
+    expect(await screen.findByText("初审建议已更新，请重新审核")).toBeInTheDocument();
   });
 
   it("creates a production batch and runs real review", async () => {
@@ -1679,6 +1770,11 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
     latestCombinedSyncRun = combinedSyncRun({ status: "queued", stage: "queued", activeSnapshotRunId: "snapshot-1" });
     return json({ run: latestCombinedSyncRun, alreadyRunning: false }, 202);
   }
+  if (url === "/api/v1/wdt/quick-sync-runs" && method === "POST") {
+    if (!["admin", "operator"].includes(currentUser.role)) return json({ message: "Forbidden" }, 403);
+    latestCombinedSyncRun = combinedSyncRun({ status: "queued", stage: "queued", trigger: "quick_manual", activeSnapshotRunId: "snapshot-1" });
+    return json({ run: latestCombinedSyncRun, alreadyRunning: false }, 202);
+  }
   if (url === "/api/v1/wdt/goods-sync-runs" && method === "POST") {
     if (!["admin", "operator"].includes(currentUser.role)) return json({ message: "Forbidden" }, 403);
     latestGoodsSyncRun = goodsSyncRun({ startedAt: "2026-07-06T00:00:00.000Z", finishedAt: "2026-07-06T00:02:00.000Z" });
@@ -2523,6 +2619,7 @@ function warehouseUsageSettings(patch: Partial<WarehouseUsageSettingsDto> = {}):
     includeNearExpiryWarehouse: true,
     includeDefectWarehouse: false,
     includeOtherWarehouses: false,
+    sharedComponentPriority: "suite_first",
     updatedAt: "2026-07-03T00:00:00.000Z",
     updatedByUserId: null,
     updatedByUsername: null,

@@ -1,6 +1,6 @@
 import { confirmedProductMappingMatchMessage } from "@jy-trade/shared";
 
-import { createProductMatcher, type ProductCandidate, type ProductMatchDecision, type ProductMatchInput } from "./productMatcher.js";
+import { createProductMatcher, type ProductCandidate, type ProductComponentCandidate, type ProductMatchDecision, type ProductMatchInput } from "./productMatcher.js";
 
 export interface ProductMappingCandidate {
   externalBarcode?: string;
@@ -30,7 +30,8 @@ export interface LocalSuiteCandidate {
   suiteNo: string;
   suiteName?: string;
   barcode?: string;
-  componentSpecNo: string;
+  components?: ProductComponentCandidate[];
+  componentSpecNo?: string;
   componentGoodsNo?: string;
   componentGoodsName?: string;
   componentSpecName?: string;
@@ -63,7 +64,7 @@ export function createLocalProductMatcher(sources: LocalProductMatchSources): (i
     const cached = cache.get(cacheKey);
     if (cached) return cached;
 
-    const decision = decidePreparedLocalProductMatch(input, mappingIndex, matchGoods, matchSuites);
+    const decision = decidePreparedLocalProductMatch(input, mappingIndex, matchGoods, matchSuites, sources.suites ?? []);
     cache.set(cacheKey, decision);
     return decision;
   };
@@ -74,6 +75,7 @@ function decidePreparedLocalProductMatch(
   mappingIndex: ProductMappingIndex,
   matchGoods: (input: ProductMatchInput) => ProductMatchDecision,
   matchSuites: (input: ProductMatchInput) => ProductMatchDecision,
+  suites: LocalSuiteCandidate[] = [],
 ): ProductMatchDecision {
   const goodsDecision = matchGoods(input);
   if (isAutomaticCodeDecision(goodsDecision)) return goodsDecision;
@@ -83,16 +85,19 @@ function decidePreparedLocalProductMatch(
 
   const mapping = findConfirmedMapping(input, mappingIndex);
   if (mapping) {
+    const mappedSuite = suites.find((suite) => suite.suiteNo === mapping.wdtMakeOrderCode);
+    const suiteCandidate = mappedSuite ? toSuiteProductCandidate(mappedSuite) : undefined;
     return {
       status: "matched",
       candidate: {
+        ...suiteCandidate,
         source: mapping.wdtMakeOrderCode && mapping.wdtMakeOrderCode !== mapping.wdtSpecNo ? "suite" : "goods",
         goodsNo: mapping.wdtGoodsNo,
         goodsName: mapping.wdtGoodsName,
-        specNo: mapping.wdtSpecNo,
+        specNo: suiteCandidate?.specNo ?? mapping.wdtSpecNo,
         specName: mapping.wdtSpecName,
         makeOrderCode: mapping.wdtMakeOrderCode || mapping.wdtSpecNo,
-        barcodes: [mapping.wdtBarcode].filter((item): item is string => Boolean(item)),
+        barcodes: [...new Set([...(suiteCandidate?.barcodes ?? []), mapping.wdtBarcode].filter((item): item is string => Boolean(item)))],
         score: 110,
         basis: "code",
       },
@@ -148,16 +153,32 @@ function toProductCandidate(spec: LocalGoodsSpecCandidate): ProductCandidate {
 }
 
 function toSuiteProductCandidate(suite: LocalSuiteCandidate): ProductCandidate {
+  const components = suiteComponents(suite);
+  const primary = components[0];
   return {
     source: "suite",
     goodsNo: suite.suiteNo,
     goodsName: suite.suiteName,
-    specNo: suite.componentSpecNo,
-    specName: suite.componentSpecName,
+    specNo: primary?.specNo ?? "",
+    specName: primary?.specName,
     specCode: suite.suiteNo,
     makeOrderCode: suite.suiteNo,
-    barcodes: [...new Set([suite.barcode, suite.suiteNo, suite.componentBarcode].filter((item): item is string => Boolean(item)))],
+    barcodes: [...new Set([suite.barcode, suite.suiteNo, ...components.map((component) => component.barcode)].filter((item): item is string => Boolean(item)))],
+    components,
   };
+}
+
+function suiteComponents(suite: LocalSuiteCandidate): ProductComponentCandidate[] {
+  if (suite.components?.length) return suite.components;
+  if (!suite.componentSpecNo) return [];
+  return [{
+    specNo: suite.componentSpecNo,
+    goodsNo: suite.componentGoodsNo,
+    goodsName: suite.componentGoodsName,
+    specName: suite.componentSpecName,
+    barcode: suite.componentBarcode,
+    quantityPerItem: 1,
+  }];
 }
 
 function isAutomaticCodeDecision(decision: ProductMatchDecision): boolean {

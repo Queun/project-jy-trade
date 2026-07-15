@@ -277,10 +277,10 @@ export class WdtClient {
     ) as Promise<WdtGoodsResponse>;
   }
 
-  queryGoodsWindow(startTime: string, endTime: string, pageNo = 0, pageSize = 1000): Promise<WdtGoodsResponse> {
+  queryGoodsWindow(startTime: string, endTime: string, pageNo = 0, pageSize = 1000, hideDeleted = true): Promise<WdtGoodsResponse> {
     return this.call(
       "goods.Goods.queryWithSpec",
-      { hide_deleted: 1, start_time: startTime, end_time: endTime },
+      { hide_deleted: hideDeleted ? 1 : 0, start_time: startTime, end_time: endTime },
       { pageNo, pageSize },
     ) as Promise<WdtGoodsResponse>;
   }

@@ -15,7 +15,7 @@ export function createWdtReadClientsFromEnv(profile = normalizeWdtProfile(proces
     return {
       goodsClient: {
         async queryGoodsWindow(input) {
-          const response = await client.queryGoodsWindow(input.startTime, input.endTime, input.pageNo, input.pageSize);
+          const response = await client.queryGoodsWindow(input.startTime, input.endTime, input.pageNo, input.pageSize, input.hideDeleted ?? true);
           assertWdtGoodsSuccess(response);
           return {
             totalCount: response.data?.total_count ?? 0,
@@ -28,6 +28,7 @@ export function createWdtReadClientsFromEnv(profile = normalizeWdtProfile(proces
           const response = await client.querySuites({
             start_time: input.startTime,
             end_time: input.endTime,
+            hide_deleted: input.hideDeleted ?? true,
           }, input.pageNo, input.pageSize);
           assertWdtSuiteSuccess(response);
           return {

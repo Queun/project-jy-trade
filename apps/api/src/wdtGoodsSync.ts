@@ -14,7 +14,7 @@ export interface WdtGoodsSpecPayload {
 }
 
 export interface WdtGoodsWindowClient {
-  queryGoodsWindow(input: { startTime: string; endTime: string; pageNo: number; pageSize: number }): Promise<{
+  queryGoodsWindow(input: { startTime: string; endTime: string; pageNo: number; pageSize: number; hideDeleted?: boolean }): Promise<{
     totalCount: number;
     goods: Array<{
       goods_no?: string;
@@ -28,6 +28,7 @@ export interface WdtGoodsWindowClient {
         spec_name?: string;
         deleted?: number;
         modified?: string;
+        spec_modified?: string | number;
         barcode_list?: Array<{ barcode?: string; is_master?: number; type?: number }>;
       }>;
     }>;
@@ -237,7 +238,7 @@ export function flattenWdtGoodsSpecs(goods: Awaited<ReturnType<WdtGoodsWindowCli
         barcode: pickMasterBarcode(spec, barcodes),
         barcodes,
         deleted: Number(spec.deleted ?? item.deleted ?? 0),
-        modified: spec.modified ?? item.modified ?? "",
+        modified: String(spec.modified ?? spec.spec_modified ?? item.modified ?? ""),
         raw: { goods: item, spec },
       });
     }
