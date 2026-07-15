@@ -11,6 +11,7 @@ interface StoreAddressPanelProps {
   focusMissingStoreRequestId?: number;
   missingStores: MissingMakeOrderStoreDto[];
   onMessage: (message: string) => void;
+  onError: (message: string) => void;
   onSaved: () => void;
 }
 
@@ -30,6 +31,7 @@ export function StoreAddressPanel({
   focusMissingStoreRequestId = 0,
   missingStores,
   onMessage,
+  onError,
   onSaved,
 }: StoreAddressPanelProps) {
   const [query, setQuery] = useState("");
@@ -40,6 +42,11 @@ export function StoreAddressPanel({
   const [importing, setImporting] = useState(false);
   const [importDraft, setImportDraft] = useState<{ fileName: string; contentBase64: string } | null>(null);
   const [importPreview, setImportPreview] = useState<ImportStoreAddressesPreviewResponse | null>(null);
+
+  function reportError(message: string) {
+    setError(message);
+    onError(message);
+  }
 
   async function refreshAddresses(nextQuery = query) {
     const response = await fetch(`/api/v1/store-addresses?query=${encodeURIComponent(nextQuery)}`);
@@ -59,7 +66,7 @@ export function StoreAddressPanel({
     });
     if (!response.ok) {
       const body = await response.json();
-      setError(body.message ?? "门店地址保存失败");
+      reportError(body.message ?? "门店地址保存失败");
       return;
     }
     const saved = (await response.json()) as StoreAddressDto;
@@ -84,7 +91,7 @@ export function StoreAddressPanel({
       });
       if (!response.ok) {
         const body = await response.json();
-        setError(body.message ?? "地址 Excel 解析失败");
+        reportError(body.message ?? "地址 Excel 解析失败");
         return;
       }
       const preview = (await response.json()) as ImportStoreAddressesPreviewResponse;
@@ -92,7 +99,7 @@ export function StoreAddressPanel({
       setImportPreview(preview);
       onMessage(`已解析 ${preview.parsedRowCount} 条地址，新增 ${preview.createCount} 个，更新 ${preview.updateCount} 个`);
     } catch (error) {
-      setError(error instanceof Error ? error.message : "地址 Excel 解析失败");
+      reportError(error instanceof Error ? error.message : "地址 Excel 解析失败");
     } finally {
       setImporting(false);
     }
@@ -110,7 +117,7 @@ export function StoreAddressPanel({
       });
       if (!response.ok) {
         const body = await response.json();
-        setError(body.message ?? "地址 Excel 导入失败");
+        reportError(body.message ?? "地址 Excel 导入失败");
         return;
       }
       const result = (await response.json()) as ImportStoreAddressesResponse;
@@ -121,7 +128,7 @@ export function StoreAddressPanel({
       onSaved();
       onMessage(`已确认导入 ${result.importedAddressCount} 条来源记录，新增 ${importPreview.createCount} 个，更新 ${importPreview.updateCount} 个`);
     } catch (error) {
-      setError(error instanceof Error ? error.message : "地址 Excel 导入失败");
+      reportError(error instanceof Error ? error.message : "地址 Excel 导入失败");
     } finally {
       setImporting(false);
     }

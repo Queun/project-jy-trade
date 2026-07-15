@@ -7,16 +7,22 @@ import { Button } from "./ui/button.js";
 
 interface ExternalProductPanelProps {
   canEdit: boolean;
+  onError: (message: string) => void;
   onMessage: (message: string) => void;
 }
 
-export function ExternalProductPanel({ canEdit, onMessage }: ExternalProductPanelProps) {
+export function ExternalProductPanel({ canEdit, onError, onMessage }: ExternalProductPanelProps) {
   const [query, setQuery] = useState("");
   const [products, setProducts] = useState<ExternalProductDto[]>([]);
   const [error, setError] = useState("");
   const [importing, setImporting] = useState(false);
   const [importDraft, setImportDraft] = useState<{ fileName: string; contentBase64: string } | null>(null);
   const [importPreview, setImportPreview] = useState<ImportExternalProductsPreviewResponse | null>(null);
+
+  function reportError(message: string) {
+    setError(message);
+    onError(message);
+  }
 
   async function refreshProducts(nextQuery = query) {
     const response = await fetch(`/api/v1/external-products?query=${encodeURIComponent(nextQuery)}`);
@@ -40,7 +46,7 @@ export function ExternalProductPanel({ canEdit, onMessage }: ExternalProductPane
       });
       if (!response.ok) {
         const body = await response.json();
-        setError(body.message ?? "商品维护表解析失败");
+        reportError(body.message ?? "商品维护表解析失败");
         return;
       }
       const preview = (await response.json()) as ImportExternalProductsPreviewResponse;
@@ -48,7 +54,7 @@ export function ExternalProductPanel({ canEdit, onMessage }: ExternalProductPane
       setImportPreview(preview);
       onMessage(`已解析 ${preview.parsedProductCount} 个维护商品，新增 ${preview.createCount} 个，更新 ${preview.updateCount} 个，需复查 ${preview.needsReviewCount} 个`);
     } catch (error) {
-      setError(error instanceof Error ? error.message : "商品维护表解析失败");
+      reportError(error instanceof Error ? error.message : "商品维护表解析失败");
     } finally {
       setImporting(false);
     }
@@ -66,7 +72,7 @@ export function ExternalProductPanel({ canEdit, onMessage }: ExternalProductPane
       });
       if (!response.ok) {
         const body = await response.json();
-        setError(body.message ?? "商品维护表导入失败");
+        reportError(body.message ?? "商品维护表导入失败");
         return;
       }
       const result = (await response.json()) as ImportExternalProductsResponse;
@@ -76,7 +82,7 @@ export function ExternalProductPanel({ canEdit, onMessage }: ExternalProductPane
       setImportPreview(null);
       onMessage(`已导入 ${result.importedProductCount} 个维护商品、${result.importedComponentCount} 个组件，需复查 ${result.needsReviewCount} 个`);
     } catch (error) {
-      setError(error instanceof Error ? error.message : "商品维护表导入失败");
+      reportError(error instanceof Error ? error.message : "商品维护表导入失败");
     } finally {
       setImporting(false);
     }

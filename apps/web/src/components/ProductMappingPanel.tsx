@@ -27,6 +27,7 @@ interface ProductMappingPanelProps {
   sourceBatchId?: string;
   surface?: "panel" | "dialog";
   onMessage: (message: string) => void;
+  onError: (message: string) => void;
   onConfirmed?: (mapping: ProductMappingDto) => Promise<void> | void;
 }
 
@@ -86,7 +87,7 @@ export function ProductMappingDialog({ open, onClose, ...props }: ProductMapping
   );
 }
 
-export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sourceBatchId = "", surface = "panel", onMessage, onConfirmed }: ProductMappingPanelProps) {
+export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sourceBatchId = "", surface = "panel", onMessage, onError, onConfirmed }: ProductMappingPanelProps) {
   const [query, setQuery] = useState("");
   const [specQuery, setSpecQuery] = useState("");
   const [draft, setDraft] = useState<MappingDraft>(emptyDraft);
@@ -100,6 +101,11 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
   const [isSavingMapping, setIsSavingMapping] = useState(false);
   const mappingRequestIdRef = useRef(0);
   const candidateRequestIdRef = useRef(0);
+
+  function reportError(message: string) {
+    setError(message);
+    onError(message);
+  }
 
   async function refreshMappings(nextQuery = query) {
     const requestId = mappingRequestIdRef.current + 1;
@@ -137,7 +143,7 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
       const response = await fetch(`/api/v1/wdt/goods-specs/search?query=${encodeURIComponent(specQuery)}`);
       if (!response.ok) {
         setSpecs([]);
-        setError("商品规格搜索失败");
+        reportError("商品规格搜索失败");
         return;
       }
       setSpecs((await response.json()) as WdtGoodsSpecSearchResultDto[]);
@@ -157,7 +163,7 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
       });
       if (!response.ok) {
         const body = await response.json();
-        setError(body.message ?? "保存长期映射失败");
+        reportError(body.message ?? "保存长期映射失败");
         return;
       }
       const mapping = (await response.json()) as ProductMappingDto;
@@ -180,7 +186,7 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
     });
     if (!response.ok) {
       const body = await response.json();
-      setError(body.message ?? "更新映射状态失败");
+      reportError(body.message ?? "更新映射状态失败");
       return;
     }
     await refreshMappings();
@@ -207,7 +213,7 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
     const response = await fetch(`/api/v1/product-mappings/${mapping.id}`, { method: "DELETE" });
     if (!response.ok) {
       const body = await response.json();
-      setError(body.message ?? "删除长期映射失败");
+      reportError(body.message ?? "删除长期映射失败");
       return;
     }
     await refreshMappings();

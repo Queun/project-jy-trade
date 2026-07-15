@@ -484,7 +484,8 @@ describe("App", () => {
 
     await clickBatch();
 
-    expect(await screen.findByText("审核明细读取失败")).toBeInTheDocument();
+    const toast = await screen.findByRole("alert");
+    expect(within(toast).getByText("审核明细读取失败")).toBeInTheDocument();
     expect(screen.queryByText("可发商品")).not.toBeInTheDocument();
   });
 
@@ -567,6 +568,11 @@ describe("App", () => {
     const row = await rowFor("可发商品");
     fireEvent.click(within(row).getByRole("button", { name: "发货" }));
     expect(await within(row).findByText("请选择发货仓库")).toBeInTheDocument();
+    const toast = await screen.findByRole("alert");
+    expect(within(toast).getByText("请选择发货仓库")).toBeInTheDocument();
+
+    fireEvent.click(within(toast).getByRole("button", { name: "关闭错误提示" }));
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
   });
 
   it("marks priority lines and moves them to the top", async () => {
@@ -730,7 +736,8 @@ describe("App", () => {
     fireEvent.change(await screen.findByLabelText("选择文件"), { target: { files: [file] } });
     fireEvent.click(await screen.findByRole("button", { name: "导入确定单" }));
 
-    expect(await screen.findByText("确定单导入失败，请检查网络后重试")).toBeInTheDocument();
+    const toast = await screen.findByRole("alert");
+    expect(within(toast).getByText("确定单导入失败，请检查网络后重试")).toBeInTheDocument();
     expect(screen.getByText("网络失败确定单.xlsx")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "导入确定单" })).toBeEnabled();
   });
@@ -748,7 +755,8 @@ describe("App", () => {
     fireEvent.change(await screen.findByLabelText("选择文件"), { target: { files: [file] } });
     fireEvent.click(await screen.findByRole("button", { name: "导入确定单" }));
 
-    expect(await screen.findByText("确定单导入失败，请稍后重试或联系管理员")).toBeInTheDocument();
+    const toast = await screen.findByRole("alert");
+    expect(within(toast).getByText("确定单导入失败，请稍后重试或联系管理员")).toBeInTheDocument();
     expect(screen.getByText("服务异常确定单.xlsx")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "导入确定单" })).toBeEnabled();
   });

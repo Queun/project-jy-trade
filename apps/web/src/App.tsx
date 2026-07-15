@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CheckCheck, ChevronDown, ChevronUp, ClipboardList, Download, FileSpreadsheet, HelpCircle, LogOut, MapPin, PackageCheck, PackageSearch, RefreshCcw, Save, Send, Settings, Trash2, Upload, Warehouse, X, Zap } from "lucide-react";
+import { AlertCircle, CheckCheck, ChevronDown, ChevronUp, ClipboardList, Download, FileSpreadsheet, HelpCircle, LogOut, MapPin, PackageCheck, PackageSearch, RefreshCcw, Save, Send, Settings, Trash2, Upload, Warehouse, X, Zap } from "lucide-react";
 import type {
   AuthUserDto,
   ApplyProductMappingResponse,
@@ -44,6 +44,12 @@ interface ConfirmedOrderRebuildPrompt {
 interface SubmitReviewWarningState {
   warning: SubmitReviewWarningDto;
   confirmations: SubmitReviewRequest;
+}
+
+interface ErrorToastState {
+  id: number;
+  message: string;
+  visible: boolean;
 }
 
 type FilterKey =
@@ -117,6 +123,8 @@ export function App() {
   const [mockFile, setMockFile] = useState(defaultMockFile);
   const [message, setMessage] = useState("请选择订单文件并开始初审");
   const [successNotice, setSuccessNotice] = useState("");
+  const [errorToast, setErrorToast] = useState<ErrorToastState | null>(null);
+  const errorToastSequence = useRef(0);
   const [activeFilter, setActiveFilter] = useState<FilterKey>("all");
   const [draftById, setDraftById] = useState<Record<string, ReviewDraft>>({});
   const [errorsById, setErrorsById] = useState<Record<string, string>>({});
@@ -150,6 +158,17 @@ export function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showHelp, setShowHelp] = useState(() => localStorage.getItem(helpDismissedStorageKey) !== "true");
 
+  function showErrorToast(message: string) {
+    const normalized = message.trim() || "操作失败，请稍后重试";
+    errorToastSequence.current += 1;
+    setErrorToast({ id: errorToastSequence.current, message: normalized, visible: true });
+  }
+
+  function reportError(message: string) {
+    setMessage(message);
+    showErrorToast(message);
+  }
+
   async function refreshBatches() {
     const response = await fetch("/api/v1/batches");
     setBatches(await response.json());
@@ -160,7 +179,7 @@ export function App() {
     const response = await fetch(`/api/v1/batches/${batch.id}`, { method: "DELETE" });
     if (!response.ok) {
       const error = await response.json();
-      setMessage(error.message ?? "批次删除失败");
+      reportError(error.message ?? "批次删除失败");
       return;
     }
     if (activeBatch?.id === batch.id) {
@@ -205,7 +224,9 @@ export function App() {
   async function refreshWarehouseSettings() {
     const response = await fetch("/api/v1/settings/warehouse-usage");
     if (!response.ok) {
-      setWarehouseSettingsMessage("仓库范围读取失败");
+      const errorMessage = "仓库范围读取失败";
+      setWarehouseSettingsMessage(errorMessage);
+      showErrorToast(errorMessage);
       return null;
     }
     const settings = (await response.json()) as WarehouseUsageSettingsDto;
@@ -218,7 +239,9 @@ export function App() {
   async function refreshWdtSyncSettings() {
     const response = await fetch("/api/v1/settings/wdt-sync");
     if (!response.ok) {
-      setWdtSyncSettingsMessage("自动同步设置读取失败");
+      const errorMessage = "自动同步设置读取失败";
+      setWdtSyncSettingsMessage(errorMessage);
+      showErrorToast(errorMessage);
       return null;
     }
     const settings = (await response.json()) as WdtSyncSettingsDto;
@@ -235,7 +258,9 @@ export function App() {
     });
     if (!response.ok) {
       const error = await response.json();
-      setGoodsSyncMessage(error.message ?? "商品与库存同步启动失败");
+      const errorMessage = error.message ?? "商品与库存同步启动失败";
+      setGoodsSyncMessage(errorMessage);
+      showErrorToast(errorMessage);
       setGoodsSyncing(false);
       return;
     }
@@ -252,7 +277,9 @@ export function App() {
     const response = await fetch("/api/v1/wdt/quick-sync-runs", { method: "POST" });
     if (!response.ok) {
       const error = await response.json();
-      setGoodsSyncMessage(error.message ?? "快速同步启动失败，请使用完整同步");
+      const errorMessage = error.message ?? "快速同步启动失败，请使用完整同步";
+      setGoodsSyncMessage(errorMessage);
+      showErrorToast(errorMessage);
       setGoodsSyncing(false);
       return;
     }
@@ -284,7 +311,9 @@ export function App() {
       body: JSON.stringify({ username: loginName, password: loginPassword }),
     });
     if (!response.ok) {
-      setLoginError("账号或密码错误");
+      const errorMessage = "账号或密码错误";
+      setLoginError(errorMessage);
+      showErrorToast(errorMessage);
       return;
     }
     const body = await response.json();
@@ -348,7 +377,7 @@ export function App() {
     next: { storeNo: string; storeName: string },
   ) {
     if (!activeBatch) {
-      setMessage("请先选择一个批次");
+      reportError("请先选择一个批次");
       return;
     }
     setMessage("正在修正本批门店字段...");
@@ -364,7 +393,7 @@ export function App() {
     });
     if (!response.ok) {
       const error = await response.json();
-      setMessage(error.message ?? "本批门店字段修正失败");
+      reportError(error.message ?? "本批门店字段修正失败");
       return;
     }
     const result = (await response.json()) as UpdateBatchStoreFieldsResponse;
@@ -389,7 +418,7 @@ export function App() {
         setReviewLines([]);
         setDraftById({});
         setErrorsById({});
-        setMessage(apiErrorMessage(body, "审核明细读取失败，请刷新批次后重试"));
+        reportError(apiErrorMessage(body, "审核明细读取失败，请刷新批次后重试"));
         return null;
       }
       return body as ReviewLineDto[];
@@ -397,7 +426,7 @@ export function App() {
       setReviewLines([]);
       setDraftById({});
       setErrorsById({});
-      setMessage("审核明细读取失败，请检查网络后重试");
+      reportError("审核明细读取失败，请检查网络后重试");
       return null;
     }
   }
@@ -434,7 +463,7 @@ export function App() {
   async function runRealBatch() {
     const latestSync = goodsSyncRun?.status ? goodsSyncRun : await refreshGoodsSyncStatus();
     if (!latestSync || latestSync.status !== "success") {
-      setMessage(realReviewBlockedMessage(latestSync, goodsSyncError));
+      reportError(realReviewBlockedMessage(latestSync, goodsSyncError));
       return;
     }
     const orderFileInfo = await resolveOrderFile();
@@ -446,7 +475,7 @@ export function App() {
       body: JSON.stringify({ filePath: orderFileInfo.filePath, fileName: orderFileInfo.fileName, mode: "production_api" }),
     });
     if (!createdResponse.ok) {
-      setMessage("导入未完成，请检查订单文件");
+      reportError("导入未完成，请检查订单文件");
       return;
     }
 
@@ -467,7 +496,7 @@ export function App() {
       await refreshExports(created.id);
       await refreshMakeOrderReadiness(created.id);
       await refreshBatches();
-      setMessage(error.message ?? "真实初审失败");
+      reportError(error.message ?? "真实初审失败");
       return;
     }
 
@@ -489,7 +518,7 @@ export function App() {
   async function importConfirmedOrder() {
     if (!pendingOrderUpload || isImportingConfirmedOrder) {
       if (isImportingConfirmedOrder) return;
-      setMessage("请先选择确定单文件");
+      reportError("请先选择确定单文件");
       return;
     }
     setIsImportingConfirmedOrder(true);
@@ -505,11 +534,11 @@ export function App() {
       });
       const body = await safeResponseJson(response);
       if (!response.ok) {
-        setMessage(apiErrorMessage(body, "确定单导入失败，请稍后重试或联系管理员"));
+        reportError(apiErrorMessage(body, "确定单导入失败，请稍后重试或联系管理员"));
         return;
       }
       if (!body || typeof body !== "object" || !("batch" in body)) {
-        setMessage("确定单导入失败：服务器返回内容不完整，请稍后重试");
+        reportError("确定单导入失败：服务器返回内容不完整，请稍后重试");
         return;
       }
       const result = body as ImportConfirmedOrderResponse;
@@ -530,7 +559,7 @@ export function App() {
       setMessage(`确定单已导入：${result.parsedRowCount} 行，已匹配 ${result.matchedRowCount} 行，待补字段 ${result.unmatchedRowCount} 行`);
       setSuccessNotice("确定单导入成功，请确认系统建议并提交审核");
     } catch {
-      setMessage("确定单导入失败，请检查网络后重试");
+      reportError("确定单导入失败，请检查网络后重试");
     } finally {
       setIsImportingConfirmedOrder(false);
     }
@@ -542,11 +571,11 @@ export function App() {
     options: { userTriggered?: boolean } = {},
   ): Promise<ImportConfirmedOrderResponse | null> {
     if (!batch) {
-      setMessage("请先选择一个确定单批次");
+      reportError("请先选择一个确定单批次");
       return null;
     }
     if (batch.sourceType !== "confirmed_order") {
-      setMessage("当前批次不是确定单，不能使用确定单重新校验");
+      reportError("当前批次不是确定单，不能使用确定单重新校验");
       return null;
     }
 
@@ -560,7 +589,7 @@ export function App() {
       });
       if (!rebuildResponse.ok) {
         const error = await rebuildResponse.json();
-        setMessage(error.message ?? "确定单重新校验失败");
+        reportError(error.message ?? "确定单重新校验失败");
         return null;
       }
       const rebuild = (await rebuildResponse.json()) as ImportConfirmedOrderResponse;
@@ -600,7 +629,7 @@ export function App() {
       });
       if (!response.ok) {
         const error = await response.json();
-        setMessage(error.message ?? "重新计算初审失败");
+        reportError(error.message ?? "重新计算初审失败");
         return;
       }
       const result = await response.json();
@@ -641,7 +670,7 @@ export function App() {
         });
         if (!response.ok) {
           const error = await response.json();
-          setMessage(error.message ?? "映射已保存，但应用到当前确定单失败");
+          reportError(error.message ?? "映射已保存，但应用到当前确定单失败");
           setSuccessNotice("映射已保存，可手工重新校验确定单恢复当前审核");
           return;
         }
@@ -666,7 +695,7 @@ export function App() {
         ]);
         setSuccessNotice("映射已应用到当前批次，请重新提交审核");
       } catch {
-        setMessage("映射已保存，但应用到当前确定单失败");
+        reportError("映射已保存，但应用到当前确定单失败");
         setSuccessNotice("映射已保存，可手工重新校验确定单恢复当前审核");
       } finally {
         applyingProductMappingBatchIds.current.delete(batch.id);
@@ -685,7 +714,7 @@ export function App() {
     });
     if (!reviewResponse.ok) {
       const error = await reviewResponse.json();
-      setMessage(error.message ?? "映射已保存，但当前批次刷新初审失败");
+      reportError(error.message ?? "映射已保存，但当前批次刷新初审失败");
       return;
     }
 
@@ -704,7 +733,7 @@ export function App() {
   async function resolveOrderFile() {
     if (!pendingOrderUpload) {
       if (!selectedOrderFileName && !developerMode) {
-        setMessage("请先选择订货单文件");
+        reportError("请先选择订货单文件");
         return null;
       }
       return {
@@ -724,7 +753,7 @@ export function App() {
     });
     if (!response.ok) {
       const error = await response.json();
-      setMessage(error.message ?? "订货单上传失败");
+      reportError(error.message ?? "订货单上传失败");
       return null;
     }
     const uploaded = (await response.json()) as { filePath: string; fileName: string };
@@ -740,6 +769,7 @@ export function App() {
     const localError = validateDraft(line, draft, approvedShipQty);
     if (localError) {
       setErrorsById((current) => ({ ...current, [line.id]: localError }));
+      showErrorToast(localError);
       return;
     }
 
@@ -758,7 +788,9 @@ export function App() {
       });
       if (!response.ok) {
         const error = await response.json();
-        setErrorsById((current) => ({ ...current, [line.id]: error.message ?? "保存失败" }));
+        const errorMessage = error.message ?? "保存失败";
+        setErrorsById((current) => ({ ...current, [line.id]: errorMessage }));
+        showErrorToast(errorMessage);
         return;
       }
       const updated = (await response.json()) as ReviewLineDto;
@@ -811,7 +843,9 @@ export function App() {
     });
     if (!response.ok) {
       const error = await response.json();
-      setErrorsById((current) => ({ ...current, [line.id]: error.message ?? "优先处理更新失败" }));
+      const errorMessage = error.message ?? "优先处理更新失败";
+      setErrorsById((current) => ({ ...current, [line.id]: errorMessage }));
+      showErrorToast(errorMessage);
       return;
     }
     const updated = (await response.json()) as ReviewLineDto;
@@ -839,7 +873,9 @@ export function App() {
     });
     if (!response.ok) {
       const error = await response.json();
-      setWarehouseSettingsMessage(error.message ?? "仓库范围保存失败");
+      const errorMessage = error.message ?? "仓库范围保存失败";
+      setWarehouseSettingsMessage(errorMessage);
+      showErrorToast(errorMessage);
       return;
     }
     const settings = (await response.json()) as WarehouseUsageSettingsDto;
@@ -857,7 +893,9 @@ export function App() {
     });
     if (!response.ok) {
       const error = await response.json();
-      setWdtSyncSettingsMessage(error.message ?? "自动同步周期保存失败");
+      const errorMessage = error.message ?? "自动同步周期保存失败";
+      setWdtSyncSettingsMessage(errorMessage);
+      showErrorToast(errorMessage);
       return;
     }
     const settings = (await response.json()) as WdtSyncSettingsDto;
@@ -869,7 +907,7 @@ export function App() {
     if (!activeBatch) return;
     const response = await fetch(`/api/v1/batches/${activeBatch.id}/actions/bulk-approve`, { method: "POST" });
     if (!response.ok) {
-      setMessage("批量通过失败");
+      reportError("批量通过失败");
       return;
     }
     const result = await response.json();
@@ -882,20 +920,20 @@ export function App() {
   async function submitReview(confirmations: SubmitReviewRequest = { confirmUnverifiedStock: false, confirmUnmappedProducts: false }) {
     if (!activeBatch) return;
     if (recheckingConfirmedOrder) {
-      setMessage("当前批次仍在重新校验，请稍候再提交审核");
+      reportError("当前批次仍在重新校验，请稍候再提交审核");
       return;
     }
     if (savingDecisionIds.size > 0) {
-      setMessage("还有审核结果正在保存，请稍候再提交");
+      reportError("还有审核结果正在保存，请稍候再提交");
       return;
     }
     const unsavedCount = reviewLines.filter((line) => reviewDraftIsDirty(line, draftById[line.id])).length;
     if (unsavedCount > 0) {
-      setMessage(`还有 ${unsavedCount} 条审核修改尚未保存，请先保存后再提交`);
+      reportError(`还有 ${unsavedCount} 条审核修改尚未保存，请先保存后再提交`);
       return;
     }
     if (Object.keys(errorsById).length > 0) {
-      setMessage("仍有审核结果保存失败，请处理行内错误后再提交");
+      reportError("仍有审核结果保存失败，请处理行内错误后再提交");
       return;
     }
 
@@ -913,7 +951,7 @@ export function App() {
         return;
       }
       if (!response.ok || !("batch" in result)) {
-        setMessage("message" in result ? result.message ?? "提交审核失败" : "提交审核失败");
+        reportError("message" in result ? result.message ?? "提交审核失败" : "提交审核失败");
         return;
       }
       setSubmitReviewWarning(null);
@@ -936,13 +974,14 @@ export function App() {
       body: JSON.stringify({ type }),
     });
     if (!response.ok) {
-      setMessage("导出失败");
+      reportError("导出失败");
       return;
     }
     const created = (await response.json()) as ExportDto;
     await refreshExports(activeBatch.id);
     await refreshMakeOrderReadiness(activeBatch.id);
-    setMessage(created.status === "ready" ? "导出文件已生成" : "导出失败");
+    if (created.status === "ready") setMessage("导出文件已生成");
+    else reportError(created.errorMessage || "导出失败");
   }
 
   function locateProductMapping(line: ReviewLineDto) {
@@ -1011,6 +1050,21 @@ export function App() {
     return () => window.clearTimeout(timer);
   }, [successNotice]);
 
+  useEffect(() => {
+    if (!errorToast) return;
+    const toastId = errorToast.id;
+    const fadeTimer = window.setTimeout(() => {
+      setErrorToast((current) => current?.id === toastId ? { ...current, visible: false } : current);
+    }, 5600);
+    const removeTimer = window.setTimeout(() => {
+      setErrorToast((current) => current?.id === toastId ? null : current);
+    }, 6000);
+    return () => {
+      window.clearTimeout(fadeTimer);
+      window.clearTimeout(removeTimer);
+    };
+  }, [errorToast?.id]);
+
   const stats = useMemo(() => buildStats(reviewLines), [reviewLines]);
   const filteredLines = useMemo(
     () => reviewLines.filter((line) => matchesFilter(line, activeFilter, activeBatch?.sourceType === "confirmed_order")),
@@ -1030,6 +1084,7 @@ export function App() {
   if (!user) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-background px-6 text-foreground">
+        <ErrorToast notice={errorToast} onClose={() => setErrorToast(null)} />
         <section className="w-full max-w-sm rounded-md border border-border bg-card p-6 shadow-sm">
           <p className="text-sm text-muted-foreground">漾锦贸易订单初审平台</p>
           <h1 className="mt-1 text-2xl font-semibold tracking-normal">登录工作台</h1>
@@ -1062,6 +1117,7 @@ export function App() {
 
   return (
     <main className="min-h-screen bg-background text-foreground">
+      <ErrorToast notice={errorToast} onClose={() => setErrorToast(null)} />
       <section className="mx-auto flex w-full max-w-[1500px] flex-col gap-5 px-5 py-5">
         <header className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
           <div>
@@ -1249,6 +1305,7 @@ export function App() {
                 focusMissingStore={addressFocus?.store ?? null}
                 focusMissingStoreRequestId={addressFocus?.requestId ?? 0}
                 missingStores={makeOrderReadiness?.missingStores ?? []}
+                onError={showErrorToast}
                 onMessage={setMessage}
                 onSaved={() => {
                   if (activeBatch) void refreshMakeOrderReadiness(activeBatch.id);
@@ -1259,6 +1316,7 @@ export function App() {
             {activeTab === "external-products" ? (
               <ExternalProductTab
                 canEdit={permissions.canExport}
+                onError={showErrorToast}
                 onMessage={setMessage}
               />
             ) : null}
@@ -1271,6 +1329,7 @@ export function App() {
         open={mappingDialogOpen}
         sourceBatchId={activeBatch?.id ?? ""}
         onClose={() => setMappingDialogOpen(false)}
+        onError={showErrorToast}
         onMessage={setMessage}
         onConfirmed={rerunActiveBatchAfterMapping}
       />
@@ -1385,6 +1444,31 @@ function ReviewRiskConfirmDialog({
           <Button disabled={submitting} onClick={onConfirm}>{submitting ? "提交中..." : `确认并提交 ${warning.affectedCount} 条`}</Button>
         </div>
       </section>
+    </div>
+  );
+}
+
+function ErrorToast({ notice, onClose }: { notice: ErrorToastState | null; onClose: () => void }) {
+  if (!notice) return null;
+  return (
+    <div
+      aria-live="assertive"
+      className={`fixed left-1/2 top-6 z-[70] flex w-[min(calc(100vw-2rem),34rem)] -translate-x-1/2 items-start gap-3 rounded-md border border-rose-300 bg-rose-50 px-4 py-3 text-rose-950 shadow-xl transition-all duration-300 ${notice.visible ? "translate-y-0 opacity-100" : "-translate-y-2 opacity-0"}`}
+      role="alert"
+    >
+      <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-rose-700" />
+      <div className="min-w-0 flex-1">
+        <div className="font-semibold">操作未完成</div>
+        <div className="mt-1 break-words text-sm leading-5">{notice.message}</div>
+      </div>
+      <button
+        aria-label="关闭错误提示"
+        className="flex h-8 w-8 shrink-0 items-center justify-center rounded text-rose-700 transition hover:bg-rose-100"
+        onClick={onClose}
+        type="button"
+      >
+        <X className="h-4 w-4" />
+      </button>
     </div>
   );
 }
@@ -1630,6 +1714,7 @@ function AddressTab({
   focusMissingStore,
   focusMissingStoreRequestId,
   missingStores,
+  onError,
   onMessage,
   onSaved,
 }: {
@@ -1637,6 +1722,7 @@ function AddressTab({
   focusMissingStore: MakeOrderReadinessDto["missingStores"][number] | null;
   focusMissingStoreRequestId: number;
   missingStores: MakeOrderReadinessDto["missingStores"];
+  onError: (message: string) => void;
   onMessage: (message: string) => void;
   onSaved: () => void;
 }) {
@@ -1647,6 +1733,7 @@ function AddressTab({
         focusMissingStore={focusMissingStore}
         focusMissingStoreRequestId={focusMissingStoreRequestId}
         missingStores={missingStores}
+        onError={onError}
         onMessage={onMessage}
         onSaved={onSaved}
       />
@@ -1656,14 +1743,16 @@ function AddressTab({
 
 function ExternalProductTab({
   canEdit,
+  onError,
   onMessage,
 }: {
   canEdit: boolean;
+  onError: (message: string) => void;
   onMessage: (message: string) => void;
 }) {
   return (
     <section className="mt-4">
-      <ExternalProductPanel canEdit={canEdit} onMessage={onMessage} />
+      <ExternalProductPanel canEdit={canEdit} onError={onError} onMessage={onMessage} />
     </section>
   );
 }
