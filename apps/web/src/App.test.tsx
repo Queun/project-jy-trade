@@ -1695,10 +1695,48 @@ describe("App", () => {
 
     await waitFor(() => expect(currentBatch.status).toBe("reviewed"));
     expect(fetch).toHaveBeenCalledWith("/api/v1/batches/batch-1/actions/submit-review", expect.objectContaining({
-      body: JSON.stringify({ confirmUnverifiedStock: false }),
+      body: JSON.stringify({ confirmUnverifiedStock: false, confirmUnmappedProducts: false }),
     }));
     expect(fetch).toHaveBeenCalledWith("/api/v1/batches/batch-1/actions/submit-review", expect.objectContaining({
-      body: JSON.stringify({ confirmUnverifiedStock: true }),
+      body: JSON.stringify({ confirmUnverifiedStock: true, confirmUnmappedProducts: false }),
+    }));
+  });
+
+  it("confirms an unmapped positive line and explains the imported make-order code", async () => {
+    lines = [reviewLine({
+      id: "line-unmapped-fallback",
+      externalGoodsCode: "IMPORTED-GOODS-001",
+      externalBarcode: "IMPORTED-BARCODE-001",
+      externalGoodsName: "紧急未映射商品",
+      wdtSpecNo: "",
+      wdtMakeOrderCode: "",
+      matchStatus: "not_found",
+      status: "未匹配",
+      suggestedShipQty: 0,
+      decision: "ship",
+      approvedShipQty: 2,
+      fulfillmentWarehouseNo: "001",
+      fulfillmentWarehouseName: "主仓",
+    })];
+    render(<App />);
+    await clickBatch();
+    switchToReviewTab();
+
+    const row = await rowFor("紧急未映射商品");
+    expect(within(row).getByText("未映射做单")).toBeInTheDocument();
+    expect(within(row).getByText(/做单将使用导入商品编码 IMPORTED-GOODS-001/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "提交审核完成" }));
+
+    const dialog = await screen.findByRole("alertdialog", { name: "未映射商品需要人工确认" });
+    expect(within(dialog).getByText(/将使用导入的商品编码或商品条码作为旺店通商家编码/)).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "确认并提交 1 条" }));
+
+    await waitFor(() => expect(currentBatch.status).toBe("reviewed"));
+    expect(fetch).toHaveBeenCalledWith("/api/v1/batches/batch-1/actions/submit-review", expect.objectContaining({
+      body: JSON.stringify({ confirmUnverifiedStock: false, confirmUnmappedProducts: false }),
+    }));
+    expect(fetch).toHaveBeenCalledWith("/api/v1/batches/batch-1/actions/submit-review", expect.objectContaining({
+      body: JSON.stringify({ confirmUnverifiedStock: false, confirmUnmappedProducts: true }),
     }));
   });
 });
@@ -2266,7 +2304,18 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
     return json({ batch: currentBatch, updatedCount: 2 });
   }
   if (url.includes("/actions/submit-review")) {
-    const body = JSON.parse(String(init?.body ?? "{}")) as { confirmUnverifiedStock?: boolean };
+    const body = JSON.parse(String(init?.body ?? "{}")) as { confirmUnverifiedStock?: boolean; confirmUnmappedProducts?: boolean };
+    const unmappedProductCount = lines.filter(
+      (line) => line.decision === "ship" && line.approvedShipQty > 0 && (line.matchStatus !== "matched" || !(line.wdtMakeOrderCode || line.wdtSpecNo)),
+    ).length;
+    if (unmappedProductCount > 0 && !body.confirmUnmappedProducts) {
+      return json({
+        requiresConfirmation: true,
+        code: "UNMAPPED_PRODUCTS",
+        affectedCount: unmappedProductCount,
+        message: `有 ${unmappedProductCount} 条发货明细没有有效商品映射，将使用导入的商品编码或商品条码作为旺店通商家编码`,
+      }, 409);
+    }
     const unverifiedStockCount = lines.filter(
       (line) => line.decision === "ship" && line.approvedShipQty > 0 && Boolean(line.stockErrorDetail?.trim()),
     ).length;

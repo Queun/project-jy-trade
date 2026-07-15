@@ -101,6 +101,7 @@ src/jy_trade
 - 旺店通做单文件按现有模板字段输出 OOXML `.xlsx`，包含 `Sheet1` 和字段完全一致的 `不做单表`；两个 Sheet 均启用完整区域自动筛选，打开时仅激活 `Sheet1`。
 - 最终数量大于 0 的审核行进入 `Sheet1`，最终数量为 0 的审核行进入 `不做单表`；分类只看最终数量，确保每条审核行恰好进入一个 Sheet。
 - 做单导出是审核结果的纯投影，不查询库存、不重新分配数量或仓库。
+- 未映射正数行在提交审核时返回结构化 `UNMAPPED_PRODUCTS` 二次确认；确认后做单码按 `wdtMakeOrderCode -> wdtSpecNo -> externalGoodsCode -> externalBarcode` 回退，不写入长期映射。
 - `原始单号` 按“门店 + 最终仓库”分组生成并重复到组内各商品行；不同门店或不同仓库使用不同编号，相同批次重复导出保持稳定。
 - 同一门店的通知单号汇总到 `客服备注`。
 - `商家编码` 使用 `wdtMakeOrderCode`，缺少时回退到 `wdtSpecNo`。

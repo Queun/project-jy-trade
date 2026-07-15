@@ -449,12 +449,13 @@ export type SubmitReviewResponseDto = z.infer<typeof SubmitReviewResponseDtoSche
 
 export const SubmitReviewRequestSchema = z.object({
   confirmUnverifiedStock: z.boolean().default(false),
+  confirmUnmappedProducts: z.boolean().default(false),
 });
 export type SubmitReviewRequest = z.infer<typeof SubmitReviewRequestSchema>;
 
 export const SubmitReviewWarningDtoSchema = z.object({
   requiresConfirmation: z.literal(true),
-  code: z.literal("UNVERIFIED_STOCK"),
+  code: z.enum(["UNVERIFIED_STOCK", "UNMAPPED_PRODUCTS"]),
   affectedCount: z.number().int().positive(),
   message: z.string(),
 });

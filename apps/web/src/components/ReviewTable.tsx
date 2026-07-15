@@ -261,6 +261,7 @@ export function ReviewTable({
         const approvedQty = Number(draft.approvedShipQty);
         const isOverSuggested = draft.decision === "ship" && Number.isFinite(approvedQty) && approvedQty > line.suggestedShipQty;
         const isOverPlanned = confirmedOrderMode && draft.decision === "ship" && Number.isFinite(approvedQty) && approvedQty > line.plannedShipQty;
+        const isUnmappedPositive = line.matchStatus !== "matched" && draft.decision === "ship" && Number.isFinite(approvedQty) && approvedQty > 0;
         const isNonSuggestedWarehouse = draft.decision === "ship"
           && Boolean(draft.fulfillmentWarehouseNo)
           && Boolean(line.suggestedWarehouseNo)
@@ -284,6 +285,7 @@ export function ReviewTable({
               {line.priority ? <Badge tone="info">优先</Badge> : null}
               {isOverSuggested ? <Badge tone="warn">超系统建议</Badge> : null}
               {isOverPlanned ? <Badge tone="warn">偏离原计划</Badge> : null}
+              {isUnmappedPositive ? <Badge tone="warn">未映射做单</Badge> : null}
               {isNonSuggestedWarehouse ? <Badge tone="warn">非建议仓库</Badge> : null}
               <Button className="h-8 px-2" disabled={readOnly || isSaving} onClick={() => onQuickDecision(line, "ship")}>
                 {confirmedOrderMode ? "做单" : "发货"}
@@ -371,6 +373,7 @@ export function ReviewTable({
             <div className="space-y-1 text-xs leading-5 text-amber-800">
               {isOverSuggested ? <div>最终数量超过系统建议，可能存在库存风险。</div> : null}
               {isOverPlanned ? <div>最终数量超过确定单发货数量，已偏离原计划。</div> : null}
+              {isUnmappedPositive ? <div>该商品没有有效映射，提交时需要二次确认；做单将使用导入商品编码{line.externalGoodsCode ? ` ${line.externalGoodsCode}` : line.externalBarcode ? ` ${line.externalBarcode}` : ""}。</div> : null}
               {isNonSuggestedWarehouse ? <div>最终仓库与系统建议不同，请确认人工调整。</div> : null}
               {isInvalidWarehouse ? <div className="text-rose-700">所选仓库当前未启用，提交审核前必须重新选择。</div> : null}
             </div>

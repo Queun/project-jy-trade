@@ -820,6 +820,133 @@ describe("api server", () => {
     await app.close();
   });
 
+  it("allows explicitly confirmed unmapped lines and exports their imported goods code", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const app = buildTestServer(databaseUrl);
+    const cookie = await loginCookie(app);
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/v1/batches",
+      payload: { filePath: mixedOrderFile, mode: "mock" },
+      headers: { cookie },
+    });
+    const batchId = created.json().id;
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${batchId}/actions/run-mock-review`,
+      payload: { mockDataFile: "examples/mock_flow_mixed.json" },
+      headers: { cookie },
+    });
+    const initialLines = await app.inject({ method: "GET", url: `/api/v1/batches/${batchId}/review-lines`, headers: { cookie } });
+    let lines = initialLines.json();
+    const unmappedLine = lines.find((line: { matchStatus: string; externalGoodsCode: string }) =>
+      line.matchStatus === "not_found" && Boolean(line.externalGoodsCode));
+    const barcodeFallbackLine = lines.find((line: { matchStatus: string; externalBarcode: string }) =>
+      line.matchStatus === "ambiguous" && Boolean(line.externalBarcode));
+    expect(unmappedLine).toBeTruthy();
+    expect(barcodeFallbackLine).toBeTruthy();
+
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await database.db.update(reviewLines).set({ externalGoodsCode: "" }).where(eq(reviewLines.id, barcodeFallbackLine.id));
+    await database.close();
+    const refreshedLines = await app.inject({ method: "GET", url: `/api/v1/batches/${batchId}/review-lines`, headers: { cookie } });
+    lines = refreshedLines.json();
+
+    const updated = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/batches/${batchId}/review-lines/${unmappedLine.id}/decision`,
+      payload: {
+        decision: "ship",
+        approvedShipQty: 2,
+        fulfillmentWarehouseNo: "001",
+        fulfillmentWarehouseName: "主仓",
+        reason: "业务员确认紧急做单",
+      },
+      headers: { cookie },
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json()).toMatchObject({ decision: "ship", approvedShipQty: 2, matchStatus: "not_found" });
+    const updatedBarcodeFallback = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/batches/${batchId}/review-lines/${barcodeFallbackLine.id}/decision`,
+      payload: {
+        decision: "ship",
+        approvedShipQty: 1,
+        fulfillmentWarehouseNo: "001",
+        fulfillmentWarehouseName: "主仓",
+        reason: "业务员确认按原始条码做单",
+      },
+      headers: { cookie },
+    });
+    expect(updatedBarcodeFallback.statusCode).toBe(200);
+    await seedStoreAddresses(app, cookie, lines);
+
+    const warning = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${batchId}/actions/submit-review`,
+      payload: { confirmUnverifiedStock: false, confirmUnmappedProducts: false },
+      headers: { cookie },
+    });
+    expect(warning.statusCode).toBe(409);
+    expect(warning.json()).toMatchObject({
+      requiresConfirmation: true,
+      code: "UNMAPPED_PRODUCTS",
+      affectedCount: 2,
+    });
+
+    const confirmed = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${batchId}/actions/submit-review`,
+      payload: { confirmUnverifiedStock: false, confirmUnmappedProducts: true },
+      headers: { cookie },
+    });
+    expect(confirmed.statusCode).toBe(200);
+    expect(confirmed.json().batch.status).toBe("reviewed");
+
+    const exportResponse = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${batchId}/exports`,
+      payload: { type: "wdt_import" },
+      headers: { cookie },
+    });
+    expect(exportResponse.statusCode).toBe(201);
+    const download = await app.inject({ method: "GET", url: exportResponse.json().downloadUrl, headers: { cookie } });
+    const workbook = XLSX.read(download.rawPayload, { type: "buffer" });
+    const rows = XLSX.utils.sheet_to_json<Record<string, string | number>>(workbook.Sheets["Sheet1"], { defval: "" });
+    expect(rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        商家编码: unmappedLine.externalGoodsCode,
+        货品数量: 2,
+      }),
+      expect.objectContaining({
+        商家编码: barcodeFallbackLine.externalBarcode,
+        货品数量: 1,
+      }),
+    ]));
+
+    const matchedLine = lines.find((line: { matchStatus: string; approvedShipQty: number }) =>
+      line.matchStatus === "matched" && line.approvedShipQty > 0);
+    expect(matchedLine).toBeTruthy();
+    const missingCodeDatabase = createDatabaseContext(databaseUrl);
+    await missingCodeDatabase.ready;
+    await missingCodeDatabase.db.update(reviewLines).set({
+      matchStatus: "not_found",
+      externalGoodsCode: "",
+      externalBarcode: "",
+    }).where(eq(reviewLines.id, matchedLine.id));
+    await missingCodeDatabase.close();
+    const blocked = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${batchId}/actions/submit-review`,
+      payload: { confirmUnverifiedStock: true, confirmUnmappedProducts: true },
+      headers: { cookie },
+    });
+    expect(blocked.statusCode).toBe(400);
+    expect(blocked.json().message).toContain("没有可用于做单的原始商品编码或条码");
+    await app.close();
+  });
+
   it("creates downloadable export files for a reviewed batch", async () => {
     const app = buildTestServer();
     mkdirSync(resolve(projectRoot, "outputs"), { recursive: true });
@@ -3344,7 +3471,7 @@ describe("api server", () => {
     ).toBe(false);
     expect(doNotRows).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        商家编码: pendingLine.wdtMakeOrderCode || pendingLine.wdtSpecNo,
+        商家编码: pendingLine.wdtMakeOrderCode || pendingLine.wdtSpecNo || pendingLine.externalGoodsCode || pendingLine.externalBarcode,
         货品数量: 0,
       }),
     ]));

@@ -1260,7 +1260,7 @@ export function createSqliteStore(options: StoreOptions = {}) {
 
     async submitReview(
       batchId: string,
-      input: SubmitReviewRequest = { confirmUnverifiedStock: false },
+      input: SubmitReviewRequest = { confirmUnverifiedStock: false, confirmUnmappedProducts: false },
       actor?: AuthUserDto,
     ): Promise<SubmitReviewResultDto | undefined> {
       await ready;
@@ -1273,11 +1273,12 @@ export function createSqliteStore(options: StoreOptions = {}) {
       if (invalidQuantityCount > 0) {
         throw new StoreValidationError(`还有 ${invalidQuantityCount} 条发货明细的最终数量不是非负整数`);
       }
-      const missingMappingCount = shippableLines.filter(
+      const unmappedLines = shippableLines.filter(
         (line) => line.matchStatus !== "matched" || !(line.wdtMakeOrderCode || line.wdtSpecNo),
-      ).length;
-      if (missingMappingCount > 0) {
-        throw new StoreValidationError(`还有 ${missingMappingCount} 条发货明细没有有效商品映射`);
+      );
+      const missingFallbackCodeCount = unmappedLines.filter((line) => !importedMakeOrderCode(line)).length;
+      if (missingFallbackCodeCount > 0) {
+        throw new StoreValidationError(`还有 ${missingFallbackCodeCount} 条未映射发货明细没有可用于做单的原始商品编码或条码`);
       }
       const warehouseSettings = toWarehouseUsageSettingsDto(await getWarehouseUsageSettingsRow(database));
       const missingWarehouseCount = shippableLines.filter((line) => !hasFulfillmentWarehouse(line)).length;
@@ -1289,6 +1290,14 @@ export function createSqliteStore(options: StoreOptions = {}) {
       ).length;
       if (invalidWarehouseCount > 0) {
         throw new StoreValidationError(`还有 ${invalidWarehouseCount} 条发货明细选择了当前未启用的仓库`);
+      }
+      if (unmappedLines.length > 0 && !input.confirmUnmappedProducts) {
+        return {
+          requiresConfirmation: true,
+          code: "UNMAPPED_PRODUCTS",
+          affectedCount: unmappedLines.length,
+          message: `有 ${unmappedLines.length} 条发货明细没有有效商品映射，将使用导入的商品编码或商品条码作为旺店通商家编码`,
+        };
       }
       const unverifiedStockCount = shippableLines.filter((line) => Boolean(line.stockErrorDetail?.trim())).length;
       if (unverifiedStockCount > 0 && !input.confirmUnverifiedStock) {
@@ -1311,7 +1320,9 @@ export function createSqliteStore(options: StoreOptions = {}) {
         shipCount,
         doNotShipCount,
         unverifiedStockCount,
+        unmappedProductCount: unmappedLines.length,
         confirmedUnverifiedStock: input.confirmUnverifiedStock,
+        confirmedUnmappedProducts: input.confirmUnmappedProducts,
       });
 
       return {
@@ -5197,12 +5208,16 @@ function renderWdtImportRow(
     发票类型: WDT_IMPORT_DEFAULTS.invoiceType,
     发票抬头: WDT_IMPORT_DEFAULTS.invoiceTitle,
     业务员: actor?.username ?? "",
-    商家编码: line.wdtMakeOrderCode || line.wdtSpecNo,
+    商家编码: line.wdtMakeOrderCode || line.wdtSpecNo || importedMakeOrderCode(line),
     货品数量: line.approvedShipQty,
     货品价格: numberOrBlank(line.contractPrice),
   };
 
   return headers.map((header) => values[header] ?? "");
+}
+
+function importedMakeOrderCode(line: Pick<ReviewLineDto, "externalGoodsCode" | "externalBarcode">) {
+  return line.externalGoodsCode.trim() || line.externalBarcode.trim();
 }
 
 interface WdtImportContext {

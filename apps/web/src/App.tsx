@@ -11,6 +11,7 @@ import type {
   ReviewDecision,
   ReviewLineDto,
   SubmitReviewResultDto,
+  SubmitReviewRequest,
   SubmitReviewWarningDto,
   UpdateBatchStoreFieldsResponse,
   WarehouseUsageSettingsDto,
@@ -38,6 +39,11 @@ type ConfirmedOrderRebuildStrategy = "preserve" | "replace";
 
 interface ConfirmedOrderRebuildPrompt {
   batch: BatchSummary;
+}
+
+interface SubmitReviewWarningState {
+  warning: SubmitReviewWarningDto;
+  confirmations: SubmitReviewRequest;
 }
 
 type FilterKey =
@@ -134,7 +140,7 @@ export function App() {
   const [recheckingConfirmedOrder, setRecheckingConfirmedOrder] = useState(false);
   const [confirmedOrderRebuildPrompt, setConfirmedOrderRebuildPrompt] = useState<ConfirmedOrderRebuildPrompt | null>(null);
   const applyingProductMappingBatchIds = useRef(new Set<string>());
-  const [unverifiedStockWarning, setUnverifiedStockWarning] = useState<SubmitReviewWarningDto | null>(null);
+  const [submitReviewWarning, setSubmitReviewWarning] = useState<SubmitReviewWarningState | null>(null);
   const [savingDecisionIds, setSavingDecisionIds] = useState<Set<string>>(() => new Set());
   const [submittingReview, setSubmittingReview] = useState(false);
   const [addressFocus] = useState<{
@@ -873,7 +879,7 @@ export function App() {
     setMessage(`已批量通过 ${result.updatedCount} 行`);
   }
 
-  async function submitReview(confirmUnverifiedStock = false) {
+  async function submitReview(confirmations: SubmitReviewRequest = { confirmUnverifiedStock: false, confirmUnmappedProducts: false }) {
     if (!activeBatch) return;
     if (recheckingConfirmedOrder) {
       setMessage("当前批次仍在重新校验，请稍候再提交审核");
@@ -898,11 +904,11 @@ export function App() {
       const response = await fetch(`/api/v1/batches/${activeBatch.id}/actions/submit-review`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ confirmUnverifiedStock }),
+        body: JSON.stringify(confirmations),
       });
       const result = (await response.json()) as SubmitReviewResultDto | { message?: string };
       if (response.status === 409 && "requiresConfirmation" in result && result.requiresConfirmation) {
-        setUnverifiedStockWarning(result);
+        setSubmitReviewWarning({ warning: result, confirmations });
         setMessage(result.message);
         return;
       }
@@ -910,7 +916,7 @@ export function App() {
         setMessage("message" in result ? result.message ?? "提交审核失败" : "提交审核失败");
         return;
       }
-      setUnverifiedStockWarning(null);
+      setSubmitReviewWarning(null);
       setActiveBatch(result.batch);
       await refreshMakeOrderReadiness(result.batch.id);
       await refreshBatches();
@@ -1283,13 +1289,17 @@ export function App() {
           });
         }}
       />
-      <UnverifiedStockConfirmDialog
-        warning={unverifiedStockWarning}
+      <ReviewRiskConfirmDialog
+        warning={submitReviewWarning?.warning ?? null}
         submitting={submittingReview}
-        onCancel={() => setUnverifiedStockWarning(null)}
+        onCancel={() => setSubmitReviewWarning(null)}
         onConfirm={() => {
-          setUnverifiedStockWarning(null);
-          void submitReview(true);
+          if (!submitReviewWarning) return;
+          const confirmations = submitReviewWarning.warning.code === "UNMAPPED_PRODUCTS"
+            ? { ...submitReviewWarning.confirmations, confirmUnmappedProducts: true }
+            : { ...submitReviewWarning.confirmations, confirmUnverifiedStock: true };
+          setSubmitReviewWarning(null);
+          void submitReview(confirmations);
         }}
       />
     </main>
@@ -1347,7 +1357,7 @@ function ConfirmedOrderRebuildDialog({
   );
 }
 
-function UnverifiedStockConfirmDialog({
+function ReviewRiskConfirmDialog({
   warning,
   submitting,
   onCancel,
@@ -1359,13 +1369,17 @@ function UnverifiedStockConfirmDialog({
   onConfirm: () => void;
 }) {
   if (!warning) return null;
+  const unmapped = warning.code === "UNMAPPED_PRODUCTS";
+  const title = unmapped ? "未映射商品需要人工确认" : "库存尚未完成核验";
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4 py-6" role="alertdialog" aria-modal="true" aria-labelledby="unverified-stock-title">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4 py-6" role="alertdialog" aria-modal="true" aria-labelledby="review-risk-title">
       <section className="w-full max-w-md rounded-lg border border-amber-200 bg-background p-5 shadow-lg">
         <Badge tone="warn">需要人工确认</Badge>
-        <h2 className="mt-3 text-lg font-semibold" id="unverified-stock-title">库存尚未完成核验</h2>
-        <p className="mt-2 text-sm leading-6 text-muted-foreground">{warning.message}。如果继续，系统会保留人工填写的最终数量和仓库，并允许后续做单。</p>
+        <h2 className="mt-3 text-lg font-semibold" id="review-risk-title">{title}</h2>
+        <p className="mt-2 text-sm leading-6 text-muted-foreground">
+          {warning.message}。{unmapped ? "请确认导入编码可以在旺店通使用，或在做单后及时补充映射。" : "如果继续，系统会保留人工填写的最终数量和仓库，并允许后续做单。"}
+        </p>
         <div className="mt-5 flex flex-wrap justify-end gap-2">
           <Button className="bg-muted text-muted-foreground hover:bg-muted/80" disabled={submitting} onClick={onCancel}>返回检查</Button>
           <Button disabled={submitting} onClick={onConfirm}>{submitting ? "提交中..." : `确认并提交 ${warning.affectedCount} 条`}</Button>
