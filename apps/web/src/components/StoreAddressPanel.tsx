@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { Check, MapPin, Plus, Search, Save, Upload, X } from "lucide-react";
-import type { ImportStoreAddressesPreviewResponse, ImportStoreAddressesResponse, MissingMakeOrderStoreDto, StoreAddressDto, UpsertStoreAddressRequest } from "@jy-trade/shared";
+import { Check, MapPin, Plus, Search, Save, Trash2, Upload, X } from "lucide-react";
+import type { ClearStoreAddressesResponse, ImportStoreAddressesPreviewResponse, ImportStoreAddressesResponse, MissingMakeOrderStoreDto, StoreAddressDto, UpsertStoreAddressRequest } from "@jy-trade/shared";
 
 import { Badge } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
@@ -40,6 +40,7 @@ export function StoreAddressPanel({
   const [editingAddressId, setEditingAddressId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [importing, setImporting] = useState(false);
+  const [clearing, setClearing] = useState(false);
   const [importDraft, setImportDraft] = useState<{ fileName: string; contentBase64: string } | null>(null);
   const [importPreview, setImportPreview] = useState<ImportStoreAddressesPreviewResponse | null>(null);
 
@@ -134,6 +135,34 @@ export function StoreAddressPanel({
     }
   }
 
+  async function clearAddresses() {
+    const confirmed = window.confirm("确定清空当前地址库吗？清空后做单会暂时缺少收货地址；VIP 门店优先标记会保留。请在清空后重新导入最新地址表。");
+    if (!confirmed) return;
+    setError("");
+    setClearing(true);
+    try {
+      const response = await fetch("/api/v1/store-addresses", { method: "DELETE" });
+      if (!response.ok) {
+        const body = await response.json();
+        reportError(body.message ?? "地址库清空失败");
+        return;
+      }
+      const result = (await response.json()) as ClearStoreAddressesResponse;
+      setQuery("");
+      setDraft(emptyDraft);
+      setEditingAddressId(null);
+      setImportDraft(null);
+      setImportPreview(null);
+      await refreshAddresses("");
+      onSaved();
+      onMessage(`已清空 ${result.clearedCount} 条旧地址，保留 ${result.preservedVipCount} 个 VIP 门店标记，请重新导入最新地址表`);
+    } catch (error) {
+      reportError(error instanceof Error ? error.message : "地址库清空失败");
+    } finally {
+      setClearing(false);
+    }
+  }
+
   function useMissingStore(store: MissingMakeOrderStoreDto) {
     setDraft((current) => ({ ...current, storeNo: store.storeNo, storeName: store.storeName }));
     setEditingAddressId(null);
@@ -180,9 +209,18 @@ export function StoreAddressPanel({
             <MapPin className="h-4 w-4 text-primary" />
             <h3 className="text-sm font-semibold">门店地址维护</h3>
           </div>
-          <p className="mt-1 text-sm text-muted-foreground">系统维护地址会优先用于做单，未维护时再读取地址匹配表。</p>
+          <p className="mt-1 text-sm text-muted-foreground">做单地址从这里读取，优先按门店编码匹配，未命中时再按门店名称匹配。</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <Button
+            aria-label="清空地址库"
+            className="h-8 border border-rose-200 bg-background px-2 text-rose-700 hover:bg-rose-50"
+            disabled={!canEdit || importing || clearing}
+            onClick={() => void clearAddresses()}
+          >
+            <Trash2 className="h-4 w-4" />
+            {clearing ? "清空中" : "清空地址库"}
+          </Button>
           <label className={`inline-flex h-8 items-center justify-center gap-2 rounded-md border border-border px-2 text-sm ${canEdit ? "cursor-pointer bg-background hover:bg-muted" : "cursor-not-allowed bg-muted text-muted-foreground"}`}>
             <Upload className="h-4 w-4" />
             {importing ? "处理中" : "导入地址 Excel"}

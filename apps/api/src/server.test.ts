@@ -2952,6 +2952,165 @@ describe("api server", () => {
     await app.close();
   });
 
+  it("uses the newest address when historical rows share a store code", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const app = buildTestServer(databaseUrl);
+    const { batch, lines, cookie } = await createReviewedBatch(app, "examples/mock_flow_mixed.json");
+    const shipLine = lines.find((line: { decision: string; approvedShipQty: number }) => line.decision === "ship" && line.approvedShipQty > 0);
+    expect(shipLine).toBeTruthy();
+
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await database.db.delete(storeAddresses).where(eq(storeAddresses.storeNo, shipLine.storeNo));
+    await database.db.insert(storeAddresses).values([
+      {
+        id: "store-address-duplicate-old",
+        storeNo: shipLine.storeNo,
+        storeName: shipLine.storeName,
+        normalizedStoreName: shipLine.storeName.toLowerCase().replaceAll(" ", ""),
+        receiver: "旧收件人",
+        phone: "18800000001",
+        address: "旧地址",
+        note: "",
+        sourceSheet: "历史地址表",
+        sourceRow: 2,
+        importedAt: "2026-01-01T00:00:00.000Z",
+        rawJson: "{}",
+        updatedByUserId: null,
+        updatedByUsername: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+      {
+        id: "store-address-duplicate-new",
+        storeNo: shipLine.storeNo,
+        storeName: shipLine.storeName,
+        normalizedStoreName: shipLine.storeName.toLowerCase().replaceAll(" ", ""),
+        receiver: "最新收件人",
+        phone: "18800000002",
+        address: "最新地址",
+        note: "",
+        sourceSheet: "最新地址表",
+        sourceRow: 2,
+        importedAt: "2026-02-01T00:00:00.000Z",
+        rawJson: "{}",
+        updatedByUserId: null,
+        updatedByUsername: null,
+        createdAt: "2026-02-01T00:00:00.000Z",
+        updatedAt: "2026-02-01T00:00:00.000Z",
+      },
+    ]);
+    await database.close();
+
+    const exportResponse = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${batch.id}/exports`,
+      payload: { type: "wdt_import" },
+      headers: { cookie },
+    });
+    expect(exportResponse.statusCode).toBe(201);
+    expect(exportResponse.json().status).toBe("ready");
+    const downloadResponse = await app.inject({
+      method: "GET",
+      url: exportResponse.json().downloadUrl,
+      headers: { cookie },
+    });
+    const workbook = XLSX.read(downloadResponse.rawPayload, { type: "buffer" });
+    const rows = XLSX.utils.sheet_to_json<Record<string, string | number>>(workbook.Sheets["Sheet1"], { defval: "" });
+    const exportedLine = rows.find((row) => row["商家编码"] === shipLine.wdtSpecNo);
+    expect(exportedLine).toMatchObject({
+      收件人: "最新收件人",
+      手机: "18800000002",
+      地址: "最新地址",
+    });
+    await app.close();
+  });
+
+  it("clears old addresses, preserves VIP identity, and restores it on reimport", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const app = buildTestServer(databaseUrl);
+    const { batch, lines, cookie } = await createReviewedBatch(app, "examples/mock_flow_mixed.json");
+    const shipLine = lines.find((line: { decision: string; approvedShipQty: number }) => line.decision === "ship" && line.approvedShipQty > 0);
+    expect(shipLine).toBeTruthy();
+
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await database.db.update(storeAddresses).set({ isVip: 1 }).where(eq(storeAddresses.storeNo, shipLine.storeNo));
+    await database.close();
+
+    const cleared = await app.inject({
+      method: "DELETE",
+      url: "/api/v1/store-addresses",
+      headers: { cookie },
+    });
+    expect(cleared.statusCode).toBe(200);
+    expect(cleared.json()).toMatchObject({ preservedVipCount: 1 });
+    expect(cleared.json().clearedCount).toBeGreaterThan(1);
+
+    const afterClear = createDatabaseContext(databaseUrl);
+    await afterClear.ready;
+    const addressRows = await afterClear.db.select().from(storeAddresses);
+    expect(addressRows).toHaveLength(1);
+    expect(addressRows[0]).toMatchObject({
+      storeNo: shipLine.storeNo,
+      storeName: shipLine.storeName,
+      receiver: "",
+      phone: "",
+      address: "",
+      isVip: 1,
+      sourceSheet: "",
+      sourceRow: 0,
+    });
+    const auditRows = await afterClear.db.select().from(auditLogs).where(eq(auditLogs.action, "store_address.clear"));
+    expect(auditRows).toHaveLength(1);
+    expect(JSON.parse(auditRows[0].payloadJson)).toMatchObject({
+      clearedCount: cleared.json().clearedCount,
+      preservedVipCount: 1,
+    });
+    await afterClear.close();
+
+    const readiness = await app.inject({
+      method: "GET",
+      url: `/api/v1/batches/${batch.id}/make-order-readiness`,
+      headers: { cookie },
+    });
+    expect(readiness.statusCode).toBe(200);
+    expect(readiness.json().canExport).toBe(false);
+    expect(readiness.json().missingStores.some((store: { storeNo: string }) => store.storeNo === shipLine.storeNo)).toBe(true);
+
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(
+      workbook,
+      XLSX.utils.aoa_to_sheet([
+        ["门店编码", "门店名称", "地址", "收货人", "电话"],
+        [shipLine.storeNo, shipLine.storeName, "重新导入地址", "重新导入收件人", "18800009999"],
+      ]),
+      "ole门店兼职收货人",
+    );
+    const imported = await app.inject({
+      method: "POST",
+      url: "/api/v1/store-addresses/import",
+      payload: {
+        fileName: "最新地址.xlsx",
+        contentBase64: (XLSX.write(workbook, { bookType: "xlsx", type: "buffer" }) as Buffer).toString("base64"),
+      },
+      headers: { cookie },
+    });
+    expect(imported.statusCode).toBe(201);
+
+    const afterImport = createDatabaseContext(databaseUrl);
+    await afterImport.ready;
+    const [restored] = await afterImport.db.select().from(storeAddresses).where(eq(storeAddresses.storeNo, shipLine.storeNo));
+    expect(restored).toMatchObject({
+      receiver: "重新导入收件人",
+      phone: "18800009999",
+      address: "重新导入地址",
+      isVip: 1,
+    });
+    await afterImport.close();
+    await app.close();
+  });
+
   it("imports store addresses from multi-sheet workbooks and preserves raw source fields", async () => {
     const app = buildTestServer();
     const cookie = await loginCookie(app);
@@ -3363,6 +3522,12 @@ describe("api server", () => {
       headers: { cookie: reviewerCookie },
     });
     expect(response.statusCode).toBe(403);
+    const clearResponse = await app.inject({
+      method: "DELETE",
+      url: "/api/v1/store-addresses",
+      headers: { cookie: reviewerCookie },
+    });
+    expect(clearResponse.statusCode).toBe(403);
     await app.close();
   });
 

@@ -5,6 +5,7 @@
   BatchSummary,
   BulkApproveResponseDto,
   BulkDoNotShipRequest,
+  ClearStoreAddressesResponse,
   CreateBatchRequest,
   CreateExportRequest,
   ConfirmProductMappingRequest,
@@ -938,6 +939,44 @@ export function createSqliteStore(options: StoreOptions = {}) {
       };
     },
 
+    async clearStoreAddresses(actor?: AuthUserDto): Promise<ClearStoreAddressesResponse> {
+      await ready;
+      const rows = await database.db.select().from(storeAddresses);
+      const preservedVipCount = rows.filter((row) => row.isVip === 1).length;
+      const now = new Date().toISOString();
+
+      await database.db.transaction(async (tx) => {
+        await tx.delete(storeAddresses).where(eq(storeAddresses.isVip, 0));
+        await tx
+          .update(storeAddresses)
+          .set({
+            receiver: "",
+            phone: "",
+            address: "",
+            note: "",
+            sourceSheet: "",
+            sourceRow: 0,
+            importedAt: "",
+            rawJson: "{}",
+            updatedByUserId: actor?.id ?? null,
+            updatedByUsername: actor?.username ?? null,
+            updatedAt: now,
+          })
+          .where(eq(storeAddresses.isVip, 1));
+        await tx.insert(auditLogs).values({
+          id: `audit-${randomUUID()}`,
+          actorId: actor?.id ?? null,
+          action: "store_address.clear",
+          entityType: "store_address",
+          entityId: "all",
+          payloadJson: JSON.stringify({ clearedCount: rows.length, preservedVipCount }),
+          createdAt: now,
+        });
+      });
+
+      return { clearedCount: rows.length, preservedVipCount };
+    },
+
     async listExternalProducts(query = ""): Promise<ExternalProductDto[]> {
       await ready;
       const trimmed = query.trim();
@@ -1740,7 +1779,12 @@ async function getWdtSyncSettingsRow(database: DatabaseContext): Promise<WdtSync
 
 async function findStoreAddressRow(database: DatabaseContext, storeNo: string, normalizedStoreName: string): Promise<StoreAddressRow | undefined> {
   if (storeNo) {
-    const [byStoreNo] = await database.db.select().from(storeAddresses).where(eq(storeAddresses.storeNo, storeNo)).limit(1);
+    const [byStoreNo] = await database.db
+      .select()
+      .from(storeAddresses)
+      .where(eq(storeAddresses.storeNo, storeNo))
+      .orderBy(desc(storeAddresses.updatedAt), desc(storeAddresses.createdAt))
+      .limit(1);
     if (byStoreNo) return byStoreNo;
   }
   for (const nameKey of legacyCompatibleStoreNameKeys(normalizedStoreName)) {
@@ -1748,6 +1792,7 @@ async function findStoreAddressRow(database: DatabaseContext, storeNo: string, n
       .select()
       .from(storeAddresses)
       .where(eq(storeAddresses.normalizedStoreName, nameKey))
+      .orderBy(desc(storeAddresses.updatedAt), desc(storeAddresses.createdAt))
       .limit(1);
     if (byName) return byName;
   }
@@ -5908,7 +5953,7 @@ function bundleRawHeaders() {
 
 async function loadMakeOrderAddressIndex(database: DatabaseContext): Promise<MakeOrderAddressIndex> {
   const index = emptyMakeOrderAddressIndex();
-  const rows = await database.db.select().from(storeAddresses).orderBy(desc(storeAddresses.updatedAt));
+  const rows = await database.db.select().from(storeAddresses).orderBy(desc(storeAddresses.updatedAt), desc(storeAddresses.createdAt));
   for (const row of rows) {
     addMakeOrderAddress(
       index,
@@ -5919,7 +5964,7 @@ async function loadMakeOrderAddressIndex(database: DatabaseContext): Promise<Mak
         phone: row.phone,
         address: row.address,
       },
-      true,
+      false,
     );
   }
   return index;

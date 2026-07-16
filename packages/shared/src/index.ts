@@ -326,6 +326,12 @@ export const ImportStoreAddressesResponseSchema = z.object({
 });
 export type ImportStoreAddressesResponse = z.infer<typeof ImportStoreAddressesResponseSchema>;
 
+export const ClearStoreAddressesResponseSchema = z.object({
+  clearedCount: z.number(),
+  preservedVipCount: z.number(),
+});
+export type ClearStoreAddressesResponse = z.infer<typeof ClearStoreAddressesResponseSchema>;
+
 export const CreateBatchRequestSchema = z.object({
   filePath: z.string().min(1),
   fileName: z.string().optional(),

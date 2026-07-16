@@ -956,6 +956,65 @@ describe("App", () => {
     expect(screen.getByText("第 3 行")).toBeInTheDocument();
   });
 
+  it("clears stored addresses after confirmation and keeps VIP placeholders", async () => {
+    storeAddressRows = [
+      {
+        id: "store-address-normal",
+        storeNo: "NORMAL-1",
+        storeName: "普通门店",
+        receiver: "普通收件人",
+        phone: "18800000001",
+        address: "普通地址",
+        isVip: false,
+        note: "",
+        sourceSheet: "旧地址表",
+        sourceRow: 2,
+        importedAt: "2026-07-01T00:00:00.000Z",
+        rawJson: "{}",
+        createdAt: "2026-07-01T00:00:00.000Z",
+        updatedAt: "2026-07-01T00:00:00.000Z",
+      },
+      {
+        id: "store-address-vip",
+        storeNo: "VIP-1",
+        storeName: "VIP门店",
+        receiver: "VIP收件人",
+        phone: "18800000002",
+        address: "VIP地址",
+        isVip: true,
+        note: "",
+        sourceSheet: "旧地址表",
+        sourceRow: 3,
+        importedAt: "2026-07-01T00:00:00.000Z",
+        rawJson: "{}",
+        createdAt: "2026-07-01T00:00:00.000Z",
+        updatedAt: "2026-07-01T00:00:00.000Z",
+      },
+    ];
+    render(<App />);
+    await screen.findByText("订单处理工作台");
+    fireEvent.click(screen.getByTestId("maintenance-tab-addresses"));
+    expect(await screen.findByText("普通门店")).toBeInTheDocument();
+    expect(screen.getByText("VIP门店")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "清空地址库" }));
+    expect(confirm).toHaveBeenCalledWith("确定清空当前地址库吗？清空后做单会暂时缺少收货地址；VIP 门店优先标记会保留。请在清空后重新导入最新地址表。");
+    await waitFor(() =>
+      expect(fetch).toHaveBeenCalledWith("/api/v1/store-addresses", { method: "DELETE" }),
+    );
+    expect(await screen.findByText("已清空 2 条旧地址，保留 1 个 VIP 门店标记，请重新导入最新地址表")).toBeInTheDocument();
+    expect(screen.queryByText("普通门店")).not.toBeInTheDocument();
+    expect(screen.getByText("VIP门店")).toBeInTheDocument();
+  });
+
+  it("does not let reviewers clear the address library", async () => {
+    currentUser = { ...currentUser, username: "reviewer", role: "reviewer" };
+    render(<App />);
+    await screen.findByText("订单处理工作台");
+    fireEvent.click(screen.getByTestId("maintenance-tab-addresses"));
+    expect(await screen.findByRole("button", { name: "清空地址库" })).toBeDisabled();
+  });
+
   it("keeps missing address repair read-only for reviewers", async () => {
     currentUser = { ...currentUser, username: "reviewer", role: "reviewer" };
     currentBatch = { ...currentBatch, status: "reviewed" };
@@ -2164,6 +2223,26 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
       ? storeAddressRows.filter((row) => [row.storeNo, row.storeName, row.receiver, row.phone, row.address].some((value) => value.includes(query)))
       : storeAddressRows;
     return json(rows);
+  }
+  if (url === "/api/v1/store-addresses" && method === "DELETE") {
+    if (!["admin", "operator"].includes(currentUser.role)) return json({ message: "Forbidden" }, 403);
+    const clearedCount = storeAddressRows.length;
+    const preservedVipCount = storeAddressRows.filter((row) => row.isVip).length;
+    storeAddressRows = storeAddressRows
+      .filter((row) => row.isVip)
+      .map((row) => ({
+        ...row,
+        receiver: "",
+        phone: "",
+        address: "",
+        note: "",
+        sourceSheet: "",
+        sourceRow: 0,
+        importedAt: "",
+        rawJson: "{}",
+      }));
+    makeOrderReadiness = { ...makeOrderReadiness, canExport: false, missingAddressCount: 1 };
+    return json({ clearedCount, preservedVipCount });
   }
   if (url === "/api/v1/store-addresses/import-preview" && method === "POST") {
     if (!["admin", "operator"].includes(currentUser.role)) return json({ message: "Forbidden" }, 403);

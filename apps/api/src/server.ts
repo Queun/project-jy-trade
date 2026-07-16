@@ -27,6 +27,7 @@ import {
   type AuthUserDto,
   type ApplyProductMappingResponse,
   type BatchSummary,
+  type ClearStoreAddressesResponse,
   type ExportDto,
   type ExternalProductDto,
   type ImportExternalProductsPreviewResponse,
@@ -418,6 +419,11 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     const body = ImportStoreAddressesRequestSchema.parse(request.body ?? {});
     const result = await store.importStoreAddresses(body, getCurrentUser(request));
     return reply.code(201).send(result);
+  });
+
+  app.delete("/api/v1/store-addresses", async (request): Promise<ClearStoreAddressesResponse> => {
+    requireRole(request, ["admin", "operator"]);
+    return store.clearStoreAddresses(getCurrentUser(request));
   });
 
   app.patch("/api/v1/product-mappings/:mappingId/status", async (request, reply): Promise<ProductMappingDto | unknown> => {
