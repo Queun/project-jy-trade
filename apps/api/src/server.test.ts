@@ -947,6 +947,127 @@ describe("api server", () => {
     await app.close();
   });
 
+  it("keeps forced unmapped confirmed-order quantities consistent across all exports", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await seedSuccessfulGoodsCache(database);
+    await seedSuccessfulStockSnapshot(database, { verifiedSpecNos: [] });
+    await database.close();
+
+    const app = buildTestServer(databaseUrl);
+    const cookie = await loginCookie(app);
+    const imported = await app.inject({
+      method: "POST",
+      url: "/api/v1/confirmed-orders/import",
+      payload: {
+        fileName: "确定单-未映射强制做单.xlsx",
+        contentBase64: confirmedOrderWorkbookBase64({
+          rows: [{
+            noticeNo: "NOTICE-URGENT-SUITE",
+            goodsCode: "URGENT-SUITE-CODE",
+            barcode: "URGENT-SUITE-BARCODE",
+            goodsName: "未映射紧急套盒",
+            orderQty: "6",
+            shipQty: "6",
+          }],
+        }),
+      },
+      headers: { cookie },
+    });
+    expect(imported.statusCode).toBe(201);
+    expect(imported.json().batch).toMatchObject({ sourceType: "confirmed_order", status: "review_generated" });
+
+    const linesResponse = await app.inject({
+      method: "GET",
+      url: `/api/v1/batches/${imported.json().batch.id}/review-lines`,
+      headers: { cookie },
+    });
+    const [line] = linesResponse.json() as ReviewLineDto[];
+    expect(line).toMatchObject({ matchStatus: "not_found", suggestedShipQty: 0, suggestedWarehouseNo: "", approvedShipQty: 0 });
+
+    const updated = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/batches/${imported.json().batch.id}/review-lines/${line.id}/decision`,
+      payload: {
+        decision: "ship",
+        approvedShipQty: 6,
+        fulfillmentWarehouseNo: "001",
+        fulfillmentWarehouseName: "主仓",
+        reason: "业务员确认紧急做单",
+      },
+      headers: { cookie },
+    });
+    expect(updated.statusCode).toBe(200);
+    await seedStoreAddresses(app, cookie, [line]);
+
+    const warning = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${imported.json().batch.id}/actions/submit-review`,
+      payload: { confirmUnverifiedStock: false, confirmUnmappedProducts: false },
+      headers: { cookie },
+    });
+    expect(warning.statusCode).toBe(409);
+    expect(warning.json()).toMatchObject({ requiresConfirmation: true, code: "UNMAPPED_PRODUCTS", affectedCount: 1 });
+
+    const submitted = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${imported.json().batch.id}/actions/submit-review`,
+      payload: { confirmUnverifiedStock: false, confirmUnmappedProducts: true },
+      headers: { cookie },
+    });
+    expect(submitted.statusCode).toBe(200);
+
+    const reviewExport = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${imported.json().batch.id}/exports`,
+      payload: { type: "review" },
+      headers: { cookie },
+    });
+    const reviewDownload = await app.inject({ method: "GET", url: reviewExport.json().downloadUrl, headers: { cookie } });
+    const reviewWorkbook = XLSX.read(reviewDownload.rawPayload, { type: "buffer" });
+    const reviewRows = XLSX.utils.sheet_to_json<Record<string, string | number>>(reviewWorkbook.Sheets["订货审批单明细"], { defval: "" });
+    expect(reviewRows).toEqual([expect.objectContaining({
+      商品编码: "URGENT-SUITE-CODE",
+      订货数量: 6,
+      发货数量: 6,
+      主仓: "",
+      临期仓: "",
+    })]);
+
+    const confirmedExport = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${imported.json().batch.id}/exports`,
+      payload: { type: "confirmed" },
+      headers: { cookie },
+    });
+    const confirmedDownload = await app.inject({ method: "GET", url: confirmedExport.json().downloadUrl, headers: { cookie } });
+    const confirmedWorkbook = XLSX.read(confirmedDownload.rawPayload, { type: "buffer" });
+    const confirmedRows = XLSX.utils.sheet_to_json<Record<string, string | number>>(confirmedWorkbook.Sheets["订货审批单明细"], { defval: "" });
+    expect(confirmedRows).toEqual([expect.objectContaining({
+      商品编码: "URGENT-SUITE-CODE",
+      发货数量: 6,
+      主仓: 6,
+      临期仓: "",
+    })]);
+
+    const makeOrderExport = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${imported.json().batch.id}/exports`,
+      payload: { type: "wdt_import" },
+      headers: { cookie },
+    });
+    const makeOrderDownload = await app.inject({ method: "GET", url: makeOrderExport.json().downloadUrl, headers: { cookie } });
+    const makeOrderWorkbook = XLSX.read(makeOrderDownload.rawPayload, { type: "buffer" });
+    const makeOrderRows = XLSX.utils.sheet_to_json<Record<string, string | number>>(makeOrderWorkbook.Sheets["Sheet1"], { defval: "" });
+    expect(makeOrderRows).toEqual([expect.objectContaining({
+      商家编码: "URGENT-SUITE-CODE",
+      货品数量: 6,
+      仓库名称: "主仓",
+    })]);
+    await app.close();
+  });
+
   it("creates downloadable export files for a reviewed batch", async () => {
     const app = buildTestServer();
     mkdirSync(resolve(projectRoot, "outputs"), { recursive: true });
@@ -1014,6 +1135,7 @@ describe("api server", () => {
       "规格",
       "运输规格",
       "订货数量",
+      "发货数量",
       "订货箱数",
       "合同进价",
       "主仓",
@@ -1037,6 +1159,7 @@ describe("api server", () => {
       规格: firstLine.originalSpec,
       运输规格: firstLine.transportSpec,
       订货数量: firstLine.orderQty,
+      发货数量: firstLine.approvedShipQty,
       订货箱数: firstLine.orderBoxQty,
       合同进价: firstLine.contractPrice,
       主仓: firstLine.suggestedWarehouseName.includes("主仓") ? firstLine.suggestedShipQty : "",
