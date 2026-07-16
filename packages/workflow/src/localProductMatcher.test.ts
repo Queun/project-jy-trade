@@ -18,7 +18,7 @@ describe("local product matcher", () => {
     expect(second.candidate?.specNo).toBe("S1");
   });
 
-  it("uses automatic WDT candidates before confirmed mappings", () => {
+  it("uses confirmed mappings before automatic WDT candidates", () => {
     const result = decideLocalProductMatch(
       { barcode: "external-1", goodsName: "外部商品" },
       {
@@ -41,8 +41,8 @@ describe("local product matcher", () => {
     );
 
     expect(result.status).toBe("matched");
-    expect(result.candidate?.specNo).toBe("auto-spec");
-    expect(result.message).toBe("Matched by barcode");
+    expect(result.candidate?.specNo).toBe("manual-spec");
+    expect(result.message).toBe(confirmedProductMappingMatchMessage);
   });
 
   it("uses confirmed mapping when WDT has no code match", () => {
@@ -91,7 +91,7 @@ describe("local product matcher", () => {
     });
   });
 
-  it("matches single-component WDT suites before confirmed mappings", () => {
+  it("uses confirmed mappings to override single-component WDT suites", () => {
     const result = decideLocalProductMatch(
       { barcode: "2150317560013", goodsName: "lelabo护发素(33檀香系列)50ml" },
       {
@@ -120,12 +120,21 @@ describe("local product matcher", () => {
     );
 
     expect(result.status).toBe("matched");
-    expect(result.candidate).toMatchObject({
-      source: "suite",
-      goodsNo: "2150317560013",
-      specNo: "021700004",
-      makeOrderCode: "2150317560013",
-    });
+    expect(result.candidate).toMatchObject({ source: "goods", specNo: "manual-spec", makeOrderCode: "manual-spec" });
+    expect(result.message).toBe(confirmedProductMappingMatchMessage);
+  });
+
+  it("falls back to automatic WDT matching after a mapping is disabled", () => {
+    const result = decideLocalProductMatch(
+      { barcode: "external-1", goodsName: "外部商品" },
+      {
+        mappings: [{ externalBarcode: "external-1", wdtSpecNo: "manual-spec", status: "disabled" }],
+        goodsSpecs: [{ specNo: "auto-spec", goodsName: "外部商品", barcode: "external-1" }],
+      },
+    );
+
+    expect(result.candidate?.specNo).toBe("auto-spec");
+    expect(result.message).toBe("Matched by barcode");
   });
 
   it("matches a unique local barcode candidate", () => {

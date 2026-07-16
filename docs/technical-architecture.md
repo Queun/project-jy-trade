@@ -78,7 +78,7 @@ src/jy_trade
 
 - `goods.Goods.queryWithSpec` 同步普通商品规格到 `wdt_goods_specs`。
 - `goods.Suite.search` 同步组合装和明细到 `wdt_suites`、`wdt_suite_components`。
-- 精确条码/编码和已确认长期映射可以自动命中；名称相似只写入候选快照，不能自动确认。
+- 已确认长期映射优先于普通商品和组合装的精确条码/编码命中，用于人工纠正旺店通自动关系；映射被禁用或删除后才回退到自动命中。名称相似只写入候选快照，不能自动确认。
 - 组合装按 `suite_no` / 条码匹配，库存目标是全部有效组件的 `spec_no`，做单目标仍是组合装 `suite_no`。
 - `wms.StockSpec.search2` 返回的 `available_send_stock` 是库存初审主字段。
 - 每次组合同步在库存阶段开始前固定当前仓库启用范围；商品档案仍全局增量同步，库存行只保留启用仓库。多仓范围使用一次批量查询后本地过滤，单个已知仓库可传 `warehouse_no`。

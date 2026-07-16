@@ -1168,6 +1168,32 @@ describe("App", () => {
     expect(screen.queryByText("肌肤之钥金致乳霜5ml")).not.toBeInTheDocument();
   });
 
+  it("finds historical mappings by either external barcode or goods code", async () => {
+    lines = [reviewLine({
+      id: "line-code-mapping",
+      externalBarcode: "NEW-BARCODE",
+      externalGoodsCode: "TARGET-CODE",
+      externalGoodsName: "条码已变化的商品",
+      matchStatus: "ambiguous",
+      status: "未匹配",
+    })];
+    mappingRows = [productMapping({
+      externalBarcode: "OLD-BARCODE",
+      externalGoodsCode: "TARGET-CODE",
+      externalGoodsName: "历史映射商品",
+      note: "货品码历史映射",
+    })];
+    render(<App />);
+    await clickBatch();
+    switchToReviewTab();
+
+    fireEvent.click(within(await rowFor("条码已变化的商品")).getByRole("button", { name: "定位映射" }));
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/v1/product-mappings?query=NEW-BARCODE"));
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/v1/product-mappings?query=TARGET-CODE"));
+    expect(await screen.findByText("货品码历史映射")).toBeInTheDocument();
+  });
+
   it("uses the mapping dialog as a stock lookup tool", async () => {
     render(<App />);
     await clickBatch();
@@ -1332,7 +1358,7 @@ describe("App", () => {
     expect(mappingRows).toHaveLength(0);
   });
 
-  it("fills the mapping form when reviewing an existing product mapping", async () => {
+  it("loads an existing mapping for exact replacement without disabling it first", async () => {
     render(<App />);
     await clickBatch();
     switchToReviewTab();
@@ -1351,8 +1377,15 @@ describe("App", () => {
     expect(screen.getByLabelText("旺店通 spec_no")).toHaveValue("3282770392869");
     expect(screen.getByLabelText("备注")).toHaveValue("人工确认");
     expect(screen.getByLabelText("旺店通商品搜索")).toHaveValue("雅漾专研保湿修护面膜");
-    expect(await screen.findByText("商品映射已标记复查")).toBeInTheDocument();
-    await waitFor(() => expect(mappingRows[0].status).toBe("needs_review"));
+    expect(await screen.findByText("已载入现有映射，选择新规格并保存后替换")).toBeInTheDocument();
+    expect(mappingRows[0].status).toBe("confirmed");
+    expect(fetch).not.toHaveBeenCalledWith("/api/v1/product-mappings/mapping-1/status", expect.anything());
+
+    fireEvent.click(screen.getByRole("button", { name: "保存长期映射" }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/v1/product-mappings", expect.objectContaining({
+      method: "POST",
+      body: expect.stringContaining('"mappingId":"mapping-1"'),
+    })));
   });
 
   it("refreshes the active production batch after confirming a product mapping", async () => {
@@ -2390,6 +2423,7 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
     const body = JSON.parse(String(init?.body));
     const spec = specRows.find((item) => item.specNo === body.wdtSpecNo);
     const created = productMapping({
+      id: body.mappingId || "mapping-1",
       externalBarcode: body.externalBarcode,
       externalGoodsCode: body.externalGoodsCode,
       externalGoodsName: body.externalGoodsName,

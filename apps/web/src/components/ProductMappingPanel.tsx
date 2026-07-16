@@ -37,6 +37,7 @@ interface ProductMappingDialogProps extends Omit<ProductMappingPanelProps, "surf
 }
 
 interface MappingDraft {
+  mappingId: string;
   externalBarcode: string;
   externalGoodsCode: string;
   externalGoodsName: string;
@@ -46,6 +47,7 @@ interface MappingDraft {
 }
 
 const emptyDraft: MappingDraft = {
+  mappingId: "",
   externalBarcode: "",
   externalGoodsCode: "",
   externalGoodsName: "",
@@ -107,16 +109,21 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
     onError(message);
   }
 
-  async function refreshMappings(nextQuery = query) {
+  async function refreshMappings(nextQuery = query, relatedQueries: string[] = []) {
     const requestId = mappingRequestIdRef.current + 1;
     mappingRequestIdRef.current = requestId;
-    const response = await fetch(`/api/v1/product-mappings?query=${encodeURIComponent(nextQuery)}`);
+    const queries = [...new Set([nextQuery, ...relatedQueries].map((item) => item.trim()).filter(Boolean))];
+    const responses = await Promise.all(
+      (queries.length > 0 ? queries : [""]).map((item) => fetch(`/api/v1/product-mappings?query=${encodeURIComponent(item)}`)),
+    );
     if (requestId !== mappingRequestIdRef.current) return;
-    if (!response.ok) {
+    if (responses.some((response) => !response.ok)) {
       setMappings([]);
       return;
     }
-    setMappings((await response.json()) as ProductMappingDto[]);
+    const results = (await Promise.all(responses.map((response) => response.json()))) as ProductMappingDto[][];
+    const uniqueMappings = new Map(results.flat().map((mapping) => [mapping.id, mapping]));
+    setMappings([...uniqueMappings.values()].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)));
   }
 
   async function refreshCandidates(nextQuery = query) {
@@ -193,9 +200,10 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
     onMessage(status === "disabled" ? "商品映射已禁用" : "商品映射已标记复查");
   }
 
-  async function reviewMapping(mapping: ProductMappingDto) {
+  function reviewMapping(mapping: ProductMappingDto) {
     setActiveView("current");
     setDraft({
+      mappingId: mapping.id,
       externalBarcode: mapping.externalBarcode,
       externalGoodsCode: mapping.externalGoodsCode,
       externalGoodsName: mapping.externalGoodsName,
@@ -205,7 +213,7 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
     });
     setSpecQuery(mapping.wdtGoodsName || mapping.wdtSpecNo);
     setSpecs([]);
-    await updateStatus(mapping, "needs_review");
+    onMessage("已载入现有映射，选择新规格并保存后替换");
   }
 
   async function deleteMapping(mapping: ProductMappingDto) {
@@ -231,14 +239,15 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
   }
 
   function chooseCandidate(candidate: ProductMatchCandidateDto) {
-    setDraft({
+    setDraft((current) => ({
+      mappingId: current.mappingId,
       externalBarcode: candidate.externalBarcode,
       externalGoodsCode: candidate.externalGoodsCode,
       externalGoodsName: candidate.externalGoodsName,
       wdtSpecNo: candidate.wdtSpecNo,
       wdtMakeOrderCode: candidate.source === "suite" ? candidate.wdtGoodsNo : candidate.wdtSpecNo,
       note: `智能候选确认：${candidateBasisLabel(candidate.basis)}，分数 ${candidate.score}`,
-    });
+    }));
     setSpecQuery(candidate.wdtSpecNo);
   }
 
@@ -262,6 +271,7 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
     setActiveView("current");
     if (focusProduct) {
       setDraft({
+        mappingId: "",
         externalBarcode: focusProduct.externalBarcode,
         externalGoodsCode: focusProduct.externalGoodsCode,
         externalGoodsName: focusProduct.externalGoodsName,
@@ -270,7 +280,7 @@ export function ProductMappingPanel({ focusQuery = "", focusProduct = null, sour
         note: "审核异常行保存为长期映射",
       });
     }
-    void refreshMappings(focusQuery);
+    void refreshMappings(focusQuery, [focusProduct?.externalBarcode ?? "", focusProduct?.externalGoodsCode ?? ""]);
     void refreshCandidates(focusQuery);
   }, [focusQuery, focusProduct]);
 

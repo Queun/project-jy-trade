@@ -2431,6 +2431,90 @@ describe("api server", () => {
     await app.close();
   });
 
+  it("lets a confirmed mapping override a direct suite match and falls back after deletion", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    await seedSuccessfulGoodsCache(database);
+    await seedSingleComponentSuite(database);
+    await seedSuccessfulStockSnapshot(database, {
+      verifiedSpecNos: ["3282770392869", "021700004"],
+      rows: [
+        { specNo: "3282770392869", warehouseNo: "001", warehouseName: "主仓", availableSendStock: 5 },
+        { specNo: "021700004", warehouseNo: "001", warehouseName: "主仓", availableSendStock: 5 },
+      ],
+    });
+    await database.close();
+
+    const app = buildTestServer(databaseUrl, undefined, failingRealtimeStockClient());
+    const cookie = await loginCookie(app);
+    const mapping = await app.inject({
+      method: "POST",
+      url: "/api/v1/product-mappings",
+      payload: {
+        externalBarcode: "2150317560013",
+        externalGoodsCode: "EXTERNAL-SUITE",
+        externalGoodsName: "需要人工纠正的组合装",
+        wdtSpecNo: "3282770392869",
+        note: "人工覆盖组合装直匹配",
+      },
+      headers: { cookie },
+    });
+    expect(mapping.statusCode).toBe(201);
+
+    const imported = await app.inject({
+      method: "POST",
+      url: "/api/v1/confirmed-orders/import",
+      payload: {
+        fileName: "确定单-人工映射覆盖组合装.xlsx",
+        contentBase64: confirmedOrderWorkbookBase64({
+          goodsCode: "EXTERNAL-SUITE",
+          barcode: "2150317560013",
+          goodsName: "需要人工纠正的组合装",
+        }),
+      },
+      headers: { cookie },
+    });
+    expect(imported.statusCode).toBe(201);
+    const mappedLines = await app.inject({
+      method: "GET",
+      url: `/api/v1/batches/${imported.json().batch.id}/review-lines`,
+      headers: { cookie },
+    });
+    expect(mappedLines.json()[0]).toMatchObject({
+      matchStatus: "matched",
+      wdtSpecNo: "3282770392869",
+      matchMessage: expect.stringContaining("confirmed product mapping"),
+    });
+
+    const deleted = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/product-mappings/${mapping.json().id}`,
+      headers: { cookie },
+    });
+    expect(deleted.statusCode).toBe(200);
+    const rebuilt = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${imported.json().batch.id}/actions/rebuild-confirmed-order`,
+      payload: { strategy: "replace" },
+      headers: { cookie },
+    });
+    expect(rebuilt.statusCode).toBe(200);
+    const fallbackLines = await app.inject({
+      method: "GET",
+      url: `/api/v1/batches/${imported.json().batch.id}/review-lines`,
+      headers: { cookie },
+    });
+    expect(fallbackLines.json()[0]).toMatchObject({
+      matchStatus: "matched",
+      productType: "suite",
+      wdtSpecNo: "021700004",
+      wdtMakeOrderCode: "2150317560013",
+      matchMessage: expect.stringContaining("Matched by barcode"),
+    });
+    await app.close();
+  });
+
   it("falls back to a full preserve rebuild when a batch snapshot was pruned", async () => {
     const databaseUrl = testDatabaseUrl();
     const database = createDatabaseContext(databaseUrl);
@@ -2552,9 +2636,10 @@ describe("api server", () => {
     const changedMapping = await app.inject({
       method: "POST",
       url: "/api/v1/product-mappings",
-      payload: { externalBarcode: "EXTERNAL-TARGET", externalGoodsCode: "EXTERNAL-TARGET", externalGoodsName: "待映射商品", wdtSpecNo: "SPEC-B", sourceBatchId: imported.json().batch.id },
+      payload: { mappingId: firstMapping.json().id, externalBarcode: "EXTERNAL-TARGET", externalGoodsCode: "EXTERNAL-TARGET", externalGoodsName: "待映射商品", wdtSpecNo: "SPEC-B", sourceBatchId: imported.json().batch.id },
       headers: { cookie },
     });
+    expect(changedMapping.json().id).toBe(firstMapping.json().id);
     const applied = await app.inject({
       method: "POST",
       url: `/api/v1/batches/${imported.json().batch.id}/actions/apply-product-mapping`,
@@ -3786,6 +3871,30 @@ describe("api server", () => {
     expect(candidatesAfterConfirm.statusCode).toBe(200);
     expect(candidatesAfterConfirm.json()).toHaveLength(0);
 
+    const changed = await app.inject({
+      method: "POST",
+      url: "/api/v1/product-mappings",
+      payload: {
+        mappingId: created.json().id,
+        externalBarcode: "2153722460015-NEW",
+        externalGoodsCode: "5372246-NEW",
+        externalGoodsName: "雅漾专研保湿修护面膜新版",
+        wdtSpecNo: "3282770392869",
+        note: "replace the exact historical mapping",
+      },
+      headers: { cookie },
+    });
+    expect(changed.statusCode).toBe(201);
+    expect(changed.json()).toMatchObject({
+      id: created.json().id,
+      externalBarcode: "2153722460015-NEW",
+      externalGoodsCode: "5372246-NEW",
+      status: "confirmed",
+    });
+    const oldIdentityList = await app.inject({ method: "GET", url: "/api/v1/product-mappings?query=2153722460015", headers: { cookie } });
+    expect(oldIdentityList.json()).toHaveLength(1);
+    expect(oldIdentityList.json()[0].externalBarcode).toBe("2153722460015-NEW");
+
     const disabled = await app.inject({
       method: "PATCH",
       url: `/api/v1/product-mappings/${created.json().id}/status`,
@@ -3803,7 +3912,7 @@ describe("api server", () => {
     expect(deleted.statusCode).toBe(200);
     expect(deleted.json()).toMatchObject({ mappingId: created.json().id, deleted: true });
 
-    const listAfterDelete = await app.inject({ method: "GET", url: "/api/v1/product-mappings?query=2153722460015", headers: { cookie } });
+    const listAfterDelete = await app.inject({ method: "GET", url: "/api/v1/product-mappings?query=2153722460015-NEW", headers: { cookie } });
     expect(listAfterDelete.statusCode).toBe(200);
     expect(listAfterDelete.json()).toHaveLength(0);
     await app.close();

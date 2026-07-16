@@ -607,6 +607,7 @@ export const ProductMatchCandidateDtoSchema = z.object({
 export type ProductMatchCandidateDto = z.infer<typeof ProductMatchCandidateDtoSchema>;
 
 export const ConfirmProductMappingRequestSchema = z.object({
+  mappingId: z.string().default(""),
   externalBarcode: z.string().default(""),
   externalGoodsName: z.string().default(""),
   externalGoodsCode: z.string().default(""),

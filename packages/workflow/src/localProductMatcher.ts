@@ -77,12 +77,6 @@ function decidePreparedLocalProductMatch(
   matchSuites: (input: ProductMatchInput) => ProductMatchDecision,
   suites: LocalSuiteCandidate[] = [],
 ): ProductMatchDecision {
-  const goodsDecision = matchGoods(input);
-  if (isAutomaticCodeDecision(goodsDecision)) return goodsDecision;
-
-  const suiteDecision = matchSuites(input);
-  if (isAutomaticCodeDecision(suiteDecision)) return suiteDecision;
-
   const mapping = findConfirmedMapping(input, mappingIndex);
   if (mapping) {
     const mappedSuite = suites.find((suite) => suite.suiteNo === mapping.wdtMakeOrderCode);
@@ -105,6 +99,12 @@ function decidePreparedLocalProductMatch(
       message: confirmedProductMappingMatchMessage,
     };
   }
+
+  const goodsDecision = matchGoods(input);
+  if (isAutomaticCodeDecision(goodsDecision)) return goodsDecision;
+
+  const suiteDecision = matchSuites(input);
+  if (isAutomaticCodeDecision(suiteDecision)) return suiteDecision;
 
   if (goodsDecision.status === "ambiguous") return goodsDecision;
   if (suiteDecision.status === "ambiguous") return suiteDecision;

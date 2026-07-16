@@ -1506,7 +1506,12 @@ export function createSqliteStore(options: StoreOptions = {}) {
       }
 
       const now = new Date().toISOString();
-      const existing = await findProductMapping(database, input);
+      const existing = input.mappingId
+        ? (await database.db.select().from(productMappings).where(eq(productMappings.id, input.mappingId)).limit(1))[0]
+        : await findProductMapping(database, input);
+      if (input.mappingId && !existing) {
+        throw new StoreValidationError(`Product mapping not found: ${input.mappingId}`);
+      }
       const row: ProductMappingRow = {
         id: existing?.id ?? `product-mapping-${randomUUID()}`,
         externalBarcode: input.externalBarcode,
