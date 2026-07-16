@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildDateWindows,
+  formatWdtDateTime,
   flattenWdtGoodsSpecs,
+  parseWdtDateBoundary,
   runWdtGoodsSync,
   DEFAULT_GOODS_SYNC_PAGE_SIZE,
   type GoodsSyncRepository,
@@ -12,6 +14,34 @@ import {
 } from "./wdtGoodsSync.js";
 
 describe("wdt goods sync", () => {
+  it("formats WDT timestamps and date-only boundaries in Asia/Shanghai", () => {
+    expect(formatWdtDateTime(new Date("2026-07-16T09:30:45.000Z"))).toBe("2026-07-16 17:30:45");
+    expect(parseWdtDateBoundary("2026-07-16", true)?.toISOString()).toBe("2026-07-15T16:00:00.000Z");
+    expect(parseWdtDateBoundary("2026-07-16", false)?.toISOString()).toBe("2026-07-16T15:59:59.999Z");
+  });
+
+  it("queries the current complete window through Shanghai wall-clock time", async () => {
+    const repository = new MemoryGoodsSyncRepository();
+    const windows: Array<{ startTime: string; endTime: string }> = [];
+    const client: WdtGoodsWindowClient = {
+      async queryGoodsWindow({ startTime, endTime }) {
+        windows.push({ startTime, endTime });
+        return { totalCount: 0, goods: [] };
+      },
+    };
+
+    await runWdtGoodsSync(repository, client, {
+      mode: "full",
+      startDate: "2026-07-16",
+      now: new Date("2026-07-16T09:30:45.000Z"),
+    });
+
+    expect(windows).toEqual([{
+      startTime: "2026-07-16 00:00:00",
+      endTime: "2026-07-16 17:30:45",
+    }]);
+  });
+
   it("builds windows no longer than 30 days", () => {
     const windows = buildDateWindows(new Date("2026-01-01T00:00:00.000Z"), new Date("2026-03-15T00:00:00.000Z"));
     expect(windows.length).toBe(3);
@@ -194,7 +224,7 @@ describe("wdt goods sync", () => {
       now: new Date("2026-02-11T12:00:00.000Z"),
     });
 
-    expect(starts[0]).toBe("2026-02-09 00:00:00");
+    expect(starts[0]).toBe("2026-02-09 08:00:00");
   });
 });
 

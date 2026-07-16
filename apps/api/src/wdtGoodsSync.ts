@@ -103,7 +103,7 @@ export async function runWdtGoodsSync(
   options: RunGoodsSyncOptions,
 ): Promise<GoodsSyncRunRecord> {
   const now = options.now ?? new Date();
-  const rangeEnd = parseDateBoundary(options.endDate, false) ?? now;
+  const rangeEnd = parseWdtDateBoundary(options.endDate, false) ?? now;
   const rangeStart = await resolveRangeStart(repository, options, rangeEnd);
   const pageSize = options.pageSize ?? Number(process.env.WDT_GOODS_SYNC_PAGE_SIZE ?? DEFAULT_GOODS_SYNC_PAGE_SIZE);
   const maxRetries = options.maxRetries ?? Number(process.env.WDT_GOODS_SYNC_MAX_RETRIES ?? DEFAULT_MAX_RETRIES);
@@ -276,12 +276,23 @@ export function buildDateWindows(start: Date, end: Date): Array<{ start: Date; e
 }
 
 export function formatWdtDateTime(date: Date): string {
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}`;
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: "Asia/Shanghai",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(date).map((part) => [part.type, part.value]),
+  );
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
 }
 
 async function resolveRangeStart(repository: GoodsSyncRepository, options: RunGoodsSyncOptions, rangeEnd: Date): Promise<Date> {
-  const explicitStart = parseDateBoundary(options.startDate, true);
+  const explicitStart = parseWdtDateBoundary(options.startDate, true);
   if (explicitStart) return explicitStart;
 
   if (options.mode === "incremental") {
@@ -295,13 +306,13 @@ async function resolveRangeStart(repository: GoodsSyncRepository, options: RunGo
   }
 
   const defaultStart = options.defaultStartDate ?? process.env.WDT_GOODS_SYNC_START_DATE ?? DEFAULT_GOODS_SYNC_START_DATE;
-  return parseDateBoundary(defaultStart, true) ?? new Date(rangeEnd);
+  return parseWdtDateBoundary(defaultStart, true) ?? new Date(rangeEnd);
 }
 
-function parseDateBoundary(value: string | undefined, startOfDay: boolean): Date | undefined {
+export function parseWdtDateBoundary(value: string | undefined, startOfDay: boolean): Date | undefined {
   if (!value) return undefined;
   const normalized = /^\d{4}-\d{2}-\d{2}$/.test(value)
-    ? `${value}T${startOfDay ? "00:00:00.000" : "23:59:59.999"}Z`
+    ? `${value}T${startOfDay ? "00:00:00.000" : "23:59:59.999"}+08:00`
     : value;
   const parsed = new Date(normalized);
   if (Number.isNaN(parsed.getTime())) throw new Error(`Invalid date: ${value}`);

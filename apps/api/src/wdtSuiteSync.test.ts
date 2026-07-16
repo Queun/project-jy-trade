@@ -10,6 +10,29 @@ import {
 } from "./wdtSuiteSync.js";
 
 describe("wdt suite sync", () => {
+  it("queries date-only suite windows as complete Shanghai calendar days", async () => {
+    const repository = new MemorySuiteSyncRepository();
+    const windows: Array<{ startTime: string; endTime: string }> = [];
+    const client: WdtSuiteWindowClient = {
+      async querySuitesWindow({ startTime, endTime }) {
+        windows.push({ startTime, endTime });
+        return { totalCount: 0, suites: [] };
+      },
+    };
+
+    await runWdtSuiteSync(repository, client, {
+      mode: "full",
+      startDate: "2026-07-16",
+      endDate: "2026-07-16",
+      now: new Date("2026-07-17T00:00:00.000Z"),
+    });
+
+    expect(windows).toEqual([{
+      startTime: "2026-07-16 00:00:00",
+      endTime: "2026-07-16 23:59:59",
+    }]);
+  });
+
   it("flattens suite detail rows into local payloads", () => {
     const suites = flattenWdtSuites([
       {

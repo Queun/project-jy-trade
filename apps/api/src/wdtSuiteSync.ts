@@ -3,7 +3,7 @@ import { desc, eq } from "drizzle-orm";
 
 import type { DatabaseContext } from "./db/client.js";
 import { wdtSuiteComponents, wdtSuites, wdtSuiteSyncRuns } from "./db/schema.js";
-import { buildDateWindows, formatWdtDateTime, type GoodsSyncMode } from "./wdtGoodsSync.js";
+import { buildDateWindows, formatWdtDateTime, parseWdtDateBoundary, type GoodsSyncMode } from "./wdtGoodsSync.js";
 
 export interface WdtSuitePayload {
   suiteNo: string;
@@ -116,7 +116,7 @@ export async function runWdtSuiteSync(
   options: RunSuiteSyncOptions,
 ): Promise<SuiteSyncRunRecord> {
   const now = options.now ?? new Date();
-  const rangeEnd = parseDateBoundary(options.endDate, false) ?? now;
+  const rangeEnd = parseWdtDateBoundary(options.endDate, false) ?? now;
   const rangeStart = await resolveSuiteRangeStart(repository, options, rangeEnd);
   const pageSize = options.pageSize ?? Number(process.env.WDT_SUITE_SYNC_PAGE_SIZE ?? DEFAULT_SUITE_SYNC_PAGE_SIZE);
   if (!Number.isInteger(pageSize) || pageSize <= 0 || pageSize > 1000) {
@@ -331,7 +331,7 @@ function toSuiteSyncRunRecord(row: typeof wdtSuiteSyncRuns.$inferSelect | typeof
 }
 
 async function resolveSuiteRangeStart(repository: SuiteSyncRepository, options: RunSuiteSyncOptions, rangeEnd: Date): Promise<Date> {
-  const explicitStart = parseDateBoundary(options.startDate, true);
+  const explicitStart = parseWdtDateBoundary(options.startDate, true);
   if (explicitStart) return explicitStart;
 
   if (options.mode === "incremental") {
@@ -345,17 +345,7 @@ async function resolveSuiteRangeStart(repository: SuiteSyncRepository, options: 
   }
 
   const defaultStart = options.defaultStartDate ?? process.env.WDT_SUITE_SYNC_START_DATE ?? DEFAULT_SUITE_SYNC_START_DATE;
-  return parseDateBoundary(defaultStart, true) ?? new Date(rangeEnd);
-}
-
-function parseDateBoundary(value: string | undefined, startOfDay: boolean): Date | undefined {
-  if (!value) return undefined;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return undefined;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    date.setUTCHours(startOfDay ? 0 : 23, startOfDay ? 0 : 59, startOfDay ? 0 : 59, startOfDay ? 0 : 999);
-  }
-  return date;
+  return parseWdtDateBoundary(defaultStart, true) ?? new Date(rangeEnd);
 }
 
 function numberFromWdtCell(value: unknown, fallback: number): number {

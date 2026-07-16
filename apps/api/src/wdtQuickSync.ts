@@ -11,7 +11,7 @@ import {
   WDT_SYNC_MIN_INTERVAL_MS,
   type StockSyncScope,
 } from "./wdtCombinedSync.js";
-import { flattenWdtGoodsSpecs, type WdtGoodsSpecPayload, type WdtGoodsWindowClient } from "./wdtGoodsSync.js";
+import { flattenWdtGoodsSpecs, formatWdtDateTime, type WdtGoodsSpecPayload, type WdtGoodsWindowClient } from "./wdtGoodsSync.js";
 import { flattenWdtSuites, type WdtSuitePayload, type WdtSuiteWindowClient } from "./wdtSuiteSync.js";
 
 export const QUICK_SYNC_LOOKBACK_HOURS = 24;
@@ -164,8 +164,8 @@ async function fetchQuickGoodsChanges(client: WdtGoodsWindowClient, start: Date,
   let totalCount = 0;
   do {
     const response = await queryWithRetry(() => client.queryGoodsWindow({
-      startTime: formatShanghaiDateTime(start),
-      endTime: formatShanghaiDateTime(end),
+      startTime: formatWdtDateTime(start),
+      endTime: formatWdtDateTime(end),
       pageNo,
       pageSize: QUICK_SYNC_PAGE_SIZE,
       hideDeleted: false,
@@ -194,8 +194,8 @@ async function fetchQuickSuiteChanges(client: WdtSuiteWindowClient, start: Date,
   let totalCount = 0;
   do {
     const response = await queryWithRetry(() => client.querySuitesWindow({
-      startTime: formatShanghaiDateTime(start),
-      endTime: formatShanghaiDateTime(end),
+      startTime: formatWdtDateTime(start),
+      endTime: formatWdtDateTime(end),
       pageNo,
       pageSize: QUICK_SYNC_PAGE_SIZE,
       hideDeleted: false,
@@ -233,22 +233,6 @@ function assertRecordLimit(label: string, count: number): void {
     `最近变化${label}过多，请使用完整同步`,
     `record_count=${count} limit=${QUICK_SYNC_MAX_CHANGED_RECORDS}`,
   );
-}
-
-export function formatShanghaiDateTime(date: Date): string {
-  const parts = Object.fromEntries(
-    new Intl.DateTimeFormat("en-US", {
-      timeZone: "Asia/Shanghai",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      hourCycle: "h23",
-    }).formatToParts(date).map((part) => [part.type, part.value]),
-  );
-  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
 }
 
 class QuickSyncError extends Error {
