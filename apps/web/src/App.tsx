@@ -25,7 +25,7 @@ import { isConfirmedProductMappingMatch } from "@jy-trade/shared";
 
 import { ProductMappingDialog, type ProductMappingFocusProduct } from "./components/ProductMappingPanel.js";
 import { ExternalProductPanel } from "./components/ExternalProductPanel.js";
-import { ReviewTable, type ReviewDraft } from "./components/ReviewTable.js";
+import { ReviewTable, reviewDraftIsDirty, type ReviewDraft } from "./components/ReviewTable.js";
 import { StoreAddressPanel } from "./components/StoreAddressPanel.js";
 import { Badge } from "./components/ui/badge.js";
 import { Button } from "./components/ui/button.js";
@@ -127,6 +127,8 @@ export function App() {
   const errorToastSequence = useRef(0);
   const [activeFilter, setActiveFilter] = useState<FilterKey>("all");
   const [draftById, setDraftById] = useState<Record<string, ReviewDraft>>({});
+  const bufferedDraftById = useRef<Record<string, ReviewDraft>>({});
+  const dirtyReviewLineIds = useRef<Set<string>>(new Set());
   const [errorsById, setErrorsById] = useState<Record<string, string>>({});
   const [goodsSyncRun, setGoodsSyncRun] = useState<WdtGoodsSyncRunDto | null>(null);
   const [combinedSyncRun, setCombinedSyncRun] = useState<WdtSyncRunDto | null>(null);
@@ -185,7 +187,7 @@ export function App() {
     if (activeBatch?.id === batch.id) {
       setActiveBatch(null);
       setReviewLines([]);
-      setDraftById({});
+      replaceReviewDrafts([]);
       setErrorsById({});
       setExports([]);
       setMakeOrderReadiness(null);
@@ -348,7 +350,7 @@ export function App() {
     const lines = await fetchReviewLines(batch.id);
     if (!lines) return;
     setReviewLines(sortReviewLines(lines));
-    setDraftById(buildDrafts(lines));
+    replaceReviewDrafts(lines);
     setErrorsById({});
     await refreshExports(batch.id);
     await refreshMakeOrderReadiness(batch.id);
@@ -401,7 +403,7 @@ export function App() {
     const lines = await fetchReviewLines(result.batch.id);
     if (!lines) return;
     setReviewLines(sortReviewLines(lines));
-    setDraftById(buildDrafts(lines));
+    replaceReviewDrafts(lines);
     setErrorsById({});
     setMakeOrderReadiness(result.makeOrderReadiness);
     await refreshExports(result.batch.id);
@@ -416,7 +418,7 @@ export function App() {
       const body = await safeResponseJson(response);
       if (!response.ok || !Array.isArray(body)) {
         setReviewLines([]);
-        setDraftById({});
+        replaceReviewDrafts([]);
         setErrorsById({});
         reportError(apiErrorMessage(body, "审核明细读取失败，请刷新批次后重试"));
         return null;
@@ -424,7 +426,7 @@ export function App() {
       return body as ReviewLineDto[];
     } catch {
       setReviewLines([]);
-      setDraftById({});
+      replaceReviewDrafts([]);
       setErrorsById({});
       reportError("审核明细读取失败，请检查网络后重试");
       return null;
@@ -451,7 +453,7 @@ export function App() {
     const lines = await fetchReviewLines(created.id);
     if (!lines) return;
     setReviewLines(sortReviewLines(lines));
-    setDraftById(buildDrafts(lines));
+    replaceReviewDrafts(lines);
     setErrorsById({});
     await refreshExports(created.id);
     await refreshMakeOrderReadiness(created.id);
@@ -491,7 +493,7 @@ export function App() {
       setActiveBatch(created);
       setActiveTab("review");
       setReviewLines([]);
-      setDraftById({});
+      replaceReviewDrafts([]);
       setErrorsById({});
       await refreshExports(created.id);
       await refreshMakeOrderReadiness(created.id);
@@ -506,7 +508,7 @@ export function App() {
     const lines = await fetchReviewLines(created.id);
     if (!lines) return;
     setReviewLines(sortReviewLines(lines));
-    setDraftById(buildDrafts(lines));
+    replaceReviewDrafts(lines);
     setErrorsById({});
     await refreshExports(created.id);
     await refreshMakeOrderReadiness(created.id);
@@ -549,7 +551,7 @@ export function App() {
       const lines = await fetchReviewLines(result.batch.id);
       if (!lines) return;
       setReviewLines(sortReviewLines(lines));
-      setDraftById(buildDrafts(lines));
+      replaceReviewDrafts(lines);
       setErrorsById({});
       await Promise.all([
         refreshExports(result.batch.id),
@@ -597,7 +599,7 @@ export function App() {
       const lines = await fetchReviewLines(rebuild.batch.id);
       if (!lines) return null;
       setReviewLines(sortReviewLines(lines));
-      setDraftById(buildDrafts(lines));
+      replaceReviewDrafts(lines);
       setErrorsById({});
       const summary = `确定单已重新校验：${rebuild.parsedRowCount} 行，已匹配 ${rebuild.matchedRowCount} 行，待补字段 ${rebuild.unmatchedRowCount} 行`;
       setMessage(summary);
@@ -637,7 +639,7 @@ export function App() {
       const lines = await fetchReviewLines(activeBatch.id);
       if (!lines) return;
       setReviewLines(sortReviewLines(lines));
-      setDraftById(buildDrafts(lines));
+      replaceReviewDrafts(lines);
       setErrorsById({});
       await Promise.all([refreshExports(activeBatch.id), refreshMakeOrderReadiness(activeBatch.id), refreshBatches()]);
       setMessage("已按最新库存分配设置重新计算初审");
@@ -678,13 +680,13 @@ export function App() {
         setActiveBatch(result.batch);
         if (result.mode === "full_rebuild_fallback") {
           setReviewLines(sortReviewLines(result.reviewLines));
-          setDraftById(buildDrafts(result.reviewLines));
+          replaceReviewDrafts(result.reviewLines);
           setErrorsById({});
           setMessage("原库存快照已清理，已按最新库存完整校验当前确定单");
         } else {
           const updatedById = new Map(result.reviewLines.map((line) => [line.id, line]));
           setReviewLines((current) => sortReviewLines(current.map((line) => updatedById.get(line.id) ?? line)));
-          setDraftById((current) => ({ ...current, ...buildDrafts(result.reviewLines) }));
+          mergeReviewDrafts(result.reviewLines);
           setErrorsById((current) => Object.fromEntries(Object.entries(current).filter(([lineId]) => !updatedById.has(lineId))));
           setMessage(`映射已应用：影响 ${result.affectedExternalRowCount} 行、${result.affectedSkuPoolCount} 个库存池`);
         }
@@ -723,7 +725,7 @@ export function App() {
     const lines = await fetchReviewLines(activeBatch.id);
     if (!lines) return;
     setReviewLines(sortReviewLines(lines));
-    setDraftById(buildDrafts(lines));
+    replaceReviewDrafts(lines);
     setErrorsById({});
     await Promise.all([refreshExports(activeBatch.id), refreshMakeOrderReadiness(activeBatch.id), refreshBatches()]);
     setMessage(`长期商品映射已保存，当前批次已刷新：${mapping.externalBarcode || mapping.externalGoodsCode || mapping.externalGoodsName}`);
@@ -763,8 +765,8 @@ export function App() {
     return uploaded;
   }
 
-  async function saveDecision(line: ReviewLineDto, patch?: Partial<ReviewDraft>, options: { silent?: boolean } = {}) {
-    const draft = { ...draftById[line.id], ...patch };
+  async function saveDecision(line: ReviewLineDto, submittedDraft?: ReviewDraft, options: { silent?: boolean } = {}) {
+    const draft = submittedDraft ?? bufferedDraftById.current[line.id] ?? draftById[line.id] ?? toDraft(line);
     const approvedShipQty = Number(draft.approvedShipQty);
     const localError = validateDraft(line, draft, approvedShipQty);
     if (localError) {
@@ -795,7 +797,7 @@ export function App() {
       }
       const updated = (await response.json()) as ReviewLineDto;
       setReviewLines((current) => sortReviewLines(current.map((item) => (item.id === updated.id ? updated : item))));
-      setDraftById((current) => ({ ...current, [updated.id]: toDraft(updated) }));
+      mergeReviewDrafts([updated]);
       setErrorsById((current) => {
         const next = { ...current };
         delete next[updated.id];
@@ -812,29 +814,29 @@ export function App() {
     }
   }
 
-  async function quickDecision(line: ReviewLineDto, decision: ReviewDecision) {
+  async function quickDecision(line: ReviewLineDto, decision: ReviewDecision, currentDraft: ReviewDraft) {
     const nextDraft: ReviewDraft =
       decision === "ship"
         ? {
             decision,
             approvedShipQty: String(line.suggestedShipQty),
-            fulfillmentWarehouseNo: draftById[line.id]?.fulfillmentWarehouseNo || line.suggestedWarehouseNo,
-            fulfillmentWarehouseName: draftById[line.id]?.fulfillmentWarehouseName || line.suggestedWarehouseName,
-            reason: draftById[line.id]?.reason ?? "",
+            fulfillmentWarehouseNo: currentDraft.fulfillmentWarehouseNo || line.suggestedWarehouseNo,
+            fulfillmentWarehouseName: currentDraft.fulfillmentWarehouseName || line.suggestedWarehouseName,
+            reason: currentDraft.reason,
           }
         : {
             decision,
             approvedShipQty: "0",
             fulfillmentWarehouseNo: "",
             fulfillmentWarehouseName: "",
-            reason: draftById[line.id]?.reason ?? "",
+            reason: currentDraft.reason,
           };
-    setDraftById((current) => ({ ...current, [line.id]: nextDraft }));
+    updateDraft(line.id, nextDraft, reviewDraftIsDirty(line, nextDraft));
     await saveDecision(line, nextDraft);
   }
 
-  async function togglePriority(line: ReviewLineDto, priority: boolean) {
-    const reason = (draftById[line.id]?.reason ?? line.reason ?? line.priorityReason ?? "").trim();
+  async function togglePriority(line: ReviewLineDto, priority: boolean, currentDraft: ReviewDraft) {
+    const reason = (currentDraft.reason || line.reason || line.priorityReason || "").trim();
 
     const response = await fetch(`/api/v1/batches/${line.batchId}/review-lines/${line.id}/priority`, {
       method: "PATCH",
@@ -927,7 +929,7 @@ export function App() {
       reportError("还有审核结果正在保存，请稍候再提交");
       return;
     }
-    const unsavedCount = reviewLines.filter((line) => reviewDraftIsDirty(line, draftById[line.id])).length;
+    const unsavedCount = dirtyReviewLineIds.current.size;
     if (unsavedCount > 0) {
       reportError(`还有 ${unsavedCount} 条审核修改尚未保存，请先保存后再提交`);
       return;
@@ -1007,8 +1009,24 @@ export function App() {
     setMappingDialogOpen(true);
   }
 
-  function updateDraft(lineId: string, patch: Partial<ReviewDraft>) {
-    setDraftById((current) => ({ ...current, [lineId]: { ...current[lineId], ...patch } }));
+  function replaceReviewDrafts(lines: ReviewLineDto[]) {
+    const drafts = buildDrafts(lines);
+    bufferedDraftById.current = drafts;
+    dirtyReviewLineIds.current = new Set();
+    setDraftById(drafts);
+  }
+
+  function mergeReviewDrafts(lines: ReviewLineDto[]) {
+    const drafts = buildDrafts(lines);
+    bufferedDraftById.current = { ...bufferedDraftById.current, ...drafts };
+    for (const line of lines) dirtyReviewLineIds.current.delete(line.id);
+    setDraftById((current) => ({ ...current, ...drafts }));
+  }
+
+  function updateDraft(lineId: string, draft: ReviewDraft, dirty: boolean) {
+    bufferedDraftById.current[lineId] = draft;
+    if (dirty) dirtyReviewLineIds.current.add(lineId);
+    else dirtyReviewLineIds.current.delete(lineId);
   }
 
   function dismissHelp() {
@@ -1260,7 +1278,7 @@ export function App() {
               <ReviewTab
                 activeBatch={activeBatch}
                 activeFilter={activeFilter}
-                draftById={draftById}
+                draftById={bufferedDraftById.current}
                 errorsById={errorsById}
                 filteredLines={filteredLines}
                 isDeveloperMode={developerMode}
@@ -1933,15 +1951,15 @@ function ReviewTab({
   stats: ReturnType<typeof buildStats>;
   pendingMappingSummary: { groupCount: number; rowCount: number };
   onBulkApprove: () => void;
-  onDraftChange: (lineId: string, patch: Partial<ReviewDraft>) => void;
+  onDraftChange: (lineId: string, draft: ReviewDraft, dirty: boolean) => void;
   onFilterChange: (filter: FilterKey) => void;
   onLocateMapping: (line: ReviewLineDto) => void;
   onOpenMappingLibrary: () => void;
-  onPriorityChange: (line: ReviewLineDto, priority: boolean) => void;
-  onQuickDecision: (line: ReviewLineDto, decision: ReviewDecision) => void;
+  onPriorityChange: (line: ReviewLineDto, priority: boolean, draft: ReviewDraft) => void;
+  onQuickDecision: (line: ReviewLineDto, decision: ReviewDecision, draft: ReviewDraft) => void;
   onRecheckConfirmedOrder: () => void;
   onRecalculateOrder: () => void;
-  onSave: (line: ReviewLineDto) => void;
+  onSave: (line: ReviewLineDto, draft: ReviewDraft) => void;
   onSubmitReview: () => void;
 }) {
   const hasRows = filteredLines.length > 0;
@@ -2585,17 +2603,6 @@ function toDraft(line: ReviewLineDto): ReviewDraft {
     fulfillmentWarehouseName: line.fulfillmentWarehouseName || (line.decision === "do_not_ship" ? "" : line.suggestedWarehouseName),
     reason: line.reason,
   };
-}
-
-function reviewDraftIsDirty(line: ReviewLineDto, draft?: ReviewDraft) {
-  if (!draft) return false;
-  const persistedWarehouseNo = line.fulfillmentWarehouseNo || (line.decision === "do_not_ship" ? "" : line.suggestedWarehouseNo);
-  const persistedWarehouseName = line.fulfillmentWarehouseName || (line.decision === "do_not_ship" ? "" : line.suggestedWarehouseName);
-  return draft.decision !== line.decision
-    || draft.approvedShipQty !== String(line.approvedShipQty)
-    || draft.fulfillmentWarehouseNo !== persistedWarehouseNo
-    || draft.fulfillmentWarehouseName !== persistedWarehouseName
-    || draft.reason !== line.reason;
 }
 
 function buildDrafts(lines: ReviewLineDto[]): Record<string, ReviewDraft> {

@@ -521,19 +521,46 @@ describe("App", () => {
     expect(within(row).queryByText("优先处理必须填写原因")).not.toBeInTheDocument();
   });
 
-  it("shows a save button only after editing quantity or reason", async () => {
+  it("keeps a stable save action beside the row inputs", async () => {
     render(<App />);
     await clickBatch();
     switchToReviewTab();
 
     const row = await rowFor("可发商品");
     expect(within(row).queryByRole("button", { name: "保存" })).not.toBeInTheDocument();
+    expect(within(row).getByRole("button", { name: "已保存" })).toBeDisabled();
     const reasonInput = within(row).getByLabelText("审核原因 line-1");
     fireEvent.change(reasonInput, { target: { value: "门店备注" } });
 
     fireEvent.click(within(row).getByRole("button", { name: "保存" }));
     await waitFor(() => expect(lines.find((line) => line.id === "line-1")?.reason).toBe("门店备注"));
     expect(within(row).queryByRole("button", { name: "保存" })).not.toBeInTheDocument();
+    expect(within(row).getByRole("button", { name: "已保存" })).toBeDisabled();
+  });
+
+  it("buffers continuous row input without saving or losing it across filters", async () => {
+    render(<App />);
+    await clickBatch();
+    switchToReviewTab();
+
+    const row = await rowFor("可发商品");
+    const quantityInput = within(row).getByLabelText("审核发货数 line-1");
+    const decisionCallsBefore = vi.mocked(fetch).mock.calls.filter(([input]) => String(input).includes("/decision")).length;
+    fireEvent.change(quantityInput, { target: { value: "1" } });
+    fireEvent.change(quantityInput, { target: { value: "12" } });
+
+    expect(quantityInput).toHaveValue("12");
+    expect(vi.mocked(fetch).mock.calls.filter(([input]) => String(input).includes("/decision"))).toHaveLength(decisionCallsBefore);
+    expect(within(row).getByRole("button", { name: "保存" })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "商品异常" }));
+    fireEvent.click(screen.getByRole("button", { name: "全部" }));
+    expect(within(await rowFor("可发商品")).getByLabelText("审核发货数 line-1")).toHaveValue("12");
+
+    fireEvent.click(screen.getByRole("button", { name: "提交审核完成" }));
+    const toast = await screen.findByRole("alert");
+    expect(within(toast).getByText("还有 1 条审核修改尚未保存，请先保存后再提交")).toBeInTheDocument();
+    expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("/actions/submit-review"))).toBe(false);
   });
 
   it("preselects the suggested warehouse and saves manual warehouse changes", async () => {

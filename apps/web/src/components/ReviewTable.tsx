@@ -1,7 +1,7 @@
 import { flexRender, getCoreRowModel, useReactTable, type ColumnDef } from "@tanstack/react-table";
 import { isConfirmedProductMappingMatch, type ReviewDecision, type ReviewLineDto, type WarehouseUsageSettingsDto } from "@jy-trade/shared";
-import { ChevronDown, ChevronRight, Search } from "lucide-react";
-import { Fragment, useMemo, useState } from "react";
+import { ChevronDown, ChevronRight, Save, Search } from "lucide-react";
+import { Fragment, memo, useEffect, useMemo, useRef, useState } from "react";
 
 import { Badge } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
@@ -17,11 +17,11 @@ interface ReviewTableProps {
   readOnly?: boolean;
   savingDecisionIds?: Set<string>;
   warehouseSettings?: WarehouseUsageSettingsDto | null;
-  onDraftChange: (lineId: string, patch: Partial<ReviewDraft>) => void;
+  onDraftChange: (lineId: string, draft: ReviewDraft, dirty: boolean) => void;
   onLocateMapping: (line: ReviewLineDto) => void;
-  onPriorityChange: (line: ReviewLineDto, priority: boolean) => void;
-  onSave: (line: ReviewLineDto) => void;
-  onQuickDecision: (line: ReviewLineDto, decision: ReviewDecision) => void;
+  onPriorityChange: (line: ReviewLineDto, priority: boolean, draft: ReviewDraft) => void;
+  onSave: (line: ReviewLineDto, draft: ReviewDraft) => void;
+  onQuickDecision: (line: ReviewLineDto, decision: ReviewDecision, draft: ReviewDraft) => void;
 }
 
 export interface ReviewDraft {
@@ -247,138 +247,27 @@ export function ReviewTable({
       header: confirmedOrderMode ? "做单处理" : "审核",
       cell: ({ row }) => {
         const line = row.original;
-        const persistedWarehouseNo = line.fulfillmentWarehouseNo || (line.decision === "do_not_ship" ? "" : line.suggestedWarehouseNo);
-        const persistedWarehouseName = line.fulfillmentWarehouseName || (line.decision === "do_not_ship" ? "" : line.suggestedWarehouseName);
         const draft = draftById[line.id] ?? {
           decision: line.decision,
           approvedShipQty: String(line.approvedShipQty),
-          fulfillmentWarehouseNo: persistedWarehouseNo,
-          fulfillmentWarehouseName: persistedWarehouseName,
+          fulfillmentWarehouseNo: line.fulfillmentWarehouseNo || (line.decision === "do_not_ship" ? "" : line.suggestedWarehouseNo),
+          fulfillmentWarehouseName: line.fulfillmentWarehouseName || (line.decision === "do_not_ship" ? "" : line.suggestedWarehouseName),
           reason: line.reason,
         };
-        const warehouseOptions = warehouseOptionsFor(line, warehouseSettings);
-        const error = errorsById[line.id];
-        const approvedQty = Number(draft.approvedShipQty);
-        const isOverSuggested = draft.decision === "ship" && Number.isFinite(approvedQty) && approvedQty > line.suggestedShipQty;
-        const isOverPlanned = confirmedOrderMode && draft.decision === "ship" && Number.isFinite(approvedQty) && approvedQty > line.plannedShipQty;
-        const isUnmappedPositive = line.matchStatus !== "matched" && draft.decision === "ship" && Number.isFinite(approvedQty) && approvedQty > 0;
-        const isNonSuggestedWarehouse = draft.decision === "ship"
-          && Boolean(draft.fulfillmentWarehouseNo)
-          && Boolean(line.suggestedWarehouseNo)
-          && draft.fulfillmentWarehouseNo !== line.suggestedWarehouseNo;
-        const isInvalidWarehouse = draft.decision === "ship"
-          && approvedQty > 0
-          && Boolean(draft.fulfillmentWarehouseNo)
-          && !warehouseEnabled(draft.fulfillmentWarehouseNo, draft.fulfillmentWarehouseName, warehouseSettings);
-        const isSaving = savingDecisionIds.has(line.id);
-        const isDirty =
-          draft.decision !== line.decision
-          || draft.approvedShipQty !== String(line.approvedShipQty)
-          || draft.fulfillmentWarehouseNo !== persistedWarehouseNo
-          || draft.fulfillmentWarehouseName !== persistedWarehouseName
-          || draft.reason !== line.reason;
-
         return (
-          <div className="min-w-80 space-y-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge tone={decisionTone(draft.decision)}>{decisionText(draft.decision, confirmedOrderMode)}</Badge>
-              {line.priority ? <Badge tone="info">优先</Badge> : null}
-              {isOverSuggested ? <Badge tone="warn">超系统建议</Badge> : null}
-              {isOverPlanned ? <Badge tone="warn">偏离原计划</Badge> : null}
-              {isUnmappedPositive ? <Badge tone="warn">未映射做单</Badge> : null}
-              {isNonSuggestedWarehouse ? <Badge tone="warn">非建议仓库</Badge> : null}
-              <Button className="h-8 px-2" disabled={readOnly || isSaving} onClick={() => onQuickDecision(line, "ship")}>
-                {confirmedOrderMode ? "做单" : "发货"}
-              </Button>
-              <Button
-                className="h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80"
-                disabled={readOnly || isSaving}
-                onClick={() => onQuickDecision(line, "do_not_ship")}
-              >
-                {confirmedOrderMode ? "不做单" : "不发"}
-              </Button>
-              <label className="inline-flex h-8 items-center gap-2 rounded-md border border-border px-2 text-sm text-muted-foreground">
-                <input
-                  aria-label={`优先处理 ${line.id}`}
-                  className="h-4 w-4"
-                  checked={line.priority}
-                  disabled={readOnly || isSaving}
-                  type="checkbox"
-                  onChange={(event) => onPriorityChange(line, event.target.checked)}
-                />
-                优先处理
-              </label>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                <span>最终仓库</span>
-                <select
-                  aria-label={`发货仓库 ${line.id}`}
-                  className="h-9 min-w-32 rounded-md border border-input bg-background px-2 text-sm text-foreground"
-                  disabled={readOnly || isSaving || draft.decision === "do_not_ship"}
-                  value={draft.fulfillmentWarehouseNo}
-                  onChange={(event) => {
-                    const warehouse = warehouseOptions.find((option) => option.warehouseNo === event.target.value);
-                    onDraftChange(line.id, {
-                      fulfillmentWarehouseNo: warehouse?.warehouseNo ?? "",
-                      fulfillmentWarehouseName: warehouse?.warehouseName ?? "",
-                    });
-                  }}
-                >
-                  <option value="">选择仓库</option>
-                  {warehouseOptions.map((warehouse) => (
-                    <option key={`${warehouse.warehouseNo}-${warehouse.warehouseName}`} value={warehouse.warehouseNo}>
-                      {warehouse.warehouseName}{warehouse.enabled ? "" : "（当前已停用）"}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                <span>最终发货数量</span>
-                <input
-                  aria-label={`审核发货数 ${line.id}`}
-                  className="h-9 w-24 rounded-md border border-input bg-background px-2 text-sm text-foreground"
-                  disabled={readOnly || isSaving}
-                  inputMode="numeric"
-                  min={0}
-                  pattern="[0-9]*"
-                  step={1}
-                  type="text"
-                  value={draft.approvedShipQty}
-                  onChange={(event) => {
-                    const value = event.target.value;
-                    if (/^\d*$/.test(value)) {
-                      onDraftChange(line.id, {
-                        approvedShipQty: value,
-                        decision: value !== "" && Number(value) > 0 ? "ship" : draft.decision,
-                      });
-                    }
-                  }}
-                />
-              </label>
-              <input
-                aria-label={`审核原因 ${line.id}`}
-                className="h-9 min-w-52 flex-1 rounded-md border border-input bg-background px-2 text-sm"
-                disabled={readOnly || isSaving}
-                placeholder={confirmedOrderMode ? "处理备注" : "原因"}
-                value={draft.reason}
-                onChange={(event) => onDraftChange(line.id, { reason: event.target.value })}
-              />
-              {isDirty && !readOnly ? (
-                <Button className="h-9 px-3" disabled={isSaving} onClick={() => onSave(line)}>
-                  {isSaving ? "保存中..." : "保存"}
-                </Button>
-              ) : null}
-            </div>
-            <div className="space-y-1 text-xs leading-5 text-amber-800">
-              {isOverSuggested ? <div>最终数量超过系统建议，可能存在库存风险。</div> : null}
-              {isOverPlanned ? <div>最终数量超过确定单发货数量，已偏离原计划。</div> : null}
-              {isUnmappedPositive ? <div>该商品没有有效映射，提交时需要二次确认；做单将使用导入商品编码{line.externalGoodsCode ? ` ${line.externalGoodsCode}` : line.externalBarcode ? ` ${line.externalBarcode}` : ""}。</div> : null}
-              {isNonSuggestedWarehouse ? <div>最终仓库与系统建议不同，请确认人工调整。</div> : null}
-              {isInvalidWarehouse ? <div className="text-rose-700">所选仓库当前未启用，提交审核前必须重新选择。</div> : null}
-            </div>
-            {error ? <div className="text-xs text-rose-700">{error}</div> : null}
-          </div>
+          <ReviewDecisionEditor
+            confirmedOrderMode={confirmedOrderMode}
+            draft={draft}
+            error={errorsById[line.id]}
+            isSaving={savingDecisionIds.has(line.id)}
+            line={line}
+            readOnly={readOnly}
+            warehouseSettings={warehouseSettings}
+            onDraftChange={onDraftChange}
+            onPriorityChange={onPriorityChange}
+            onQuickDecision={onQuickDecision}
+            onSave={onSave}
+          />
         );
       },
     },
@@ -496,6 +385,182 @@ export function ReviewTable({
       </table>
     </div>
   );
+}
+
+const ReviewDecisionEditor = memo(function ReviewDecisionEditor({
+  confirmedOrderMode,
+  draft: incomingDraft,
+  error,
+  isSaving,
+  line,
+  readOnly,
+  warehouseSettings,
+  onDraftChange,
+  onPriorityChange,
+  onQuickDecision,
+  onSave,
+}: {
+  confirmedOrderMode: boolean;
+  draft: ReviewDraft;
+  error?: string;
+  isSaving: boolean;
+  line: ReviewLineDto;
+  readOnly: boolean;
+  warehouseSettings: WarehouseUsageSettingsDto | null;
+  onDraftChange: ReviewTableProps["onDraftChange"];
+  onPriorityChange: ReviewTableProps["onPriorityChange"];
+  onQuickDecision: ReviewTableProps["onQuickDecision"];
+  onSave: ReviewTableProps["onSave"];
+}) {
+  const [draft, setDraft] = useState(incomingDraft);
+  const lastIncomingDraft = useRef(incomingDraft);
+  const warehouseOptions = useMemo(() => warehouseOptionsFor(line, warehouseSettings), [line, warehouseSettings]);
+
+  useEffect(() => {
+    if (lastIncomingDraft.current === incomingDraft) return;
+    lastIncomingDraft.current = incomingDraft;
+    setDraft(incomingDraft);
+  }, [incomingDraft]);
+
+  function updateDraft(patch: Partial<ReviewDraft>) {
+    const next = { ...draft, ...patch };
+    setDraft(next);
+    onDraftChange(line.id, next, reviewDraftIsDirty(line, next));
+  }
+
+  const approvedQty = Number(draft.approvedShipQty);
+  const isDirty = reviewDraftIsDirty(line, draft);
+  const isOverSuggested = draft.decision === "ship" && Number.isFinite(approvedQty) && approvedQty > line.suggestedShipQty;
+  const isOverPlanned = confirmedOrderMode && draft.decision === "ship" && Number.isFinite(approvedQty) && approvedQty > line.plannedShipQty;
+  const isUnmappedPositive = line.matchStatus !== "matched" && draft.decision === "ship" && Number.isFinite(approvedQty) && approvedQty > 0;
+  const isNonSuggestedWarehouse = draft.decision === "ship"
+    && Boolean(draft.fulfillmentWarehouseNo)
+    && Boolean(line.suggestedWarehouseNo)
+    && draft.fulfillmentWarehouseNo !== line.suggestedWarehouseNo;
+  const isInvalidWarehouse = draft.decision === "ship"
+    && approvedQty > 0
+    && Boolean(draft.fulfillmentWarehouseNo)
+    && !warehouseEnabled(draft.fulfillmentWarehouseNo, draft.fulfillmentWarehouseName, warehouseSettings);
+
+  return (
+    <div className="min-w-[34rem] space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge tone={decisionTone(draft.decision)}>{decisionText(draft.decision, confirmedOrderMode)}</Badge>
+        {line.priority ? <Badge tone="info">优先</Badge> : null}
+        {isOverSuggested ? <Badge tone="warn">超系统建议</Badge> : null}
+        {isOverPlanned ? <Badge tone="warn">偏离原计划</Badge> : null}
+        {isUnmappedPositive ? <Badge tone="warn">未映射做单</Badge> : null}
+        {isNonSuggestedWarehouse ? <Badge tone="warn">非建议仓库</Badge> : null}
+        <Button className="h-8 px-2" disabled={readOnly || isSaving} onClick={() => onQuickDecision(line, "ship", draft)}>
+          {confirmedOrderMode ? "做单" : "发货"}
+        </Button>
+        <Button
+          className="h-8 bg-muted px-2 text-muted-foreground hover:bg-muted/80"
+          disabled={readOnly || isSaving}
+          onClick={() => onQuickDecision(line, "do_not_ship", draft)}
+        >
+          {confirmedOrderMode ? "不做单" : "不发"}
+        </Button>
+        <label className="inline-flex h-8 items-center gap-2 rounded-md border border-border px-2 text-sm text-muted-foreground">
+          <input
+            aria-label={`优先处理 ${line.id}`}
+            className="h-4 w-4"
+            checked={line.priority}
+            disabled={readOnly || isSaving}
+            type="checkbox"
+            onChange={(event) => onPriorityChange(line, event.target.checked, draft)}
+          />
+          优先处理
+        </label>
+      </div>
+      <div className="grid grid-cols-[9rem_6rem_8rem_minmax(13rem,1fr)] items-end gap-2">
+        <label className="grid gap-1 text-xs text-muted-foreground">
+          <span>最终仓库</span>
+          <select
+            aria-label={`发货仓库 ${line.id}`}
+            className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
+            disabled={readOnly || isSaving || draft.decision === "do_not_ship"}
+            value={draft.fulfillmentWarehouseNo}
+            onChange={(event) => {
+              const warehouse = warehouseOptions.find((option) => option.warehouseNo === event.target.value);
+              updateDraft({
+                fulfillmentWarehouseNo: warehouse?.warehouseNo ?? "",
+                fulfillmentWarehouseName: warehouse?.warehouseName ?? "",
+              });
+            }}
+          >
+            <option value="">选择仓库</option>
+            {warehouseOptions.map((warehouse) => (
+              <option key={`${warehouse.warehouseNo}-${warehouse.warehouseName}`} value={warehouse.warehouseNo}>
+                {warehouse.warehouseName}{warehouse.enabled ? "" : "（当前已停用）"}
+              </option>
+            ))}
+          </select>
+        </label>
+        <Button
+          className="h-9 w-24 px-2"
+          disabled={readOnly || isSaving || !isDirty}
+          onClick={() => onSave(line, draft)}
+        >
+          <Save className="h-4 w-4" />
+          {isSaving ? "保存中" : isDirty ? "保存" : "已保存"}
+        </Button>
+        <label className="grid gap-1 text-xs text-muted-foreground">
+          <span>最终发货数量</span>
+          <input
+            aria-label={`审核发货数 ${line.id}`}
+            className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
+            disabled={readOnly || isSaving}
+            inputMode="numeric"
+            min={0}
+            pattern="[0-9]*"
+            step={1}
+            type="text"
+            value={draft.approvedShipQty}
+            onChange={(event) => {
+              const value = event.target.value;
+              if (/^\d*$/.test(value)) {
+                updateDraft({
+                  approvedShipQty: value,
+                  decision: value !== "" && Number(value) > 0 ? "ship" : draft.decision,
+                });
+              }
+            }}
+          />
+        </label>
+        <label className="grid min-w-0 gap-1 text-xs text-muted-foreground">
+          <span>{confirmedOrderMode ? "处理备注" : "审核原因"}</span>
+          <input
+            aria-label={`审核原因 ${line.id}`}
+            className="h-9 min-w-0 rounded-md border border-input bg-background px-2 text-sm text-foreground"
+            disabled={readOnly || isSaving}
+            placeholder={confirmedOrderMode ? "处理备注" : "原因"}
+            value={draft.reason}
+            onChange={(event) => updateDraft({ reason: event.target.value })}
+          />
+        </label>
+      </div>
+      <div className="space-y-1 text-xs leading-5 text-amber-800">
+        {isOverSuggested ? <div>最终数量超过系统建议，可能存在库存风险。</div> : null}
+        {isOverPlanned ? <div>最终数量超过确定单发货数量，已偏离原计划。</div> : null}
+        {isUnmappedPositive ? <div>该商品没有有效映射，提交时需要二次确认；做单将使用导入商品编码{line.externalGoodsCode ? ` ${line.externalGoodsCode}` : line.externalBarcode ? ` ${line.externalBarcode}` : ""}。</div> : null}
+        {isNonSuggestedWarehouse ? <div>最终仓库与系统建议不同，请确认人工调整。</div> : null}
+        {isInvalidWarehouse ? <div className="text-rose-700">所选仓库当前未启用，提交审核前必须重新选择。</div> : null}
+      </div>
+      {error ? <div className="text-xs text-rose-700">{error}</div> : null}
+    </div>
+  );
+});
+
+export function reviewDraftIsDirty(line: ReviewLineDto, draft?: ReviewDraft) {
+  if (!draft) return false;
+  const persistedWarehouseNo = line.fulfillmentWarehouseNo || (line.decision === "do_not_ship" ? "" : line.suggestedWarehouseNo);
+  const persistedWarehouseName = line.fulfillmentWarehouseName || (line.decision === "do_not_ship" ? "" : line.suggestedWarehouseName);
+  return draft.decision !== line.decision
+    || draft.approvedShipQty !== String(line.approvedShipQty)
+    || draft.fulfillmentWarehouseNo !== persistedWarehouseNo
+    || draft.fulfillmentWarehouseName !== persistedWarehouseName
+    || draft.reason !== line.reason;
 }
 
 function ComponentStockDetails({ line }: { line: ReviewLineDto }) {
