@@ -5,6 +5,7 @@ import {
   CreateExportRequestSchema,
   CreateBatchRequestSchema,
   ApplyProductMappingRequestSchema,
+  BulkDoNotShipRequestSchema,
   ConfirmProductMappingRequestSchema,
   CreateWdtGoodsSyncRunRequestSchema,
   LoginRequestSchema,
@@ -209,6 +210,15 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     requireRole(request, ["admin", "reviewer"]);
     const { batchId } = request.params as { batchId: string };
     const result = await store.bulkApprove(batchId, getCurrentUser(request));
+    if (!result) return reply.code(404).send({ message: "Batch not found" });
+    return result;
+  });
+
+  app.post("/api/v1/batches/:batchId/actions/bulk-do-not-ship", async (request, reply) => {
+    requireRole(request, ["admin", "reviewer"]);
+    const { batchId } = request.params as { batchId: string };
+    const body = BulkDoNotShipRequestSchema.parse(request.body ?? {});
+    const result = await store.bulkDoNotShip(batchId, body, getCurrentUser(request));
     if (!result) return reply.code(404).send({ message: "Batch not found" });
     return result;
   });

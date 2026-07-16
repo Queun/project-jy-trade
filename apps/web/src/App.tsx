@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, CheckCheck, ChevronDown, ChevronUp, ClipboardList, Download, FileSpreadsheet, HelpCircle, LogOut, MapPin, PackageCheck, PackageSearch, RefreshCcw, Save, Send, Settings, Trash2, Upload, Warehouse, X, Zap } from "lucide-react";
+import { AlertCircle, Ban, CheckCheck, ChevronDown, ChevronUp, ClipboardList, Download, FileSpreadsheet, HelpCircle, LogOut, MapPin, PackageCheck, PackageSearch, RefreshCcw, Save, Search, Send, Settings, Trash2, Upload, Warehouse, X, Zap } from "lucide-react";
 import type {
   AuthUserDto,
   ApplyProductMappingResponse,
@@ -919,6 +919,31 @@ export function App() {
     setMessage(`已批量通过 ${result.updatedCount} 行`);
   }
 
+  async function bulkDoNotShip(lineIds: string[]) {
+    if (!activeBatch) return;
+    const unsavedCount = lineIds.filter((lineId) => dirtyReviewLineIds.current.has(lineId)).length;
+    if (unsavedCount > 0) {
+      reportError(`该商品还有 ${unsavedCount} 条修改尚未保存，请先保存后再批量处理`);
+      return;
+    }
+    const response = await fetch(`/api/v1/batches/${activeBatch.id}/actions/bulk-do-not-ship`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ lineIds }),
+    });
+    if (!response.ok) {
+      const error = await safeResponseJson(response);
+      reportError(apiErrorMessage(error, "批量不发货失败，请稍后重试"));
+      return;
+    }
+    const result = (await response.json()) as { batch: BatchSummary; updatedCount: number };
+    setActiveBatch(result.batch);
+    await loadBatch(result.batch, "review");
+    await refreshBatches();
+    setMessage(`已将该商品的 ${result.updatedCount} 条明细设为${activeBatch.sourceType === "confirmed_order" ? "不做单" : "不发货"}`);
+    setSuccessNotice(`已批量处理 ${result.updatedCount} 条明细`);
+  }
+
   async function submitReview(confirmations: SubmitReviewRequest = { confirmUnverifiedStock: false, confirmUnmappedProducts: false }) {
     if (!activeBatch) return;
     if (recheckingConfirmedOrder) {
@@ -1278,6 +1303,7 @@ export function App() {
               <ReviewTab
                 activeBatch={activeBatch}
                 activeFilter={activeFilter}
+                allReviewLines={reviewLines}
                 draftById={bufferedDraftById.current}
                 errorsById={errorsById}
                 filteredLines={filteredLines}
@@ -1289,6 +1315,7 @@ export function App() {
                 stats={stats}
                 pendingMappingSummary={pendingMappingSummary}
                 onBulkApprove={() => void bulkApprove()}
+                onBulkDoNotShip={(lineIds) => void bulkDoNotShip(lineIds)}
                 onDraftChange={updateDraft}
                 onFilterChange={setActiveFilter}
                 onLocateMapping={locateProductMapping}
@@ -1912,6 +1939,7 @@ function ImportTab({
 function ReviewTab({
   activeBatch,
   activeFilter,
+  allReviewLines,
   draftById,
   errorsById,
   filteredLines,
@@ -1925,6 +1953,7 @@ function ReviewTab({
   stats,
   pendingMappingSummary,
   onBulkApprove,
+  onBulkDoNotShip,
   onDraftChange,
   onFilterChange,
   onLocateMapping,
@@ -1938,6 +1967,7 @@ function ReviewTab({
 }: {
   activeBatch: BatchSummary | null;
   activeFilter: FilterKey;
+  allReviewLines: ReviewLineDto[];
   draftById: Record<string, ReviewDraft>;
   errorsById: Record<string, string>;
   filteredLines: ReviewLineDto[];
@@ -1951,6 +1981,7 @@ function ReviewTab({
   stats: ReturnType<typeof buildStats>;
   pendingMappingSummary: { groupCount: number; rowCount: number };
   onBulkApprove: () => void;
+  onBulkDoNotShip: (lineIds: string[]) => void;
   onDraftChange: (lineId: string, draft: ReviewDraft, dirty: boolean) => void;
   onFilterChange: (filter: FilterKey) => void;
   onLocateMapping: (line: ReviewLineDto) => void;
@@ -1962,8 +1993,16 @@ function ReviewTab({
   onSave: (line: ReviewLineDto, draft: ReviewDraft) => void;
   onSubmitReview: () => void;
 }) {
-  const hasRows = filteredLines.length > 0;
+  const [productQuery, setProductQuery] = useState("");
   const confirmedOrderMode = activeBatch?.sourceType === "confirmed_order";
+  const productSearch = useMemo(() => searchReviewProducts(allReviewLines, productQuery), [allReviewLines, productQuery]);
+  const visibleLines = productQuery.trim() ? productSearch.rows : filteredLines;
+  const selectedProduct = productSearch.groups.length === 1 ? productSearch.groups[0] : null;
+  const hasRows = visibleLines.length > 0;
+
+  useEffect(() => {
+    setProductQuery("");
+  }, [activeBatch?.id]);
 
   return (
     <section className="mt-4 min-w-0 space-y-4">
@@ -2055,11 +2094,56 @@ function ReviewTab({
                 </button>
               ))}
             </div>
+            <div className="mb-3 flex flex-wrap items-center gap-3 border-y border-border bg-muted/20 px-3 py-3">
+              <div className="flex min-w-[18rem] flex-1 items-center gap-2">
+                <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
+                <input
+                  aria-label="审核商品搜索"
+                  className="h-9 min-w-0 flex-1 rounded-md border border-input bg-background px-3 text-sm"
+                  placeholder="商品名称、条码或编码"
+                  value={productQuery}
+                  onChange={(event) => setProductQuery(event.target.value)}
+                />
+                {productQuery ? (
+                  <button
+                    aria-label="清空商品搜索"
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border bg-background text-muted-foreground hover:bg-muted"
+                    onClick={() => setProductQuery("")}
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                ) : null}
+              </div>
+              {productQuery.trim() ? (
+                selectedProduct ? (
+                  <div className="flex flex-wrap items-center gap-2 text-sm">
+                    <span className="font-medium">{selectedProduct.label}</span>
+                    <span className="text-muted-foreground">{selectedProduct.rows.length} 条 / {selectedProduct.storeCount} 个门店</span>
+                    <Button
+                      className="h-9 bg-rose-50 px-3 text-rose-700 hover:bg-rose-100"
+                      disabled={!canReview}
+                      onClick={() => {
+                        const action = confirmedOrderMode ? "不做单" : "不发货";
+                        if (!window.confirm(`确定将“${selectedProduct.label}”的 ${selectedProduct.rows.length} 条明细全部设为${action}吗？`)) return;
+                        onBulkDoNotShip(selectedProduct.rows.map((line) => line.id));
+                      }}
+                    >
+                      <Ban className="h-4 w-4" />
+                      {confirmedOrderMode ? "本商品全部不做单" : "本商品全部不发货"}
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="text-sm text-muted-foreground">匹配 {productSearch.groups.length} 种商品 / {productSearch.rows.length} 条明细</div>
+                )
+              ) : (
+                <div className="text-sm text-muted-foreground">{productSearch.groups.length} 种商品 / {allReviewLines.length} 条明细</div>
+              )}
+            </div>
             {hasRows ? (
               <ReviewTable
                 draftById={draftById}
                 errorsById={errorsById}
-                rows={filteredLines}
+                rows={visibleLines}
                 readOnly={!canReview}
                 savingDecisionIds={savingDecisionIds}
                 warehouseSettings={warehouseSettings}
@@ -2070,7 +2154,7 @@ function ReviewTab({
                 onSave={onSave}
                 confirmedOrderMode={confirmedOrderMode}
                 isDeveloperMode={isDeveloperMode}
-                groupPendingMappings={confirmedOrderMode && activeFilter === "unmatched"}
+                groupPendingMappings={confirmedOrderMode && activeFilter === "unmatched" && !productQuery.trim()}
               />
             ) : (
               <EmptyState title="当前筛选没有明细" description="切换筛选条件，或检查本批次是否已经生成初审明细。" />
@@ -2784,6 +2868,58 @@ function apiErrorMessage(body: unknown, fallback: string): string {
     return body.message;
   }
   return fallback;
+}
+
+interface ReviewProductGroup {
+  key: string;
+  label: string;
+  rows: ReviewLineDto[];
+  storeCount: number;
+}
+
+function searchReviewProducts(lines: ReviewLineDto[], query: string): { rows: ReviewLineDto[]; groups: ReviewProductGroup[] } {
+  const normalizedQuery = normalizeReviewProductText(query);
+  const rows = normalizedQuery
+    ? lines.filter((line) => [
+        line.externalGoodsName,
+        line.externalBarcode,
+        line.externalGoodsCode,
+        line.goodsName,
+        line.specName,
+        line.wdtSpecNo,
+        line.wdtMakeOrderCode,
+      ].some((value) => normalizeReviewProductText(value).includes(normalizedQuery)))
+    : lines;
+  const groupedRows = new Map<string, ReviewLineDto[]>();
+  for (const line of rows) {
+    const key = reviewProductGroupKey(line);
+    const group = groupedRows.get(key);
+    if (group) group.push(line);
+    else groupedRows.set(key, [line]);
+  }
+  const groups = [...groupedRows.entries()].map(([key, groupRows]) => ({
+    key,
+    label: groupRows[0].externalGoodsName || groupRows[0].goodsName || groupRows[0].externalGoodsCode || groupRows[0].externalBarcode || "未命名商品",
+    rows: groupRows,
+    storeCount: new Set(groupRows.map((line) => `${line.storeNo}\u0000${line.storeName}`)).size,
+  }));
+  return { rows, groups };
+}
+
+function reviewProductGroupKey(line: ReviewLineDto) {
+  const candidates = [
+    ["goods-code", line.externalGoodsCode],
+    ["barcode", line.externalBarcode],
+    ["make-order-code", line.wdtMakeOrderCode],
+    ["spec-no", line.wdtSpecNo],
+    ["name", line.externalGoodsName || line.goodsName],
+  ];
+  const selected = candidates.find(([, value]) => value.trim());
+  return selected ? `${selected[0]}:${normalizeReviewProductText(selected[1])}` : `line:${line.id}`;
+}
+
+function normalizeReviewProductText(value: string) {
+  return value.trim().toLocaleLowerCase("zh-CN").replace(/\s+/g, "");
 }
 
 function matchesFilter(line: ReviewLineDto, filter: FilterKey, confirmedOrderMode = false) {

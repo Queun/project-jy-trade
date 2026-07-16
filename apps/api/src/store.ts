@@ -4,6 +4,7 @@
   AuthUserDto,
   BatchSummary,
   BulkApproveResponseDto,
+  BulkDoNotShipRequest,
   CreateBatchRequest,
   CreateExportRequest,
   ConfirmProductMappingRequest,
@@ -1253,6 +1254,55 @@ export function createSqliteStore(options: StoreOptions = {}) {
 
       await insertAuditLog(database, actor?.id ?? null, "batch.bulk_approve", "batch", batchId, {
         updatedCount: targetLines.length,
+      });
+
+      return { batch: toBatchSummary(batch), updatedCount: targetLines.length };
+    },
+
+    async bulkDoNotShip(
+      batchId: string,
+      input: BulkDoNotShipRequest,
+      actor?: AuthUserDto,
+    ): Promise<BulkApproveResponseDto | undefined> {
+      await ready;
+      const batch = await getBatchRow(database, batchId);
+      if (!batch) return undefined;
+
+      const lineIds = [...new Set(input.lineIds)];
+      const targetLines = await database.db
+        .select()
+        .from(reviewLines)
+        .where(and(eq(reviewLines.batchId, batchId), inArray(reviewLines.id, lineIds)));
+      if (targetLines.length !== lineIds.length) {
+        throw new StoreValidationError("批量不发货包含不属于当前批次的审核明细");
+      }
+
+      const now = new Date().toISOString();
+      for (const line of targetLines) {
+        const [previousDecision] = await database.db
+          .select()
+          .from(reviewDecisions)
+          .where(eq(reviewDecisions.reviewLineId, line.id))
+          .limit(1);
+        await replaceReviewDecision(
+          database,
+          line,
+          {
+            decision: "do_not_ship",
+            approvedShipQty: 0,
+            fulfillmentWarehouseNo: "",
+            fulfillmentWarehouseName: "",
+            reason: previousDecision?.reason ?? "",
+          },
+          now,
+          previousDecision,
+          actor?.id ?? null,
+        );
+      }
+
+      await insertAuditLog(database, actor?.id ?? null, "batch.bulk_do_not_ship", "batch", batchId, {
+        updatedCount: targetLines.length,
+        lineIds,
       });
 
       return { batch: toBatchSummary(batch), updatedCount: targetLines.length };

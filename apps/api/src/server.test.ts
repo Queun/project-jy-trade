@@ -801,6 +801,54 @@ describe("api server", () => {
     await app.close();
   });
 
+  it("bulk marks selected review lines as do-not-ship and preserves notes", async () => {
+    const databaseUrl = testDatabaseUrl();
+    const app = buildTestServer(databaseUrl);
+    const { batch, lines: initialLines, cookie } = await createReviewedBatch(app, "examples/mock_flow_mixed.json");
+    const targetLines = initialLines.slice(0, 2);
+    await app.inject({
+      method: "PATCH",
+      url: `/api/v1/batches/${batch.id}/review-lines/${targetLines[0].id}/decision`,
+      payload: {
+        decision: "do_not_ship",
+        approvedShipQty: 0,
+        fulfillmentWarehouseNo: "",
+        fulfillmentWarehouseName: "",
+        reason: "门店已有备注",
+      },
+      headers: { cookie },
+    });
+
+    const bulk = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${batch.id}/actions/bulk-do-not-ship`,
+      payload: { lineIds: targetLines.map((line: ReviewLineDto) => line.id) },
+      headers: { cookie },
+    });
+    expect(bulk.statusCode).toBe(200);
+    expect(bulk.json().updatedCount).toBe(2);
+
+    const response = await app.inject({ method: "GET", url: `/api/v1/batches/${batch.id}/review-lines`, headers: { cookie } });
+    const byId = new Map(response.json().map((line: ReviewLineDto) => [line.id, line]));
+    expect(byId.get(targetLines[0].id)).toMatchObject({ decision: "do_not_ship", approvedShipQty: 0, fulfillmentWarehouseNo: "", reason: "门店已有备注" });
+    expect(byId.get(targetLines[1].id)).toMatchObject({ decision: "do_not_ship", approvedShipQty: 0, fulfillmentWarehouseNo: "" });
+
+    const invalid = await app.inject({
+      method: "POST",
+      url: `/api/v1/batches/${batch.id}/actions/bulk-do-not-ship`,
+      payload: { lineIds: ["not-in-this-batch"] },
+      headers: { cookie },
+    });
+    expect(invalid.statusCode).toBe(400);
+
+    const database = createDatabaseContext(databaseUrl);
+    await database.ready;
+    const logs = await database.db.select().from(auditLogs).where(eq(auditLogs.action, "batch.bulk_do_not_ship"));
+    expect(logs).toHaveLength(1);
+    await database.close();
+    await app.close();
+  });
+
   it("submits review and allows pending lines", async () => {
     const app = buildTestServer();
     const { batch, cookie } = await createReviewedBatch(app, "examples/mock_flow_mixed.json");

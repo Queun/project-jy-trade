@@ -632,6 +632,30 @@ describe("App", () => {
     expect(currentBatch.status).toBe("reviewed");
   });
 
+  it("searches one product and marks all of its store lines as do-not-ship", async () => {
+    currentBatch = { ...currentBatch, mode: "production_api", sourceType: "confirmed_order" };
+    lines = [
+      reviewLine({ id: "same-product-1", externalGoodsName: "同款缺货商品", externalBarcode: "SAME-BARCODE", storeNo: "S-1", storeName: "门店一" }),
+      reviewLine({ id: "same-product-2", externalGoodsName: "同款缺货商品", externalBarcode: "SAME-BARCODE", storeNo: "S-2", storeName: "门店二" }),
+      reviewLine({ id: "other-product", externalGoodsName: "其他商品", externalBarcode: "OTHER-BARCODE", storeNo: "S-3", storeName: "门店三" }),
+    ];
+    render(<App />);
+    await clickBatch();
+    switchToReviewTab();
+
+    fireEvent.change(screen.getByLabelText("审核商品搜索"), { target: { value: "同款缺货商品" } });
+
+    expect(await screen.findByText("2 条 / 2 个门店")).toBeInTheDocument();
+    expect(screen.getAllByText("同款缺货商品")).toHaveLength(3);
+    expect(screen.queryByText("其他商品")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "本商品全部不做单" }));
+
+    expect(confirm).toHaveBeenCalledWith("确定将“同款缺货商品”的 2 条明细全部设为不做单吗？");
+    await waitFor(() => expect(lines.filter((line) => line.externalBarcode === "SAME-BARCODE").every((line) => line.decision === "do_not_ship")).toBe(true));
+    expect(lines.find((line) => line.id === "other-product")?.decision).toBe("pending");
+    expect(await screen.findByText("已批量处理 2 条明细")).toBeInTheDocument();
+  });
+
   it("expands every component stock row for a matched suite", async () => {
     lines = [reviewLine({
       id: "line-suite-components",
@@ -2397,6 +2421,14 @@ async function handleFetch(input: RequestInfo | URL, init?: RequestInit) {
     }
     currentBatch = { ...currentBatch, status: "reviewed" };
     return json({ requiresConfirmation: false, batch: currentBatch, pendingCount: 1, shipCount: 2, doNotShipCount: 0 });
+  }
+  if (url.includes("/actions/bulk-do-not-ship") && method === "POST") {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { lineIds?: string[] };
+    const targetIds = new Set(body.lineIds ?? []);
+    lines = lines.map((line) => targetIds.has(line.id)
+      ? { ...line, decision: "do_not_ship", approvedShipQty: 0, fulfillmentWarehouseNo: "", fulfillmentWarehouseName: "" }
+      : line);
+    return json({ batch: currentBatch, updatedCount: targetIds.size });
   }
   if (url.endsWith("/exports") && method === "GET") return json(exportRows);
   if (url.endsWith("/exports") && method === "POST") {

@@ -438,6 +438,11 @@ export const BulkApproveResponseDtoSchema = z.object({
 });
 export type BulkApproveResponseDto = z.infer<typeof BulkApproveResponseDtoSchema>;
 
+export const BulkDoNotShipRequestSchema = z.object({
+  lineIds: z.array(z.string().min(1)).min(1).max(5000),
+});
+export type BulkDoNotShipRequest = z.infer<typeof BulkDoNotShipRequestSchema>;
+
 export const SubmitReviewResponseDtoSchema = z.object({
   requiresConfirmation: z.literal(false).default(false),
   batch: BatchSummarySchema,
