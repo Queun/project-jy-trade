@@ -162,7 +162,7 @@ export function ReviewTable({
     {
       header: "门店 / 订单",
       cell: ({ row }) => (
-        <div className="min-w-36">
+        <div className="min-w-32">
           <div className="font-medium">{row.original.storeName}</div>
           <div className="mt-1 text-xs text-muted-foreground">{row.original.orderNoticeNo}</div>
         </div>
@@ -179,8 +179,8 @@ export function ReviewTable({
         const mappingActionLabel = canReviewAlternative ? "查替代编码" : manualMapping ? "复查映射" : "定位映射";
 
         return (
-          <div className="min-w-60">
-            <div className="font-medium">{line.externalGoodsName}</div>
+          <div className="min-w-52">
+            <div className="break-words font-medium [overflow-wrap:anywhere]">{line.externalGoodsName}</div>
             <div className="mt-1 text-xs text-muted-foreground">{line.externalBarcode}</div>
             {line.wdtSpecNo ? <div className="mt-1 text-xs text-muted-foreground">{line.wdtSpecNo}</div> : null}
             {line.productType === "suite" && (line.componentStocks?.length ?? 0) > 0 ? (
@@ -209,7 +209,7 @@ export function ReviewTable({
       cell: ({ row }) => {
         const line = row.original;
         return (
-          <div className="min-w-36 text-sm">
+          <div className="min-w-32 text-sm">
             {confirmedOrderMode ? (
               <>
                 <div><span className="text-muted-foreground">订货</span> <span className="font-medium">{line.orderQty}</span></div>
@@ -234,7 +234,7 @@ export function ReviewTable({
         const notice = confirmedOrderMode ? confirmedOrderSystemNotice(row.original) : "";
         const stockErrorDetail = confirmedOrderMode && isDeveloperMode ? row.original.stockErrorDetail?.trim() ?? "" : "";
         return (
-          <div className="flex min-w-40 flex-col items-start gap-2">
+          <div className="flex min-w-36 flex-col items-start gap-2">
             <Badge tone={statusTone(row.original.status, confirmedOrderMode)}>{statusText(row.original.status, confirmedOrderMode)}</Badge>
             <Badge tone={row.original.matchStatus === "matched" ? "info" : "warn"}>{matchStatusText(row.original.matchStatus, confirmedOrderMode)}</Badge>
             {notice ? <div className="max-w-64 text-xs leading-5 text-amber-800">{notice}</div> : null}
@@ -301,16 +301,16 @@ export function ReviewTable({
     const tone = reviewRowTone(line, decision);
     return (
       <Fragment key={line.id}>
-        <tr className={cn("border-t border-border transition-colors", tone.rowClass)} data-review-state={tone.key}>
+        <tr className={cn("border-t border-border transition-colors max-lg:mb-3 max-lg:block max-lg:overflow-hidden max-lg:rounded-md max-lg:border max-lg:shadow-sm", tone.rowClass)} data-review-state={tone.key}>
           {row.getVisibleCells().map((cell, index) => (
-            <td key={cell.id} className={cn("px-3 py-3 align-top", grouped && index === 0 && "pl-9")}>
+            <td key={cell.id} className={cn("px-3 py-3 align-top max-lg:block max-lg:px-3 max-lg:py-2", index > 0 && "max-lg:border-t max-lg:border-border/60", grouped && index === 0 && "pl-9")}>
               {flexRender(cell.column.columnDef.cell, cell.getContext())}
             </td>
           ))}
         </tr>
         {expandedComponentLineIds.has(line.id) ? (
-          <tr className="border-t border-border bg-muted/20">
-            <td className="px-4 py-3" colSpan={columns.length}>
+          <tr className="border-t border-border bg-muted/20 max-lg:mb-3 max-lg:block max-lg:rounded-md max-lg:border">
+            <td className="px-4 py-3 max-lg:block" colSpan={columns.length}>
               <ComponentStockDetails line={line} />
             </td>
           </tr>
@@ -320,9 +320,9 @@ export function ReviewTable({
   }
 
   return (
-    <div className="overflow-x-auto rounded-md border border-border bg-card">
-      <table className="w-full min-w-[1080px] border-collapse text-sm">
-        <thead className="bg-muted text-muted-foreground">
+    <div className="overflow-x-auto rounded-md border border-border bg-card max-lg:overflow-visible max-lg:border-0 max-lg:bg-transparent" data-testid="review-table-scroll">
+      <table className="w-full min-w-[1080px] border-collapse text-sm max-lg:block max-lg:min-w-0">
+        <thead className="bg-muted text-muted-foreground max-lg:hidden">
           {table.getHeaderGroups().map((headerGroup) => (
             <tr key={headerGroup.id}>
               {headerGroup.headers.map((header) => (
@@ -333,15 +333,15 @@ export function ReviewTable({
             </tr>
           ))}
         </thead>
-        <tbody>
+        <tbody className="max-lg:block">
           {groupPendingMappings
             ? pendingMappingGroups.map((group) => {
                 const expanded = expandedGroupKeys.has(group.key);
                 const representative = group.rows[0];
                 return (
                   <Fragment key={group.key}>
-                    <tr className="border-t border-border bg-muted/35">
-                      <td className="px-3 py-3" colSpan={columns.length}>
+                    <tr className="border-t border-border bg-muted/35 max-lg:mb-3 max-lg:block max-lg:rounded-md max-lg:border">
+                      <td className="px-3 py-3 max-lg:block" colSpan={columns.length}>
                         <div className="flex flex-wrap items-center gap-3">
                           <button
                             aria-expanded={expanded}
@@ -375,8 +375,8 @@ export function ReviewTable({
               })
             : table.getRowModel().rows.map((row) => renderReviewRow(row))}
           {rows.length === 0 ? (
-            <tr>
-              <td className="px-3 py-8 text-center text-sm text-muted-foreground" colSpan={columns.length}>
+            <tr className="max-lg:block">
+              <td className="px-3 py-8 text-center text-sm text-muted-foreground max-lg:block" colSpan={columns.length}>
                 当前筛选条件下没有明细
               </td>
             </tr>
@@ -443,7 +443,7 @@ const ReviewDecisionEditor = memo(function ReviewDecisionEditor({
     && !warehouseEnabled(draft.fulfillmentWarehouseNo, draft.fulfillmentWarehouseName, warehouseSettings);
 
   return (
-    <div className="min-w-[34rem] space-y-2">
+    <div className="min-w-[22rem] space-y-2 max-lg:min-w-0" data-testid={`review-editor-${line.id}`}>
       <div className="flex flex-wrap items-center gap-2">
         <Badge tone={decisionTone(draft.decision)}>{decisionText(draft.decision, confirmedOrderMode)}</Badge>
         {line.priority ? <Badge tone="info">优先</Badge> : null}
@@ -473,7 +473,7 @@ const ReviewDecisionEditor = memo(function ReviewDecisionEditor({
           优先处理
         </label>
       </div>
-      <div className="grid grid-cols-[9rem_6rem_8rem_minmax(13rem,1fr)] items-end gap-2">
+      <div className="grid grid-cols-[8rem_5.5rem_7rem] items-end gap-2 max-sm:grid-cols-[minmax(0,1fr)_5.5rem_6.5rem]" data-testid={`review-editor-grid-${line.id}`}>
         <label className="grid gap-1 text-xs text-muted-foreground">
           <span>最终仓库</span>
           <select
@@ -498,7 +498,7 @@ const ReviewDecisionEditor = memo(function ReviewDecisionEditor({
           </select>
         </label>
         <Button
-          className="h-9 w-24 px-2"
+          className="h-9 w-full px-2"
           disabled={readOnly || isSaving || !isDirty}
           onClick={() => onSave(line, draft)}
         >
@@ -528,7 +528,7 @@ const ReviewDecisionEditor = memo(function ReviewDecisionEditor({
             }}
           />
         </label>
-        <label className="grid min-w-0 gap-1 text-xs text-muted-foreground">
+        <label className="col-span-3 grid min-w-0 gap-1 text-xs text-muted-foreground">
           <span>{confirmedOrderMode ? "处理备注" : "审核原因"}</span>
           <input
             aria-label={`审核原因 ${line.id}`}
@@ -574,25 +574,26 @@ function ComponentStockDetails({ line }: { line: ReviewLineDto }) {
   });
   const bottleneck = capacities.length > 0 ? Math.min(...capacities) : 0;
   return (
-    <div className="min-w-[760px]">
+    <div className="min-w-[760px] max-lg:min-w-0">
       <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
         <span className="font-medium text-foreground">组合装组件库存</span>
         <span>{selectedWarehouseNo ? `按建议仓 ${line.suggestedWarehouseName || selectedWarehouseNo} 计算` : "当前无建议仓，按主仓查看"}</span>
       </div>
-      <div className="grid grid-cols-[minmax(220px,1fr)_90px_100px_100px_minmax(240px,1.2fr)] gap-x-3 border-b border-border pb-1 text-xs font-medium text-muted-foreground">
+      <div className="grid grid-cols-[minmax(220px,1fr)_90px_100px_100px_minmax(240px,1.2fr)] gap-x-3 border-b border-border pb-1 text-xs font-medium text-muted-foreground max-lg:hidden">
         <span>组件</span><span>每套用量</span><span>主仓</span><span>临期仓</span><span>分仓库存</span>
       </div>
       {components.map((component, index) => (
-        <div key={`${component.specNo}-${index}`} className="grid grid-cols-[minmax(220px,1fr)_90px_100px_100px_minmax(240px,1.2fr)] gap-x-3 border-b border-border/60 py-2 text-xs last:border-0">
-          <span>
+        <div key={`${component.specNo}-${index}`} className="grid grid-cols-[minmax(220px,1fr)_90px_100px_100px_minmax(240px,1.2fr)] gap-x-3 border-b border-border/60 py-2 text-xs last:border-0 max-lg:grid-cols-2 max-lg:gap-x-4 max-lg:gap-y-1">
+          <span className="max-lg:col-span-2">
             <span className="block font-medium">{component.goodsName || component.specNo}</span>
             <span className="mt-0.5 block text-muted-foreground">{component.specNo}{component.specName ? ` · ${component.specName}` : ""}</span>
             {!component.stockVerified ? <Badge className="mt-1" tone="warn">库存未验证</Badge> : capacities[index] === bottleneck ? <Badge className="mt-1" tone="warn">瓶颈组件</Badge> : null}
           </span>
-          <span>{component.quantityPerItem}</span>
-          <span>{component.mainAvailableStock}</span>
-          <span>{component.nearExpiryAvailableStock}</span>
-          <span className="text-muted-foreground">
+          <span><span className="mr-1 hidden text-muted-foreground max-lg:inline">每套</span>{component.quantityPerItem}</span>
+          <span><span className="mr-1 hidden text-muted-foreground max-lg:inline">主仓</span>{component.mainAvailableStock}</span>
+          <span><span className="mr-1 hidden text-muted-foreground max-lg:inline">临期仓</span>{component.nearExpiryAvailableStock}</span>
+          <span className="text-muted-foreground max-lg:col-span-2">
+            <span className="mr-1 hidden max-lg:inline">分仓</span>
             {component.warehouses.length > 0
               ? component.warehouses.map((warehouse) => `${warehouse.warehouseName || warehouse.warehouseNo} ${warehouse.availableStock}`).join(" / ")
               : "无可发库存"}

@@ -1224,7 +1224,7 @@ export function App() {
           />
         ) : null}
 
-        <section className="grid gap-4 xl:grid-cols-[300px_minmax(0,1fr)]">
+        <section className="grid gap-4 2xl:grid-cols-[300px_minmax(0,1fr)]">
           <BatchList batches={batches} activeBatchId={activeBatch?.id} canDelete={permissions.canDeleteBatch} onDelete={(batch) => void deleteBatch(batch)} onSelect={(batch) => void loadBatch(batch)} />
 
           <section className="min-w-0">
@@ -1539,8 +1539,8 @@ function BatchList({
         <h2 className="text-base font-semibold">历史批次</h2>
         <Badge tone="neutral">{batches.length} 个</Badge>
       </div>
-      <div className="space-y-2">
-        {batches.length === 0 ? <div className="text-sm text-muted-foreground">暂无批次</div> : null}
+      <div className="grid gap-2 md:grid-cols-2 2xl:grid-cols-1">
+        {batches.length === 0 ? <div className="text-sm text-muted-foreground md:col-span-2 2xl:col-span-1">暂无批次</div> : null}
         {batches.map((batch) => {
           const expanded = expandedBatchId === batch.id;
           const uploadDate = formatBatchListDate(batch.createdAt);

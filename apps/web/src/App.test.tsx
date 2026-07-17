@@ -527,6 +527,10 @@ describe("App", () => {
     switchToReviewTab();
 
     const row = await rowFor("可发商品");
+    expect(screen.getByTestId("review-table-scroll")).toHaveClass("max-lg:overflow-visible");
+    expect(within(row).getByTestId("review-editor-line-1")).toHaveClass("max-lg:min-w-0");
+    expect(within(row).getByTestId("review-editor-grid-line-1")).toHaveClass("grid-cols-[8rem_5.5rem_7rem]");
+    expect(within(row).getByLabelText("审核原因 line-1").closest("label")).toHaveClass("col-span-3");
     expect(within(row).queryByRole("button", { name: "保存" })).not.toBeInTheDocument();
     expect(within(row).getByRole("button", { name: "已保存" })).toBeDisabled();
     const reasonInput = within(row).getByLabelText("审核原因 line-1");
